@@ -1,0 +1,22 @@
+[package]
+name = "worldgen"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.13.2"
+bevy_pancam = "0.11.1"
+fast_poisson = "1.0.0"
+noise = "0.9.0"
+rand = "0.8.5"
+voronator = "0.2.1"
+
+# Enable a small amount of optimization in debug mode
+[profile.dev]
+opt-level = 1
+
+# Enable high optimizations for dependencies (incl. Bevy), but not for our code:
+[profile.dev.package."*"]
+opt-level = 3
