@@ -10,7 +10,7 @@ use voronator::{
 };
 
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
-struct Point {
+pub struct Point {
     x: f64,
     y: f64,
 }
@@ -98,7 +98,7 @@ pub struct Heightmap {
 }
 
 impl Heightmap {
-    pub fn new(diagram: VoronoiDiagram<Point>, seed_points: Option<Vec<Point>>) -> Self {
+    pub fn new(diagram: VoronoiDiagram<Point>, seed_points: Option<Vec<Point>>, plate_vectors: Option<Vec<Vec3>>) -> Self {
         let mut seeds;
         let cell_hashmap: HashMap<Polygon<Point>, usize> = diagram
             .cells()
@@ -113,8 +113,9 @@ impl Heightmap {
             let mut rng = rand::thread_rng();
             let mut rand_num;
             seeds = Vec::new();
+            let num = diagram.sites.len() / 6;
             for i in 0..5 {
-                rand_num = rng.gen_range(0..(diagram.sites.len() / 4)) * (i + 1);
+                rand_num = rng.gen_range((num*i)..(num*(i+1)));
                 seeds.push(diagram.sites[rand_num]);
             }
         }
@@ -124,7 +125,7 @@ impl Heightmap {
             cells: diagram.cells().into(),
             cell_neighbors: diagram.neighbors,
             cells_hashmap: cell_hashmap,
-            plate_vectors: vec![Vec3::new(0.0, 0.0, 0.0); seeds.clone().len()],
+            plate_vectors: plate_vectors.unwrap_or(vec![Vec3::new(0.0, 0.0, 0.0); seeds.clone().len()]),
             seed_points: seeds,
             sites: diagram.sites.clone(),
             sites_hashmap: diagram
@@ -135,11 +136,26 @@ impl Heightmap {
                 .collect(),
         }
     }
-    pub fn generate_heights(&mut self, plate_vectors: Vec<Vec3>) {
-        self.plate_vectors = plate_vectors;
+    pub fn generate_heights(&mut self) {
+        if self.plate_vectors == vec![Vec3::new(0.0, 0.0, 0.0); self.seed_points.len()] {
+            self.generate_plate_vectors();
+        }
+
         let visited: HashMap<Point, bool> = HashMap::new();
         for seed in &self.seed_points {
             let mut queue: VecDeque<Point> = VecDeque::new();
+            
+
         }
+    }
+
+    fn generate_plate_vectors(&mut self){
+        let mut rng = rand::thread_rng();
+        let mut vectors = Vec::new();
+        for i in 0..self.seed_points.len() {
+            let vector = Vec3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
+            vectors.push(vector);
+        }
+        self.plate_vectors = vectors;
     }
 }
