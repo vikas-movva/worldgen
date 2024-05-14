@@ -1,5 +1,7 @@
 #![allow(unused_imports)]
+pub mod heightmap;
 
+use crate::heightmap::*;
 use bevy::window::Window;
 use bevy::{
     pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin},
