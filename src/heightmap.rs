@@ -1,5 +1,6 @@
 use bevy::prelude::Vec3;
 use maybe_parallel_iterator::{IntoMaybeParallelIterator, IntoMaybeParallelRefIterator};
+use rand::distributions::Distribution;
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -92,7 +93,7 @@ pub struct Heightmap {
     pub sites: Vec<Point>,
     pub sites_hashmap: HashMap<Point, usize>,
     pub cells: Vec<Polygon<Point>>,
-    pub cell_neighbors: Vec<Vec<usize>>,
+    pub cell_neighbors: Vec<Vec<usize>>, // list of indices of neighboring cells
     pub seed_points: Vec<Point>,
     pub plate_vectors: Vec<Vec3>,
 }
@@ -141,21 +142,59 @@ impl Heightmap {
             self.generate_plate_vectors();
         }
 
-        let visited: HashMap<Point, bool> = HashMap::new();
+        let visited: HashMap<usize, bool> = HashMap::new();
         for seed in &self.seed_points {
-            let mut queue: VecDeque<Point> = VecDeque::new();
-            
+            let mut queue: VecDeque<usize> = VecDeque::new();
+            let index = self.sites_hashmap.get(seed).unwrap();
+            let adjacent_cells = &self.cell_neighbors[*index];
+            queue.push_back(*index);
+            for cell in adjacent_cells {
+                queue.push_back(*cell);
+            }
+            const P_HEIGHT: f64 = 0.75;
+            const P_STOP: f64 = 0.01;
+            let mut rng = rand::thread_rng();
+            let distribution = rand::distributions::Uniform::new(0.0, 1.0);
+
+            let mut height = 0.9;
+            let mut stop = false;
+
+            while !queue.is_empty() {
+                let current_cell = queue.pop_front().unwrap();
+                if *visited.get(&current_cell).unwrap_or(&false) {
+                    continue;
+                }
+
+                self.heights[current_cell] = height.clone();
+
+                if distribution.sample(&mut rng) < P_HEIGHT {
+                    height -= rng.gen_range(0.01..0.1);
+                }
+
+                if (distribution.sample(&mut rng) < P_STOP) | (height < 0.1){
+                    stop = true;
+                }
+
+                if !stop {
+                    let neighbors = &self.cell_neighbors[current_cell];
+                    for neighbor in neighbors {
+                        queue.push_back(*neighbor);
+                    }
+                }
+            }
+
 
         }
     }
-
-    fn generate_plate_vectors(&mut self){
-        let mut rng = rand::thread_rng();
-        let mut vectors = Vec::new();
-        for i in 0..self.seed_points.len() {
-            let vector = Vec3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
-            vectors.push(vector);
+        fn generate_plate_vectors(&mut self){
+            let mut rng = rand::thread_rng();
+            let mut vectors = Vec::new();
+            for i in 0..self.seed_points.len() {
+                let vector = Vec3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
+                vectors.push(vector);
+            }
+            self.plate_vectors = vectors;
         }
-        self.plate_vectors = vectors;
-    }
+        
 }
+
