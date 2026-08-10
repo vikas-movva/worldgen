@@ -13,7 +13,22 @@ function App() {
 				setResult(`Error: ${String(err)}`);
 			}
 		}
+		async function testMesh() {
+			try {
+				const mesh = await coreApi.generateMesh(1000, 42);
+				const pointCount = mesh.points?.length ?? 0;
+				const cellCount = mesh.cells?.i?.length ? mesh.cells.i.length - 1 : 0;
+				const hasVertices = mesh.vertices?.p?.length > 0;
+				setResult(
+					`generateMesh(1000, 42): points=${pointCount}, cells=${cellCount}, vertices=${mesh.vertices?.p?.length ?? 0} ` +
+						`${pointCount === 1000 && cellCount === 1000 && hasVertices ? "✅ PASS" : "❌ FAIL"}`,
+				);
+			} catch (err) {
+				setResult(`Mesh Error: ${String(err)}`);
+			}
+		}
 		testAdd();
+		testMesh();
 	}, []);
 
 	return (

@@ -8,6 +8,13 @@
 export function add(a: number, b: number): number;
 
 /**
+ * Step 1.1: generate a deterministic Voronoi mesh from `cell_count` seeded
+ * points. Returns a `JsValue` with fields `{ points, cells, vertices }`
+ * matching the wire format defined in `mesh::Mesh`.
+ */
+export function generate_mesh(cell_count: number, seed: number): any;
+
+/**
  * Initialize the panic hook so Rust panics surface in the browser console
  * instead of silently failing. Called once on startup.
  */
@@ -18,10 +25,11 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly add: (a: number, b: number) => number;
+    readonly generate_mesh: (a: number, b: number) => any;
     readonly init: () => void;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_start: () => void;
 }

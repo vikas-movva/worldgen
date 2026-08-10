@@ -1,5 +1,6 @@
 // Typed wrapper over the core worker.
 // Step 0.1: only `add(a,b)` exposed.
+// Step 1.1: `generateMesh(cellCount, seed)` → Mesh.
 // Later: generateWorld, projectWorld, editHeightmap, recomputeDependents, generateTimeline.
 
 import CoreWorker from "../workers/core.worker.ts?worker";
@@ -19,6 +20,20 @@ worker.onmessage = (e: MessageEvent<Res<any>>) => {
   pending.delete(res.reqId);
 };
 
+// The Mesh shape (serialized from Rust via serde-wasm-bindgen).
+export type Mesh = {
+	points: [number, number][];
+	cells: {
+		v: number[];
+		c: number[];
+		i: number[];
+		b: number[];
+	};
+	vertices: {
+		p: [number, number][];
+	};
+};
+
 function call<T, R>(kind: string, payload: T): Promise<R> {
   const reqId = Date.now() + Math.random(); // unique enough for this phase
   return new Promise((resolve, reject) => {
@@ -31,6 +46,11 @@ export const coreApi = {
   /** Trivial export to verify the WASM ↔ JS bridge works end-to-end. */
   add(a: number, b: number): Promise<number> {
     return call("add", { a, b });
+  },
+
+  /** Step 1.1: generate a deterministic Voronoi mesh. */
+  generateMesh(cellCount: number, seed: number): Promise<Mesh> {
+    return call("generate_mesh", { cellCount, seed });
   },
 
   // Placeholders for future phases:

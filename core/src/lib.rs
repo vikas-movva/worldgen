@@ -6,6 +6,8 @@
 
 use wasm_bindgen::prelude::*;
 
+mod mesh;
+
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
 #[wasm_bindgen(start)]
@@ -18,4 +20,12 @@ pub fn init() {
 #[wasm_bindgen]
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
+}
+
+/// Step 1.1: generate a deterministic Voronoi mesh from `cell_count` seeded
+/// points. Returns a `JsValue` with fields `{ points, cells, vertices }`
+/// matching the wire format defined in `mesh::Mesh`.
+#[wasm_bindgen]
+pub fn generate_mesh(cell_count: u32, seed: u32) -> JsValue {
+    mesh::generate_mesh(cell_count, seed)
 }
