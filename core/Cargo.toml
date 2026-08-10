@@ -1,8 +1,8 @@
 [package]
-name = "worldforge-core"
+name = "worldgen-core"
 version = "0.1.0"
 edition = "2021"
-description = "Deterministic procedural world-generation core for Worldforge (Rust → WASM)"
+description = "Deterministic procedural world-generation core for Worldgen (Rust → WASM)"
 license = "MIT"
 
 [lib]

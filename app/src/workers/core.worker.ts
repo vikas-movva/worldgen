@@ -2,7 +2,7 @@
 // Step 0.1: exports `add(a,b)` for verification.
 // Later phases: generate_world, project_world, edit_heightmap, recompute_dependents, generate_timeline.
 
-import init, { add } from "../core/worldforge_core.js";
+import init, { add } from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
 

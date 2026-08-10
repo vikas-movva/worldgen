@@ -1,4 +1,4 @@
-/* @ts-self-types="./worldforge_core.d.ts" */
+/* @ts-self-types="./worldgen_core.d.ts" */
 
 /**
  * Trivial export to verify the WASM ↔ JS bridge works end-to-end.
@@ -56,7 +56,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./worldforge_core_bg.js": import0,
+        "./worldgen_core_bg.js": import0,
     };
 }
 
@@ -229,7 +229,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('worldforge_core_bg.wasm', import.meta.url);
+        module_or_path = new URL('worldgen_core_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
