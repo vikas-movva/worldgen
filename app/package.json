@@ -6,11 +6,11 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc -b && vite build",
-		"build:core": "wasm-pack build core --target web --out-dir ../app/src/core",
+		"build:core": "cd .. && wasm-pack build core --target web --out-dir app/src/core",
 		"lint": "biome check --write",
 		"preview": "vite preview",
 		"test": "vitest",
-		"test:core": "cargo test --manifest-path core/Cargo.toml"
+		"test:core": "cargo test --manifest-path ../core/Cargo.toml"
 	},
 	"dependencies": {
 		"@tiptap/react": "^3.29.2",
