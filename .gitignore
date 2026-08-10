@@ -1,0 +1,16 @@
+/docs
+# Rust / wasm-pack
+core/target
+target
+
+# Node / Vite
+app/node_modules
+app/dist
+*.local
+
+# OS
+.DS_Store
+
+# Editor
+.vscode
+.idea

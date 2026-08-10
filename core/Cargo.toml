@@ -1,0 +1,22 @@
+[package]
+name = "worldforge-core"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic procedural world-generation core for Worldforge (Rust → WASM)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+rand = { version = "0.8", features = ["std_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+spade = "2"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
