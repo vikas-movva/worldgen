@@ -19,6 +19,24 @@ export function add(a: number, b: number): number;
 export function build_grid_with_heightmap(mesh_js: any, seed: number): any;
 
 /**
+ * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
+ * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
+ * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
+ * `biomes-generator.ts` (`BiomesGenerator.define`/`getId`) adapted to the
+ * irregular Voronoi mesh. Returns a `Uint8Array` of one biome id per cell.
+ */
+export function generate_biomes(mesh_js: any, climate_js: any, heightmap: Uint8Array): Uint8Array;
+
+/**
+ * Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
+ * (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
+ * `cells.biome` back into the same `Grid`, returning the updated `Grid` as
+ * `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
+ * 1.1→1.4 into one `Grid`.
+ */
+export function generate_biomes_for_grid(grid_js: any): any;
+
+/**
  * Step 1.3: produce `cells.temp` (Int8Array, °C) and `cells.prec` (Uint8Array)
  * from a deserialized `Mesh` plus the heightmap `cells.h` (Uint8Array, 0..=100,
  * `< 20` == water). Climate options are passed as a `JsValue` object whose
@@ -64,6 +82,8 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly add: (a: number, b: number) => number;
     readonly build_grid_with_heightmap: (a: any, b: number) => any;
+    readonly generate_biomes: (a: any, b: any, c: any) => any;
+    readonly generate_biomes_for_grid: (a: any) => any;
     readonly generate_climate: (a: any, b: any, c: any) => any;
     readonly generate_climate_for_grid: (a: any, b: any) => any;
     readonly generate_heightmap: (a: any, b: number) => any;

@@ -30,6 +30,36 @@ export function build_grid_with_heightmap(mesh_js, seed) {
 }
 
 /**
+ * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
+ * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
+ * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
+ * `biomes-generator.ts` (`BiomesGenerator.define`/`getId`) adapted to the
+ * irregular Voronoi mesh. Returns a `Uint8Array` of one biome id per cell.
+ * @param {any} mesh_js
+ * @param {any} climate_js
+ * @param {Uint8Array} heightmap
+ * @returns {Uint8Array}
+ */
+export function generate_biomes(mesh_js, climate_js, heightmap) {
+    const ret = wasm.generate_biomes(mesh_js, climate_js, heightmap);
+    return ret;
+}
+
+/**
+ * Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
+ * (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
+ * `cells.biome` back into the same `Grid`, returning the updated `Grid` as
+ * `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
+ * 1.1→1.4 into one `Grid`.
+ * @param {any} grid_js
+ * @returns {any}
+ */
+export function generate_biomes_for_grid(grid_js) {
+    const ret = wasm.generate_biomes_for_grid(grid_js);
+    return ret;
+}
+
+/**
  * Step 1.3: produce `cells.temp` (Int8Array, °C) and `cells.prec` (Uint8Array)
  * from a deserialized `Mesh` plus the heightmap `cells.h` (Uint8Array, 0..=100,
  * `< 20` == water). Climate options are passed as a `JsValue` object whose

@@ -150,10 +150,43 @@ function App() {
 			return n > 0 ? sum / n : 0;
 		}
 
+		async function testBiomes() {
+			try {
+				const mesh = await coreApi.generateMesh(1000, 42);
+				const h = await coreApi.generateHeightmap(mesh, 42);
+				const climate = await coreApi.generateClimate(mesh, h);
+				const biome = await coreApi.generateBiomes(mesh, climate, h);
+				const len = biome?.length ?? 0;
+				// Every water cell (h < 20) must be Marine (0).
+				let waterOk = true;
+				let landOk = true;
+				let land = 0;
+				for (let i = 0; i < len; i++) {
+					if (h[i] < 20) {
+						if (biome[i] !== 0) waterOk = false;
+					} else {
+						land++;
+						if (biome[i] < 1 || biome[i] > 12) landOk = false;
+					}
+				}
+				const lensOk = len === 1000;
+				const rangesOk = waterOk && landOk && lensOk && land > 0;
+				setResult(
+					(prev: string) =>
+						prev +
+						`  | biomes: len=${len} land=${land} waterMarine=${waterOk} ` +
+						`landValid=${landOk} ${rangesOk ? "✅ PASS" : "❌ FAIL"}`,
+				);
+			} catch (err) {
+				setResult((prev: string) => prev + `  | biomes Error: ${String(err)}`);
+			}
+		}
+
 		testAdd();
 		testMesh();
 		testHeightmap();
 		testClimate();
+		testBiomes();
 	}, []);
 
 	return (

@@ -6,6 +6,8 @@
 import init, {
 	add,
 	build_grid_with_heightmap,
+	generate_biomes,
+	generate_biomes_for_grid,
 	generate_climate,
 	generate_climate_for_grid,
 	generate_heightmap,
@@ -43,6 +45,18 @@ type WorkerRequest =
 			reqId: number;
 			grid: unknown;
 			opts?: unknown;
+	  }
+	| {
+			kind: "generate_biomes";
+			reqId: number;
+			mesh: unknown;
+			climate: { temp: number[]; prec: number[] };
+			heightmap: unknown;
+	  }
+	| {
+			kind: "generate_biomes_for_grid";
+			reqId: number;
+			grid: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -90,6 +104,13 @@ type WorkerResponse =
 			result: { temp: Int8Array; prec: Uint8Array };
 	  }
 	| { kind: "generate_climate_for_grid"; reqId: number; ok: true; result: Grid }
+	| { kind: "generate_biomes"; reqId: number; ok: true; result: Uint8Array }
+	| {
+			kind: "generate_biomes_for_grid";
+			reqId: number;
+			ok: true;
+			result: Grid;
+	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 let nextReqId = 1;
@@ -133,6 +154,20 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			// writes cells.temp/cells.prec back into it. Used by Step 1.5.
 			const result = generate_climate_for_grid(req.grid, req.opts ?? {});
 			send({ kind: "generate_climate_for_grid", reqId, ok: true, result });
+		} else if (req.kind === "generate_biomes") {
+			// Step 1.4: biome ids (0..=12) from a Mesh + {temp,prec} + heightmap.
+			// Returns Uint8Array (one biome id per cell).
+			const result = generate_biomes(
+				req.mesh,
+				req.climate,
+				req.heightmap as Uint8Array,
+			);
+			send({ kind: "generate_biomes", reqId, ok: true, result });
+		} else if (req.kind === "generate_biomes_for_grid") {
+			// Step 1.4 (grid form): runs biomes over an existing Grid and
+			// writes cells.biome back into it. Used Within Step 1.5.
+			const result = generate_biomes_for_grid(req.grid);
+			send({ kind: "generate_biomes_for_grid", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

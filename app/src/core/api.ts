@@ -126,6 +126,32 @@ export const coreApi = {
     return call("generate_climate_for_grid", { grid, opts: opts ?? {} });
   },
 
+  /**
+   * Step 1.4: produce `cells.biome` (Uint8Array, 0..=12, 0 = Marine) from a
+   * Mesh + the climate `{ temp, prec }` + the heightmap. Returns one biome id
+   * per cell.
+   */
+  generateBiomes(
+    mesh: Mesh,
+    climate: Climate,
+    heightmap: Uint8Array,
+  ): Promise<Uint8Array> {
+    return call("generate_biomes", {
+      mesh,
+      climate: { temp: Array.from(climate.temp), prec: Array.from(climate.prec) },
+      heightmap,
+    }) as Promise<Uint8Array>;
+  },
+
+  /**
+   * Step 1.4 (grid form): run biomes over an existing Grid and write
+   * `cells.biome` back, returning the updated Grid. Used by the Step 1.5
+   * pipeline.
+   */
+  generateBiomesForGrid(grid: Grid): Promise<Grid> {
+    return call("generate_biomes_for_grid", { grid }) as Promise<Grid>;
+  },
+
   // Placeholders for future phases:
   // generateWorld(seed, cellCount, opts): Promise<Grid>;
   // projectWorld(pack, timeline, year): Promise<WorldAt>;

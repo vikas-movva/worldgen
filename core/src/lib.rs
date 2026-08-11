@@ -10,6 +10,7 @@ mod mesh;
 mod heightmap;
 mod grid;
 mod climate;
+mod biomes;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -87,4 +88,28 @@ pub fn generate_climate_for_grid(grid_js: JsValue, opts_js: JsValue) -> JsValue 
     grid.cells.temp = temp;
     grid.cells.prec = prec;
     serde_wasm_bindgen::to_value(&grid).expect("grid serde to JsValue")
+}
+
+/// Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
+/// from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
+/// `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
+/// `biomes-generator.ts` (`BiomesGenerator.define`/`getId`) adapted to the
+/// irregular Voronoi mesh. Returns a `Uint8Array` of one biome id per cell.
+#[wasm_bindgen]
+pub fn generate_biomes(
+    mesh_js: JsValue,
+    climate_js: JsValue,
+    heightmap: js_sys::Uint8Array,
+) -> js_sys::Uint8Array {
+    biomes::generate_biomes_js(mesh_js, climate_js, heightmap)
+}
+
+/// Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
+/// (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
+/// `cells.biome` back into the same `Grid`, returning the updated `Grid` as
+/// `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
+/// 1.1→1.4 into one `Grid`.
+#[wasm_bindgen]
+pub fn generate_biomes_for_grid(grid_js: JsValue) -> JsValue {
+    biomes::generate_biomes_for_grid(grid_js)
 }
