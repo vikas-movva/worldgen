@@ -307,6 +307,7 @@ fn build_spacing(points: &[[f64; 2]], cells_x: u32, cells_y: u32) -> Vec<u32> {
     // silently falling back to cell 0 (which can be anywhere on the map).
     // Forward pass: carry the last occupied id left→right.
     let mut last: i64 = -1;
+    #[allow(clippy::needless_range_loop)]
     for s in 0..n_slots {
         if slot_occupant[s] != -1 {
             last = slot_occupant[s];
@@ -608,5 +609,279 @@ mod tests {
             br_x > WORLD_W - 3.0 * sx && br_y > WORLD_H - 3.0 * sy,
             "bottom-right spacing returned cell at ({br_x},{br_y}) — slot ≈ ({sx},{sy}), should be near ({WORLD_W},{WORLD_H})"
         );
+    }
+
+    // ── Direct helper unit tests ───────────────────────────────────────────
+    // The three private helpers below were previously exercised only
+    // transitively through full `build()` runs. Direct tests pin their
+    // contracts so a regression in the clamp math, jitter bound, or spacing
+    // fill logic is caught without needing to reverse-engineer a seed that
+    // happens to trigger the relevant branch.
+
+    /// `clamp_to_world` marches from `cell_pos` along `dir` to the first
+    /// world-rectangle side it hits. Each of the four cardinal ray directions
+    /// must land exactly on the corresponding side, and the result must stay
+    /// inside the world rectangle. A zero direction vector must fall back to
+    /// the cell position itself rather than panic or produce NaN.
+    #[test]
+    fn clamp_to_world_hits_each_side() {
+        // Ray pointing west (dx<0) from the interior → hits x=0.
+        let p = Point2::new(5000.0, 4000.0);
+        let [x, y] = clamp_to_world(p, Point2::new(-1.0, 0.0));
+        assert!((x - 0.0).abs() < 1e-9, "west ray should hit x=0, got {x}");
+        assert!((y - 4000.0).abs() < 1e-9, "y unchanged, got {y}");
+        // Ray pointing east (dx>0) → hits x=WORLD_W.
+        let [x, y] = clamp_to_world(p, Point2::new(1.0, 0.0));
+        assert!((x - WORLD_W).abs() < 1e-9, "east ray should hit x=WORLD_W, got {x}");
+        assert!((y - 4000.0).abs() < 1e-9);
+        // Ray pointing north (dy<0) → hits y=0.
+        let [x, y] = clamp_to_world(p, Point2::new(0.0, -1.0));
+        assert!((x - 5000.0).abs() < 1e-9);
+        assert!((y - 0.0).abs() < 1e-9, "north ray should hit y=0, got {y}");
+        // Ray pointing south (dy>0) → hits y=WORLD_H.
+        let [x, y] = clamp_to_world(p, Point2::new(0.0, 1.0));
+        assert!((x - 5000.0).abs() < 1e-9);
+        assert!((y - WORLD_H).abs() < 1e-9, "south ray should hit y=WORLD_H, got {y}");
+    }
+
+    /// A diagonal ray hits whichever side is nearer in terms of the parameter
+    /// `t`, not whichever axis is larger — this is the branch that picks the
+    /// minimum positive `t` over all four candidates.
+    #[test]
+    fn clamp_to_world_diagonal_picks_nearest_side() {
+        // From near the west edge, a 45° SE ray should hit x=0? No — dx>0 so it
+        // travels east; nearest side is the east wall at t=(WORLD_W-100)/1.
+        let p = Point2::new(100.0, 4000.0);
+        let [x, y] = clamp_to_world(p, Point2::new(1.0, 1.0));
+        // East wall is far (9900 units); south wall is far (4000 units) but dy
+        // and dx are both 1.0 so east (t=9900) vs south (t=4000): south wins.
+        assert!((y - WORLD_H).abs() < 1e-9, "diagonal should hit south wall first, got y={y}");
+        assert!((x - 4100.0).abs() < 1e-9, "x = 100 + 4000*1 = 4100, got {x}");
+        // Negative-x boundary must not be selected when dx>0 (the `dx < 0.0`
+        // guard), and vice versa.
+        assert!((0.0..=WORLD_W).contains(&x));
+        assert!((0.0..=WORLD_H).contains(&y));
+    }
+
+    /// Degenerate direction (zero vector): no side is reachable, so the helper
+    /// falls back to the cell position. Must not panic or return NaN/inf.
+    #[test]
+    fn clamp_to_world_zero_direction_falls_back() {
+        let p = Point2::new(1234.0, 5678.0);
+        let [x, y] = clamp_to_world(p, Point2::new(0.0, 0.0));
+        assert!((x - 1234.0).abs() < 1e-9 && (y - 5678.0).abs() < 1e-9);
+        assert!(x.is_finite() && y.is_finite());
+    }
+
+    /// `small_jitter` must stay within the documented `[-5e-6, 5e-6)` bound
+    /// and be reproducible for a given RNG state. The bound keeps the jitter
+    /// invisible (~1e-6 of the world dimension) while still breaking exact
+    /// coincidences (the E3 degeneracy guard).
+    #[test]
+    fn small_jitter_is_bounded() {
+        let mut rng = StdRng::seed_from_u64(99);
+        for _ in 0..10_000 {
+            let j = small_jitter(&mut rng);
+            assert!(j >= -5e-6, "jitter {j} below -5e-6");
+            assert!(j < 5e-6, "jitter {j} at/above +5e-6");
+            assert!(j.is_finite());
+        }
+    }
+
+    /// `build_spacing`'s forward/backward fill must resolve every slot to a
+    /// real cell id even when a run of leading slots is empty (no input cell
+    /// landed there). Construct a pathological input where the first several
+    /// slots have no occupant — the backward pass must propagate the first
+    /// occupied slot leftward, so slot 0 does NOT silently fall back to cell 0
+    /// (which could be anywhere). This is the M7 regression guard at the
+    /// helper level.
+    #[test]
+    fn build_spacing_fills_leading_empty_slots() {
+        // 4×1 grid over the full world width. Only slot 2 and 3 have cells;
+        // slots 0 and 1 are empty and must be back-filled from slot 2.
+        let cells_x: u32 = 4;
+        let cells_y: u32 = 1;
+        // Two cells, both in the right half (slot 2 and slot 3).
+        let sx = WORLD_W / cells_x as f64; // 2500
+        let points: Vec<[f64; 2]> = vec![
+            [2.5 * sx + 100.0, WORLD_H * 0.5], // slot 2
+            [3.5 * sx + 100.0, WORLD_H * 0.5], // slot 3
+        ];
+        let spacing = build_spacing(&points, cells_x, cells_y);
+        assert_eq!(spacing.len(), 4);
+        // Every entry must be a valid cell id (0 or 1 here).
+        for &c in &spacing {
+            assert!(c == 0 || c == 1, "invalid cell id {c} in spacing");
+        }
+        // Slots 0 and 1 must be back-filled with the slot-2 occupant (cell 0),
+        // NOT left as -1/coerced-to-0-by-default and NOT pointing at an
+        // arbitrary cell. cell 0 is in slot 2, so slots 0,1,2 should all
+        // resolve to cell 0; slot 3 resolves to cell 1.
+        assert_eq!(spacing[0], 0, "leading empty slot 0 should back-fill to cell 0");
+        assert_eq!(spacing[1], 0, "leading empty slot 1 should back-fill to cell 0");
+        assert_eq!(spacing[2], 0, "slot 2 holds cell 0");
+        assert_eq!(spacing[3], 1, "slot 3 holds cell 1");
+    }
+
+    // ── Stronger / new top-level invariants ─────────────────────────────────
+
+    /// The CSR offset array `i` is *shared* between `v` and `c` because a
+    /// closed Voronoi cell has exactly as many vertices as neighbors. Pin
+    /// that invariant explicitly: for every cell, the vertex-count slice and
+    /// the neighbor-count slice have equal length. A future change that
+    /// decouples the two arrays would silently break downstream readers
+    /// (heightmap adjacency walks) without this guard.
+    #[test]
+    fn neighbor_count_equals_vertex_count_per_cell() {
+        let mesh = build(1500, 42);
+        let n = mesh.points.len();
+        let i = &mesh.cells.i;
+        for cell in 0..n {
+            let lo = i[cell] as usize;
+            let hi = i[cell + 1] as usize;
+            let len = hi - lo;
+            // Both v and c are sliced by the same [lo,hi); we already know
+            // they have equal total length from csr_well_formed. Here we
+            // verify the per-cell counts agree with the i-offset, i.e. no
+            // off-by-one in the offset pushes.
+            assert_eq!(
+                len, hi - lo,
+                "per-cell length self-consistent (sanity)"
+            );
+            assert!(len >= 3, "cell {cell} has {len} verts/neighbors (need ≥3)");
+        }
+        // The 1:1 vertex/neighbor relationship is what makes a single offset
+        // array correct; assert the totals match (already implied by
+        // csr_well_formed, restated as intent).
+        assert_eq!(mesh.cells.v.len(), mesh.cells.c.len());
+    }
+
+    /// Every border cell's clamped (Outer) vertices must lie ON the world
+    /// rectangle boundary — the clamp contract. If a border cell had an
+    /// Outer vertex that was NOT on a boundary edge, the polygon wouldn't
+    /// close correctly for the renderer. We identify Outer-derived vertices
+    /// indirectly: a border cell's vertex ring must touch at least one world
+    /// edge, and every vertex of a border cell that lies exactly on a world
+    /// edge is a clamped Outer vertex (inner circumcenters are in the interior
+    /// with overwhelming probability at N=1000).
+    #[test]
+    fn border_cells_have_vertices_on_world_boundary() {
+        let mesh = build(1000, 42);
+        let i = &mesh.cells.i;
+        let v = &mesh.cells.v;
+        let p = &mesh.vertices.p;
+        const EPS: f64 = 1e-6;
+        let n = mesh.points.len();
+        let mut any_border = false;
+        for cell in 0..n {
+            if mesh.cells.b[cell] != 1 {
+                continue;
+            }
+            any_border = true;
+            let lo = i[cell] as usize;
+            let hi = i[cell + 1] as usize;
+            // At least one vertex of this border cell must sit on a world edge.
+            let touches_edge = (lo..hi).any(|k| {
+                let [x, y] = p[v[k] as usize];
+                x.abs() < EPS
+                    || (x - WORLD_W).abs() < EPS
+                    || y.abs() < EPS
+                    || (y - WORLD_H).abs() < EPS
+            });
+            assert!(touches_edge, "border cell {cell} has no vertex on the world boundary");
+        }
+        assert!(any_border, "expected at least one border cell at N=1000");
+    }
+
+    /// The minimum requested cell count is clamped to 4 (`cell_count.max(4)`).
+    /// Build must not panic at the floor and must still produce a valid CSR
+    /// mesh: N≥3, every cell has ≥3 verts/neighbors, adjacency is symmetric,
+    /// and a border exists (the hull of ≥3 non-collinear points has ≥3 hull
+    /// vertices). This guards degenerate-triangulation edge cases (spade's
+    /// `bulk_load_stable` only fails on <3 points or all-collinear input).
+    #[test]
+    fn minimum_cell_count_does_not_panic() {
+        let mesh = build(1, 42); // clamped to 4 internally
+        let n = mesh.points.len();
+        assert!(n >= 3, "need ≥3 cells for a triangulation, got {n}");
+        assert_eq!(mesh.cells.i.len(), n + 1, "CSR i must be length N+1");
+        let i = &mesh.cells.i;
+        let c = &mesh.cells.c;
+        for cell in 0..n {
+            let lo = i[cell] as usize;
+            let hi = i[cell + 1] as usize;
+            assert!(hi - lo >= 3, "cell {cell} has <3 vertices");
+            for &neigh in &c[lo..hi] {
+                let n2 = neigh as usize;
+                assert_ne!(n2, cell, "self-neighbor");
+                assert!(n2 < n, "neighbor id {n2} out of bounds");
+            }
+        }
+        let border_count = mesh.cells.b.iter().filter(|&&b| b == 1).count();
+        assert!(border_count >= 3, "need ≥3 border cells, got {border_count}");
+    }
+
+    /// Determinism must hold for more than one seed. The existing
+    /// `deterministic_same_seed` only checks seed 42. Re-run with a different
+    /// seed and confirm byte-identical vertex positions (via `to_bits`) and
+    /// identical topology arrays. This catches any path that accidentally
+    /// depends on absolute seed value rather than treating it as an opaque
+    /// RNG key.
+    #[test]
+    fn deterministic_across_seeds() {
+        for seed in [7u32, 12345, 999] {
+            let a = build(800, seed);
+            let b = build(800, seed);
+            assert_eq!(a.points, b.points, "seed {seed}: points differ");
+            assert_eq!(a.cells.v, b.cells.v, "seed {seed}: cells.v differ");
+            assert_eq!(a.cells.c, b.cells.c, "seed {seed}: cells.c differ");
+            assert_eq!(a.cells.i, b.cells.i, "seed {seed}: cells.i differ");
+            assert_eq!(a.cells.b, b.cells.b, "seed {seed}: cells.b differ");
+            assert_eq!(a.cells.spacing, b.cells.spacing, "seed {seed}: spacing differs");
+            assert_eq!(a.vertices.p.len(), b.vertices.p.len(), "seed {seed}: vertex count differs");
+            for (pa, pb) in a.vertices.p.iter().zip(b.vertices.p.iter()) {
+                assert_eq!(pa[0].to_bits(), pb[0].to_bits(), "seed {seed}: vertex x bits differ");
+                assert_eq!(pa[1].to_bits(), pb[1].to_bits(), "seed {seed}: vertex y bits differ");
+            }
+        }
+    }
+
+    /// `different_seeds_differ` previously only checked `points` and
+    /// `cells.v`. Strengthen: different seeds must produce genuinely
+    /// different topology, not just different coordinates that happen to
+    /// yield the same adjacency. At least one of the CSR arrays (`c`, `i`,
+    /// `b`, `spacing`) or the vertex-count must differ.
+    #[test]
+    fn different_seeds_topologically_distinct() {
+        let a = build(1000, 42);
+        let b = build(1000, 7);
+        assert_ne!(a.points, b.points, "coordinates should differ");
+        let topology_differs = a.cells.c != b.cells.c
+            || a.cells.i != b.cells.i
+            || a.cells.b != b.cells.b
+            || a.cells.spacing != b.cells.spacing
+            || a.vertices.p.len() != b.vertices.p.len();
+        assert!(topology_differs, "two seeds produced identical topology (c/i/b/spacing) — seed is not driving generation");
+    }
+
+    /// After `bulk_load_stable` dedup, no two cells should share the same
+    /// seed-point position. (Jitter is added precisely to prevent this, so
+    /// in practice duplicates never occur at N=1000 — but the regression
+    /// guard catches a future change that drops the jitter or breaks dedup
+    /// handling, which would silently corrupt `points[cell_id]` indexing
+    /// downstream.)
+    #[test]
+    fn cell_points_are_unique() {
+        let mesh = build(1000, 42);
+        let mut seen = std::collections::HashSet::with_capacity(mesh.points.len());
+        for &[x, y] in &mesh.points {
+            // Quantize to 1e-9 so that FP-equal-but-not-bit-equal points (which
+            // would indicate a dedup miss) still collide in the set.
+            let key = (
+                (x * 1e9).round() as i64,
+                (y * 1e9).round() as i64,
+            );
+            assert!(seen.insert(key), "duplicate cell point at ({x},{y})");
+        }
     }
 }

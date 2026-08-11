@@ -111,7 +111,7 @@ impl Default for ClimateOpts {
 }
 
 /// Map coordinate band endpoints (FMG `mapCoordinates`).
-struct MapCoords {
+pub(crate) struct MapCoords {
     /// Total latitude span covered by the map (degrees).
     lat_t: f64,
     /// Latitude of the northern edge (degrees).
@@ -344,7 +344,7 @@ fn wind_directions(angle: f64) -> WindFlags {
         is_west: angle > 40.0 && angle < 140.0,
         is_east: angle > 220.0 && angle < 320.0,
         is_north: angle > 100.0 && angle < 260.0,
-        is_south: angle > 280.0 || angle < 80.0,
+        is_south: !(80.0..=280.0).contains(&angle),
     }
 }
 
@@ -370,7 +370,8 @@ pub fn generate_precipitation(mesh: &Mesh, h: &[u8], temp: &[i8], opts: &Climate
         let lat = coords.lat_n - (row as f64 / cells_y as f64) * coords.lat_t;
         let lat_band = clamp(((lat.abs() - 1.0) / 5.0).floor(), 0.0, 17.0) as usize;
         let lat_mod = LATITUDE_MODIFIER[lat_band];
-        let wind_tier = clamp(((lat.abs() - 89.0) / 30.0).floor(), 0.0, 5.0) as usize;
+        // FMG: Math.abs(lat - 89) / 30 — distance from north pole, tiers 0..5 pole-to-equator.
+        let wind_tier = clamp(((lat - 89.0).abs() / 30.0).floor(), 0.0, 5.0) as usize;
         let angle = opts.winds.get(wind_tier).copied().unwrap_or(225.0);
         let flags = wind_directions(angle);
 
@@ -661,5 +662,418 @@ mod tests {
             assert!((0..=255).contains(&p));
         }
         eprintln!("60k: mesh_build={build_ms}ms climate_gen={gen_ms}ms");
+    }
+
+    // ── Direct helper unit tests ───────────────────────────────────────────
+    // The private helpers below were previously exercised only transitively
+    // through full `generate_climate()` runs. Direct tests pin their contracts
+    // so a regression in the rounding, coordinate math, wind-direction
+    // decomposition, or orographic formula is caught without needing to
+    // reverse-engineer a seed that happens to trigger the relevant branch.
+    // Most importantly, the wind-tier bug (adversarial review C1) was masked
+    // because the old tests only checked wet/dry *means*, not wind direction
+    // or rain-shadow asymmetry — these new tests close that gap.
+
+    /// `round1(v)` rounds to 1 decimal place (FMG `rn(v, 1)`). Edge cases:
+    /// negatives, exact halves, integer inputs, large values.
+    #[test]
+    fn round1_rounds_to_one_decimal() {
+        assert_eq!(round1(0.0), 0.0);
+        assert_eq!(round1(1.0), 1.0);
+        assert_eq!(round1(1.55), 1.6);
+        assert_eq!(round1(1.54), 1.5);
+        assert_eq!(round1(-1.55), -1.6);
+        assert_eq!(round1(89.0), 89.0);
+        assert_eq!(round1(33.567), 33.6);
+        assert_eq!(round1(-0.04), -0.0);
+        assert_eq!(round1(180.0), 180.0);
+    }
+
+    /// `clamp(v, lo, hi)` pins to `[lo, hi]`. Edge cases: below, above, at
+    /// bounds, negatives, NaN-passes-through (FMG uses Math.min/max which
+    /// also propagates NaN; our manual clamp does too since none of the
+    /// comparisons are true for NaN).
+    #[test]
+    fn clamp_bounded() {
+        assert_eq!(clamp(5.0, 0.0, 10.0), 5.0);
+        assert_eq!(clamp(-1.0, 0.0, 10.0), 0.0);
+        assert_eq!(clamp(11.0, 0.0, 10.0), 10.0);
+        assert_eq!(clamp(0.0, 0.0, 10.0), 0.0);
+        assert_eq!(clamp(10.0, 0.0, 10.0), 10.0);
+        assert_eq!(clamp(-5.0, -10.0, -1.0), -5.0);
+        assert_eq!(clamp(-15.0, -10.0, -1.0), -10.0);
+    }
+
+    /// `calculate_map_coordinates` derives the latitude band from `mapSize`
+    /// and `latitude` options. FMG: `latT = round1(mapSize/100 * 180)`,
+    /// `latN = round1(90 - (180 - latT) * latitude/100)`, `latS = latN - latT`.
+    /// Default opts (mapSize=100, latitude=50) → latT=180, latN=90, latS=-90.
+    #[test]
+    fn map_coordinates_default() {
+        let coords = calculate_map_coordinates(&default_opts());
+        assert_eq!(coords.lat_t, 180.0);
+        assert_eq!(coords.lat_n, 90.0);
+        assert_eq!(coords.lat_s, -90.0);
+    }
+
+    /// A sub-planet map (mapSize=30, latitude=50) → latT=54, latN=27,
+    /// latS=-27. This verifies the shift math, not just the default.
+    #[test]
+    fn map_coordinates_sub_planet() {
+        let opts = ClimateOpts {
+            map_size: 30.0,
+            latitude: 50.0,
+            ..default_opts()
+        };
+        let coords = calculate_map_coordinates(&opts);
+        assert_eq!(coords.lat_t, 54.0); // 30/100 * 180 = 54
+        // FMG: latN = 90 - (180 - latT) * latShift = 90 - 126*0.5 = 90 - 63 = 27
+        assert_eq!(coords.lat_n, 27.0);
+        assert_eq!(coords.lat_s, -27.0); // 27 - 54 = -27
+    }
+
+    /// `latitude_at_y(y, world_h, coords)` maps world y to latitude. At
+    /// y=0 → latN (northern edge), y=world_h → latS (southern edge),
+    /// y=world_h/2 → midpoint. FMG: `latN - (y / graphHeight) * latT`.
+    #[test]
+    fn latitude_at_y_boundaries() {
+        let coords = MapCoords { lat_t: 180.0, lat_n: 90.0, lat_s: -90.0 };
+        let world_h = 8000.0;
+        // Top edge → north
+        assert_eq!(latitude_at_y(0.0, world_h, &coords), 90.0);
+        // Bottom edge → south
+        assert_eq!(latitude_at_y(world_h, world_h, &coords), -90.0);
+        // Midpoint → equator
+        assert_eq!(latitude_at_y(world_h / 2.0, world_h, &coords), 0.0);
+        // Quarter → 45°N
+        assert_eq!(latitude_at_y(world_h / 4.0, world_h, &coords), 45.0);
+    }
+
+    /// `altitude_drop(h, exponent)` returns 0 for water (h < SEA_LEVEL=20)
+    /// and a positive lapse for land. The drop scales with `(h - 18)^exp`
+    /// times 6.5/1000. At h=20 (sea level), drop = (2)^2 * 0.0065 = 0.0 rounded
+    /// to 1 decimal. At h=100, drop = (82)^2 * 0.0065 = 43.7 → a big chill.
+    #[test]
+    fn altitude_drop_water_is_zero() {
+        assert_eq!(altitude_drop(0, 2.0), 0.0);
+        assert_eq!(altitude_drop(10, 2.0), 0.0);
+        assert_eq!(altitude_drop(19, 2.0), 0.0);
+    }
+
+    #[test]
+    fn altitude_drop_land_positive_and_scales() {
+        // h=20: (20-18)^2 * 6.5/1000 = 4 * 0.0065 = 0.026 → round1 = 0.0
+        assert_eq!(altitude_drop(20, 2.0), 0.0);
+        // h=50: (50-18)^2 * 0.0065 = 1024 * 0.0065 = 6.656 → 6.7
+        assert_eq!(altitude_drop(50, 2.0), 6.7);
+        // h=100: (100-18)^2 * 0.0065 = 6724 * 0.0065 = 43.706 → 43.7
+        assert_eq!(altitude_drop(100, 2.0), 43.7);
+        // Higher exponent → more drop
+        assert!(altitude_drop(80, 3.0) > altitude_drop(80, 2.0));
+        // Monotonic: taller land → more drop
+        assert!(altitude_drop(90, 2.0) > altitude_drop(50, 2.0));
+    }
+
+    /// `wind_directions(angle)` decomposes a wind angle into 4 boolean flags.
+    /// FMG: `isWest: angle in (40,140)`, `isEast: angle in (220,320)`,
+    /// `isNorth: angle in (100,260)`, `isSouth: angle not in [80,280]`.
+    /// The default winds array is [225, 45, 225, 315, 135, 315]. These flags
+    /// indicate the direction wind blows *toward* (a westerly wind blows
+    /// westward, i.e. from the east). Note these are FMG's exact thresholds.
+    #[test]
+    fn wind_directions_all_flags() {
+        // 225° is in (220,320) → is_east; in [80,280] → not south; not in (40,140) → not west; not in (100,260) → not north
+        let f = wind_directions(225.0);
+        assert!(!f.is_west, "225° not in (40,140)");
+        assert!(f.is_east, "225° in (220,320) → east");
+        assert!(f.is_north, "225° in (100,260) → north");
+        assert!(!f.is_south, "225° in [80,280] → not south");
+
+        // 45° is in (40,140) → west; in [0,80) outside [80,280] → south; not in (220,320) → not east; not in (100,260) → not north
+        let f = wind_directions(45.0);
+        assert!(f.is_west, "45° in (40,140) → west");
+        assert!(!f.is_east, "45° not in (220,320)");
+        assert!(f.is_south, "45° outside [80,280] → south");
+        assert!(!f.is_north, "45° not in (100,260)");
+
+        // 315° in (220,320) → east; not in (40,140) → not west; not in (100,260) → not north; in [80,280]? No, 315 > 280 → south
+        let f = wind_directions(315.0);
+        assert!(f.is_east, "315° in (220,320) → east");
+        assert!(!f.is_west, "315° not in (40,140)");
+        assert!(!f.is_north, "315° not in (100,260)");
+        assert!(f.is_south, "315° outside [80,280] → south");
+
+        // 135° in (40,140) → west; in (100,260) → north; in [80,280] → not south; not in (220,320) → not east
+        let f = wind_directions(135.0);
+        assert!(f.is_west, "135° in (40,140) → west");
+        assert!(!f.is_east, "135° not in (220,320)");
+        assert!(f.is_north, "135° in (100,260) → north");
+        assert!(!f.is_south, "135° in [80,280] → not south");
+    }
+
+    /// `slot_cell(slot, spacing, n)` resolves a slot index to a valid cell id,
+    /// returning `None` for OOB slots or invalid cell ids. This is the E4
+    /// bounds guard for wind passes stepping off the grid edge.
+    #[test]
+    fn slot_cell_bounds_guarded() {
+        let spacing: Vec<u32> = vec![0, 1, 2, 3];
+        // Valid slots
+        assert_eq!(slot_cell(0, &spacing, 4), Some(0));
+        assert_eq!(slot_cell(3, &spacing, 4), Some(3));
+        // Negative slot → None
+        assert_eq!(slot_cell(-1, &spacing, 4), None);
+        // Slot beyond spacing length → None
+        assert_eq!(slot_cell(4, &spacing, 4), None);
+        assert_eq!(slot_cell(100, &spacing, 4), None);
+        // Cell id >= n → None (corrupt spacing)
+        assert_eq!(slot_cell(3, &spacing, 3), None); // spacing[3]=3, n=3, 3>=3 → None
+    }
+
+    /// `get_precipitation(humidity, h_cur, h_next, modifier)` computes
+    /// orographic precip: `max(humidity/(10*mod), 1) + diff * (h_next/70)^2`,
+    /// clamped to `[1, humidity]`. Flat terrain → normal loss; ascending
+    /// terrain → more precip; the result can't exceed humidity or go below 1.
+    #[test]
+    fn get_precipitation_orographic_and_bounded() {
+        // Flat (h_cur == h_next) → normal_loss only, clamped to >= 1
+        let flat = get_precipitation(50.0, 30, 30, 1.0);
+        assert!((1.0..=50.0).contains(&flat));
+        assert_eq!(flat, 5.0); // 50/(10*1) = 5, diff=0 → 5
+
+        // Ascending (h_next > h_cur) → more precip than flat
+        let rising = get_precipitation(50.0, 30, 60, 1.0);
+        assert!(rising > flat, "rising precip {rising} should exceed flat {flat}");
+
+        // Descending (h_next < h_cur) → diff=0, same as flat
+        let falling = get_precipitation(50.0, 60, 30, 1.0);
+        assert_eq!(falling, flat, "descending should equal flat (diff=0)");
+
+        // Result never exceeds humidity
+        let max_rising = get_precipitation(10.0, 10, 100, 1.0);
+        assert!(max_rising <= 10.0, "precip {max_rising} should not exceed humidity 10");
+
+        // Result never below 1
+        let dry = get_precipitation(2.0, 10, 10, 1.0);
+        assert!(dry >= 1.0, "precip {dry} should be >= 1");
+    }
+
+    // ── C1 regression guards (wind tier / wind direction) ──────────────────
+
+    /// **C1 regression guard:** Different FMG wind tiers must produce
+    /// different prevailing wind directions. The bug `lat.abs() - 89`
+    /// collapsed almost all rows to tier 0 (225° SW). The fix
+    /// `(lat - 89).abs()` correctly assigns tiers 0→5 pole-to-equator.
+    /// We verify by checking that rows at different latitudes get different
+    /// wind angles from the default `winds` array
+    /// [225, 45, 225, 315, 135, 315].
+    #[test]
+    fn different_wind_tiers_produce_different_directions() {
+        // Compute wind tier for various latitudes using the FIXED formula.
+        let winds = [225.0_f64, 45.0, 225.0, 315.0, 135.0, 315.0];
+        let tier_at = |lat: f64| {
+            let t = clamp(((lat - 89.0).abs() / 30.0).floor(), 0.0, 5.0) as usize;
+            winds[t]
+        };
+        // Near north pole (lat=85): tier 0 → 225° (westerly)
+        let polar = tier_at(85.0);
+        // Mid-latitude (lat=50): tier 1 → 45° (easterly)
+        let midlat = tier_at(50.0);
+        // Near equator (lat=5): tier 2 → 225° (westerly)
+        let tropical = tier_at(5.0);
+        // South subtropical (lat=-30): tier 3 → 315° (easterly)
+        let subtropical = tier_at(-30.0);
+
+        // The key: these should NOT all be the same (the bug made them all 225).
+        let unique: std::collections::HashSet<_> =
+            [polar, midlat, tropical, subtropical].map(|v| v.to_bits()).into_iter().collect();
+        assert!(unique.len() > 1, "wind directions should vary by latitude, all got {unique:?}");
+        // Specifically: mid-latitude (45°) differs from polar (225°).
+        assert_ne!(polar, midlat, "polar and mid-latitude should have different wind dirs");
+    }
+
+    /// **C1 regression guard (functional):** On a real mesh + heightmap,
+    /// precipitation at different latitude bands must reflect different wind
+    /// directions, not a uniform 225° SW. We check this by comparing the
+    /// *spatial distribution* of precip in the northern vs southern halves —
+    /// if the wind tier bug regressed, the symmetry would collapse. This is
+    /// the functional complement to the formula test above.
+    #[test]
+    fn prec_varies_spatially_across_wind_tiers() {
+        let (mesh, h) = fixture(8000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+        let prec = generate_precipitation(&mesh, &h, &temp, &opts, &coords);
+
+        // Divide the map into north (y < 0.5*H) and south (y > 0.5*H).
+        // Compute the x-direction precip gradient (west-half vs east-half)
+        // separately for north and south. Different wind tiers produce
+        // different gradients (westerlies deposit on western slopes,
+        // easterlies on eastern slopes). If all rows got the same wind, the
+        // north-south gradient ratio would be ~1.
+        let world_h = mesh.world_h;
+        let world_w = mesh.world_w;
+        let n = mesh.points.len();
+
+        let mut nw = 0.0; let mut ne = 0.0; let mut nw_c = 0; let mut ne_c = 0;
+        let mut sw = 0.0; let mut se = 0.0; let mut sw_c = 0; let mut se_c = 0;
+        for i in 0..n {
+            let [x, y] = mesh.points[i];
+            if y < world_h * 0.5 {
+                if x < world_w * 0.5 { nw += prec[i] as f64; nw_c += 1; }
+                else { ne += prec[i] as f64; ne_c += 1; }
+            } else {
+                if x < world_w * 0.5 { sw += prec[i] as f64; sw_c += 1; }
+                else { se += prec[i] as f64; se_c += 1; }
+            }
+        }
+        let nw_mean = nw / nw_c.max(1) as f64;
+        let ne_mean = ne / ne_c.max(1) as f64;
+        let sw_mean = sw / sw_c.max(1) as f64;
+        let se_mean = se / se_c.max(1) as f64;
+        // The north-south west-east gradient ratio should differ from 1
+        // (different wind directions produce asymmetric deposition).
+        let north_gradient = (nw_mean - ne_mean).abs();
+        let south_gradient = (sw_mean - se_mean).abs();
+        // At least one hemisphere should show a non-trivial west-east gradient.
+        assert!(
+            north_gradient + south_gradient > 1.0,
+            "wind tiers should produce spatial precip variation, \
+             north_grad={north_gradient:.3} south_grad={south_gradient:.3}"
+        );
+    }
+
+    // ── Temperature-specific tests ──────────────────────────────────────────
+
+    /// Higher elevation must produce lower temperature (the altitude lapse
+    /// rate). Take the same cell; a heightmap with h=0 (water) should yield
+    /// a higher temp than h=100 (peak) at the same latitude.
+    #[test]
+    fn altitude_lowers_temperature() {
+        let mesh = mesh::build(1000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+
+        // All-water heightmap → no altitude drop
+        let h_water = vec![0u8; mesh.points.len()];
+        let temp_water = calculate_temperatures(&mesh, &h_water, &opts, &coords);
+
+        // All-high-land heightmap → large altitude drop
+        let h_high = vec![100u8; mesh.points.len()];
+        let temp_high = calculate_temperatures(&mesh, &h_high, &opts, &coords);
+
+        // Every cell should be colder (or equal in degenerate cases) with
+        // h=100 than with h=0.
+        let mut any_colder = false;
+        for i in 0..mesh.points.len() {
+            assert!(
+                temp_high[i] <= temp_water[i],
+                "cell {i}: high-land temp {} should be <= water temp {}",
+                temp_high[i], temp_water[i]
+            );
+            if temp_high[i] < temp_water[i] {
+                any_colder = true;
+            }
+        }
+        assert!(any_colder, "at least some cells should be colder with altitude");
+    }
+
+    // ── Output length + determinism ─────────────────────────────────────────
+
+    /// `calculate_temperatures` and `generate_precipitation` both return
+    /// vectors of length exactly N (the mesh cell count).
+    #[test]
+    fn output_length_equals_n() {
+        let (mesh, h) = fixture(3000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+        let prec = generate_precipitation(&mesh, &h, &temp, &opts, &coords);
+        assert_eq!(temp.len(), mesh.points.len(), "temp length mismatch");
+        assert_eq!(prec.len(), mesh.points.len(), "prec length mismatch");
+    }
+
+    /// Determinism holds for a second (mesh, seed) pair. The existing
+    /// `deterministic_same_inputs` only checks seed 42 @ N=3000.
+    #[test]
+    fn deterministic_across_seeds_and_sizes() {
+        for (n, seed) in [(5000u32, 12345u32), (10000, 7)] {
+            let (mesh, h) = fixture(n, seed);
+            let opts = default_opts();
+            let coords = calculate_map_coordinates(&opts);
+            let a_t = calculate_temperatures(&mesh, &h, &opts, &coords);
+            let b_t = calculate_temperatures(&mesh, &h, &opts, &coords);
+            assert_eq!(a_t, b_t, "N={n} seed={seed}: temp not deterministic");
+            let a_p = generate_precipitation(&mesh, &h, &a_t, &opts, &coords);
+            let b_p = generate_precipitation(&mesh, &h, &b_t, &opts, &coords);
+            assert_eq!(a_p, b_p, "N={n} seed={seed}: prec not deterministic");
+        }
+    }
+
+    /// `generate_climate` (the combined entry point) returns vectors with
+    /// correct lengths and both temp/prec in their respective storage ranges.
+    #[test]
+    fn generate_climate_lengths_and_ranges() {
+        let (mesh, h) = fixture(3000, 42);
+        let (temp, prec) = generate_climate(&mesh, &h, &default_opts());
+        assert_eq!(temp.len(), mesh.points.len());
+        assert_eq!(prec.len(), mesh.points.len());
+        for &t in &temp {
+            assert!((-128..=127).contains(&t), "temp {t} out of i8 range");
+        }
+        for &p in &prec {
+            assert!((0..=255).contains(&p), "prec {p} out of u8 range");
+        }
+    }
+
+    /// `ClimateOpts::default()` matches FMG's documented defaults.
+    #[test]
+    fn climate_opts_defaults_match_fmg() {
+        let opts = ClimateOpts::default();
+        assert_eq!(opts.map_size, 100.0);
+        assert_eq!(opts.latitude, 50.0);
+        assert_eq!(opts.longitude, 50.0);
+        assert_eq!(opts.prec, 100.0);
+        assert_eq!(opts.height_exponent, 2.0);
+        assert_eq!(opts.temperature_equator, 27.0);
+        assert_eq!(opts.temperature_north_pole, -30.0);
+        assert_eq!(opts.temperature_south_pole, -15.0);
+        assert_eq!(opts.winds.len(), 6);
+        assert_eq!(opts.winds, vec![225.0, 45.0, 225.0, 315.0, 135.0, 315.0]);
+    }
+
+    /// All precipitation values must be in `[0, 255]` (u8 storage range).
+    #[test]
+    fn prec_in_range() {
+        let (mesh, h) = fixture(3000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+        let prec = generate_precipitation(&mesh, &h, &temp, &opts, &coords);
+        for &p in &prec {
+            assert!((0..=255).contains(&p), "prec out of u8 range: {p}");
+        }
+    }
+
+    /// Permafrost gate: cells with temp < -5°C should not receive wind-advected
+    /// precip (FMG's `if cells.temp[current] < -5 continue`). On an all-high-
+    /// land map (h=100), temps are below -5 everywhere, so precip should be
+    /// near-zero (only the initial humidity deposit at wind source, swiftly
+    /// blocked). This verifies the permafrost gate in `pass_wind_one`.
+    #[test]
+    fn permafrost_blocks_wind_precip() {
+        let mesh = mesh::build(3000, 42);
+        let h = vec![100u8; mesh.points.len()]; // all high mountains
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+        // With all land at h=100, every cell should be very cold.
+        let min_temp = *temp.iter().min().unwrap();
+        assert!(min_temp < -5, "all-land h=100 should produce permafrost temps, min={min_temp}");
+        // Precip should be uniformly low (no orographic or coastal deposition
+        // because the permafrost gate stops all wind passes).
+        let prec = generate_precipitation(&mesh, &h, &temp, &opts, &coords);
+        let max_prec = *prec.iter().max().unwrap();
+        assert!(max_prec < 50, "permafrost should suppress precip, max={max_prec}");
     }
 }

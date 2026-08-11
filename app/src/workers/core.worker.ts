@@ -122,7 +122,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 		} else if (req.kind === "generate_climate") {
 			// Step 1.3: temperature + precipitation from a Mesh + heightmap.
 			// Returns { temp: Int8Array, prec: Uint8Array }.
-			const result = generate_climate(req.mesh, req.heightmap as Uint8Array, req.opts ?? {});
+			const result = generate_climate(
+				req.mesh,
+				req.heightmap as Uint8Array,
+				req.opts ?? {},
+			);
 			send({ kind: "generate_climate", reqId, ok: true, result });
 		} else if (req.kind === "generate_climate_for_grid") {
 			// Step 1.3 (grid form): runs climate over an existing Grid and

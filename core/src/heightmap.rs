@@ -170,9 +170,7 @@ fn point_in_range(rng: &mut StdRng, range: &str, length: f64) -> Option<f64> {
     if !range.is_ascii() {
         return None;
     }
-    let Some((a, b)) = range.split_once('-') else {
-        return None;
-    };
+    let (a, b) = range.split_once('-')?;
     let Ok(min_pct) = a.trim().parse::<f64>() else {
         return None;
     };
@@ -590,6 +588,7 @@ fn multiply_land(h: &mut [u8], mult: f64) {
 /// A single parsed template step. (We only implement the tools the default
 /// sequence uses — Hill/Pit/Range/Trough/Smooth/Mask — kept minimal and
 /// deterministic.)
+#[derive(Debug)]
 enum Tool {
     Hill,
     Pit,
@@ -1003,5 +1002,385 @@ mod tests {
                 nh
             );
         }
+    }
+
+    // ── Direct helper unit tests ───────────────────────────────────────────
+    // The private helpers below were previously exercised only transitively
+    // through full `generate()` runs. Direct tests pin their contracts so a
+    // regression in the clamp/round math, range parser, power tables, or
+    // spatial index is caught without needing to reverse-engineer a seed that
+    // happens to trigger the relevant branch.
+
+    /// `lim(v)` clamps to `[0,100]` and rounds to nearest integer (ties to
+    /// even per IEEE-754). FMG `lim` is exactly this. Edge cases: negative
+    /// inputs floor to 0; >100 ceil to 100; 0.5 rounds to 1; 100.5 rounds
+    /// to 100 (clamp wins before round). These are the quantization
+    /// boundaries every flood primitive relies on.
+    #[test]
+    fn lim_clamp_and_round() {
+        assert_eq!(lim(-10.0), 0);
+        assert_eq!(lim(-0.1), 0);
+        assert_eq!(lim(0.0), 0);
+        assert_eq!(lim(0.4), 0);
+        assert_eq!(lim(0.5), 1); // rounds to nearest
+        assert_eq!(lim(0.6), 1);
+        assert_eq!(lim(49.5), 50);
+        assert_eq!(lim(100.0), 100);
+        assert_eq!(lim(100.4), 100);
+        assert_eq!(lim(100.5), 100); // clamp before round: 100.5 → clamp → 100
+        assert_eq!(lim(150.0), 100);
+    }
+
+    /// `get_number_in_range` parses FMG range strings. Key contracts:
+    /// - Empty string → 0.
+    /// - Pure integer literal (e.g. `"42"`) → exactly that integer.
+    /// - Pure float literal (e.g. `"3.7"`) → integer part + 1 w.p. frac (3.7 → 3 or 4, 0.7 prob of 4).
+    /// - Negative literal (e.g. `"-2"`) → negative integer.
+    /// - Range `"a-b"` (e.g. `"90-100"`) → uniform integer in `[a, b]` inclusive.
+    /// - Negative range `"-2-5"` → sign applies ONLY to first bound (lo=-2, hi=5), not both (adversarial review L8).
+    /// - Invalid/unparsable → 0 (defensive).
+    /// - Determinism: same RNG state + same input → same output (tested via paired RNGs).
+    #[test]
+    fn get_number_in_range_parses_all_forms() {
+        let mut rng1 = StdRng::seed_from_u64(1);
+        let mut rng2 = StdRng::seed_from_u64(1);
+
+        // Empty string
+        assert_eq!(get_number_in_range(&mut rng1, ""), 0.0);
+
+        // Pure integer
+        assert_eq!(get_number_in_range(&mut rng1, "42"), 42.0);
+
+        // Pure float with fraction → probabilistic (test determinism by pairing RNGs)
+        // We can't assert exact value, but paired RNGs must agree.
+        let a = get_number_in_range(&mut rng1, "3.7");
+        let b = get_number_in_range(&mut rng2, "3.7");
+        assert_eq!(a, b, "fractional literal must be deterministic");
+        assert!((3.0..=4.0).contains(&a), "3.7 must yield 3 or 4");
+
+        // Negative literal
+        assert_eq!(get_number_in_range(&mut rng1, "-5"), -5.0);
+
+        // Standard range "a-b"
+        let mut rng3 = StdRng::seed_from_u64(2);
+        let mut rng4 = StdRng::seed_from_u64(2);
+        for _ in 0..50 {
+            let x = get_number_in_range(&mut rng3, "90-100");
+            let y = get_number_in_range(&mut rng4, "90-100");
+            assert_eq!(x, y, "range must be deterministic");
+            assert!((90.0..=100.0).contains(&x), "90-100 must yield [90,100]");
+        }
+
+        // Negative range "-2-5" → sign only on first bound (lo=-2, hi=5)
+        // This is the L8 fix: previously sign was applied to both bounds.
+        let mut rng5 = StdRng::seed_from_u64(3);
+        let mut rng6 = StdRng::seed_from_u64(3);
+        for _ in 0..50 {
+            let x = get_number_in_range(&mut rng5, "-2-5");
+            let y = get_number_in_range(&mut rng6, "-2-5");
+            assert_eq!(x, y, "negative range must be deterministic");
+            assert!((-2.0..=5.0).contains(&x), "-2-5 must yield [-2,5], got {x}");
+        }
+
+        // Malformed → 0 (defensive)
+        assert_eq!(get_number_in_range(&mut rng1, "not-a-number"), 0.0);
+        assert_eq!(get_number_in_range(&mut rng1, "10-"), 0.0);
+    }
+
+    /// `point_in_range("min-max", length)` maps a percentage range to a
+    /// world-space coordinate. Returns `None` on non-ASCII or unparsable.
+    /// Degenerate `max <= min` returns `Some(min)`. Exact match (`50-50`)
+    /// returns that exact coordinate. Note: `"10-"` parses as min=10, max=10
+    /// (the empty second part defaults to min), so it returns Some(min) not
+    /// None. Deterministic for same RNG state.
+    #[test]
+    fn point_in_range_maps_percentages() {
+        let mut rng1 = StdRng::seed_from_u64(4);
+        let mut rng2 = StdRng::seed_from_u64(4);
+        let len = 1000.0;
+
+        // Standard range
+        let a = point_in_range(&mut rng1, "10-90", len);
+        let b = point_in_range(&mut rng2, "10-90", len);
+        assert!(a.is_some() && b.is_some());
+        assert_eq!(a, b, "deterministic");
+        let v = a.unwrap();
+        assert!((100.0..=900.0).contains(&v), "10-90% of 1000 → [100,900], got {v}");
+
+        // Degenerate max <= min → Some(min)
+        assert_eq!(point_in_range(&mut rng1, "50-50", len), Some(500.0));
+        assert_eq!(point_in_range(&mut rng1, "80-20", len), Some(800.0));
+        // "10-" → second part empty → defaults to min_pct (10) → max=min → Some(min)
+        assert_eq!(point_in_range(&mut rng1, "10-", len), Some(100.0));
+
+        // Non-ASCII / unparsable → None
+        assert!(point_in_range(&mut rng1, "not-a-range", len).is_none());
+    }
+
+    /// `get_blob_power` / `get_line_power` tables are monotonic-ish (larger
+    /// N → higher power, i.e. slower decay) and have a fallback for N beyond
+    /// the table (0.98 / 0.81). The fallback ensures no panic at arbitrary
+    /// future cell counts. These tables are copied verbatim from FMG.
+    #[test]
+    fn blob_and_line_power_tables() {
+        // Sample points from the table
+        assert_eq!(get_blob_power(1000), 0.93);
+        assert_eq!(get_blob_power(2000), 0.95);
+        assert_eq!(get_blob_power(60000), 0.995);
+        // Fallback beyond table max (100000)
+        assert_eq!(get_blob_power(200000), 0.98);
+        assert_eq!(get_line_power(1000), 0.75);
+        assert_eq!(get_line_power(2000), 0.77);
+        assert_eq!(get_line_power(60000), 0.87);
+        assert_eq!(get_line_power(200000), 0.81);
+        // Monotonic-ish: larger N generally → larger power (not strictly
+        // monotonic at every step, but the trend is upward).
+        assert!(get_blob_power(30000) >= get_blob_power(5000));
+        assert!(get_line_power(30000) >= get_line_power(5000));
+    }
+
+    /// `find_grid_cell` must map world-space `(x,y)` to a *spatially-close*
+    /// cell id via the real `cells.spacing` grid (M7 fix). Queries near the
+    /// four corners must return cells near those corners, not arbitrary cells
+    /// from a RowMajor(√N) heuristic. OOB coordinates clamp to the nearest
+    /// grid slot rather than panic. (Uses same 3× slot threshold as the mesh
+    /// test `spacing_corners_map_nearby_cells`.)
+    #[test]
+    fn find_grid_cell_is_spatially_faithful() {
+        let mesh = mesh::build(3000, 42);
+        let view = MeshView::from_mesh(&mesh);
+        let n = view.points.len();
+        let sx = view.world_w / view.cells.cells_x as f64;
+        let sy = view.world_h / view.cells.cells_y as f64;
+        const THRESH: f64 = 3.0; // matches mesh test threshold
+
+        // Top-left corner (slot 0,0)
+        let tl = find_grid_cell(&view, 0.0, 0.0);
+        assert!(tl < n, "tl cell id {tl} out of bounds");
+        let [tl_x, tl_y] = view.points[tl];
+        assert!(tl_x < THRESH * sx && tl_y < THRESH * sy, "tl cell at ({tl_x},{tl_y}) should be near (0,0)");
+
+        // Bottom-right corner (last slot)
+        let br = find_grid_cell(&view, view.world_w - 1.0, view.world_h - 1.0);
+        assert!(br < n);
+        let [br_x, br_y] = view.points[br];
+        assert!(br_x > view.world_w - THRESH * sx && br_y > view.world_h - THRESH * sy, "br cell at ({br_x},{br_y}) should be near ({},{})", view.world_w, view.world_h);
+
+        // Center
+        let center = find_grid_cell(&view, view.world_w / 2.0, view.world_h / 2.0);
+        let [cx, cy] = view.points[center];
+        assert!((cx - view.world_w / 2.0).abs() < THRESH * sx && (cy - view.world_h / 2.0).abs() < THRESH * sy);
+
+        // OOB negative coordinates clamp to slot 0 (top-left)
+        let oob_neg = find_grid_cell(&view, -100.0, -100.0);
+        assert!(oob_neg < n);
+
+        // OOB beyond world clamp to last slot
+        let oob_pos = find_grid_cell(&view, view.world_w + 100.0, view.world_h + 100.0);
+        assert!(oob_pos < n);
+    }
+
+    /// `build_range` constructs a ridge path from `start` to `end` by greedy
+    /// neighbor walk minimizing squared distance to `end`, with a `randomness`
+    /// chance to halve the distance. Contracts: path starts at `start`,
+    /// ends at `end` (or stops if no unvisited neighbor), contains no
+    /// duplicate cells, and distance to `end` generally decreases along the
+    /// path (stochastic `randomness` may occasionally increase it, but it must
+    /// terminate). We test the deterministic core by setting `randomness=0.0`.
+    #[test]
+    fn build_range_walks_to_end() {
+        let mesh = mesh::build(1000, 42);
+        let view = MeshView::from_mesh(&mesh);
+        let mut rng = StdRng::seed_from_u64(5);
+        let start = 100;
+        let end = 500;
+        let path = build_range(&view, &mut rng, start, end, 0.0); // deterministic
+        assert!(!path.is_empty());
+        assert_eq!(path[0], start, "path must start at start");
+        assert_eq!(*path.last().unwrap(), end, "path must reach end (with randomness=0)");
+        // No duplicates
+        let mut seen = std::collections::HashSet::new();
+        for &c in &path {
+            assert!(seen.insert(c), "duplicate cell {c} in ridge path");
+        }
+        // Distance to end should generally decrease (monotonic when randomness=0)
+        let points = &view.points;
+        let end_pt = points[end];
+        let mut prev_dist = f64::INFINITY;
+        for &c in &path {
+            let p = points[c];
+            let dx = p[0] - end_pt[0];
+            let dy = p[1] - end_pt[1];
+            let dist = dx * dx + dy * dy;
+            if dist > prev_dist {
+                // With randomness=0, greedy walk should be monotonic.
+                panic!("distance to end increased at cell {c}: {dist} > {prev_dist} (randomness=0)");
+            }
+            prev_dist = dist;
+        }
+    }
+
+    /// `add_hill` must raise the seed cell (and neighbors via BFS) above the
+    /// water baseline. After a hill on a flat zero map, the start cell is
+    /// strictly higher than the untouched baseline (0). `add_ridge` with
+    /// `raise=true` (Range) raises a path; `raise=false` (Trough) lowers it.
+    #[test]
+    fn add_hill_raises_and_add_ridge_raise_vs_trough() {
+        let mesh = mesh::build(1000, 42);
+        let view = MeshView::from_mesh(&mesh);
+        let mut rng = StdRng::seed_from_u64(6);
+        let n = view.points.len();
+        let blob_power = get_blob_power(n);
+        let line_power = get_line_power(n);
+        let hill_budget = n / 10;
+        let ridge_budget = n / 10;
+
+        // add_hill on flat zero map
+        let mut h = vec![0u8; n];
+        let start = 200;
+        add_hill(&view, &mut h, &mut rng, start, blob_power, hill_budget);
+        assert!(h[start] > 0, "hill start cell should be > 0, got {}", h[start]);
+        // Some neighbors also raised (BFS spread)
+        let lo = view.cells.i[start] as usize;
+        let hi = view.cells.i[start + 1] as usize;
+        let any_neighbor_raised = view.cells.c[lo..hi].iter().any(|&c| h[c as usize] > 0);
+        assert!(any_neighbor_raised, "hill should spread to at least one neighbor");
+
+        // add_ridge raise=true (Range) — path cells go up
+        let mut rng2 = StdRng::seed_from_u64(7);
+        let mut h2 = vec![0u8; n];
+        let start2 = 100;
+        let end2 = 400;
+        add_ridge(&view, &mut h2, &mut rng2, start2, end2, 0.0, line_power, true, ridge_budget);
+        assert!(h2[start2] > 0, "ridge start should be raised");
+        assert!(h2[end2] > 0, "ridge end should be raised");
+
+        // add_ridge raise=false (Trough) — path cells go down (below 0 → clamp to 0,
+        // but the change is negative so neighbors are lower than untouched)
+        let mut rng3 = StdRng::seed_from_u64(8);
+        let mut h3 = vec![50u8; n]; // flat at 50
+        add_ridge(&view, &mut h3, &mut rng3, start2, end2, 0.0, line_power, false, ridge_budget);
+        assert!(h3[start2] < 50, "trough start should be lowered from 50, got {}", h3[start2]);
+        assert!(h3[end2] < 50, "trough end should be lowered from 50, got {}", h3[end2]);
+    }
+
+    /// `multiply_land` scales only cells ≥ SEA_LEVEL (land). Water cells
+    /// (<20) are untouched. The math: `new = (old - 20) * mult + 20`, clamped
+    /// to [0,100]. A multiplier of 1.0 is identity; 2.0 doubles the height
+    /// above sea level; 0.5 halves it.
+    #[test]
+    fn multiply_land_only_affects_land() {
+        let mut h = vec![
+            0u8,  // deep water
+            10,   // shallow water
+            20,   // exactly at sea level (land)
+            30,   // land
+            80,   // high land
+            100,  // peak
+        ];
+        let original = h.clone();
+        multiply_land(&mut h, 2.0);
+        // Water unchanged
+        assert_eq!(h[0], 0);
+        assert_eq!(h[1], 10);
+        // Sea level: (20-20)*2 + 20 = 20
+        assert_eq!(h[2], 20);
+        // 30: (30-20)*2 + 20 = 40
+        assert_eq!(h[3], 40);
+        // 80: (80-20)*2 + 20 = 140 → clamp 100
+        assert_eq!(h[4], 100);
+        // 100: (100-20)*2 + 20 = 180 → clamp 100
+        assert_eq!(h[5], 100);
+
+        // Identity multiplier
+        let mut h2 = original.clone();
+        multiply_land(&mut h2, 1.0);
+        assert_eq!(h2, original);
+
+        // Halve
+        let mut h3 = original.clone();
+        multiply_land(&mut h3, 0.5);
+        assert_eq!(h3[2], 20);     // sea level unchanged
+        assert_eq!(h3[3], 25);     // (30-20)*0.5 + 20 = 25
+        assert_eq!(h3[4], 50);     // (80-20)*0.5 + 20 = 50
+        assert_eq!(h3[5], 60);     // (100-20)*0.5 + 20 = 60
+    }
+
+    /// `parse_template` + `default_template` produce exactly 8 steps with the
+    /// expected tool tags and non-empty count ranges. This guards against
+    /// accidental template corruption.
+    #[test]
+    fn default_template_parses_correctly() {
+        let steps = parse_template(default_template());
+        assert_eq!(steps.len(), 8);
+        let tools: Vec<_> = steps.iter().map(|s| match s.tool {
+            Tool::Hill => "Hill",
+            Tool::Pit => "Pit",
+            Tool::Range => "Range",
+            Tool::Trough => "Trough",
+            Tool::Smooth => "Smooth",
+            Tool::Mask => "Mask",
+            Tool::Multiply => "Multiply",
+        }).collect();
+        assert_eq!(tools, ["Hill", "Range", "Range", "Range", "Trough", "Pit", "Smooth", "Mask"]);
+        // Count fields present
+        for s in &steps {
+            assert!(!s.a2.is_empty(), "count field (a2) missing for {:?}", s.tool);
+        }
+    }
+
+    /// `generate(&mesh, seed)` returns a `Vec<u8>` of length exactly N (the
+    /// mesh's cell count). This is an explicit contract — downstream `Grid`
+    /// construction expects `h.len() == N`.
+    #[test]
+    fn generate_output_length_equals_n() {
+        for n in [1000u32, 3000, 10000, 60000] {
+            let mesh = mesh::build(n, 42);
+            let h = generate(&mesh, 42);
+            assert_eq!(h.len(), mesh.points.len(), "N={n}: output length mismatch");
+        }
+    }
+
+    /// Determinism holds for a second (mesh, seed) pair. The existing
+    /// `deterministic_same_seed` only checks seed 42 @ N=2000. This test
+    /// confirms bit-identical output across runs for a different seed and
+    /// cell count, catching any path that accidentally depends on absolute
+    /// seed value or mesh size rather than treating the RNG as an opaque key.
+    #[test]
+    fn deterministic_across_seeds_and_sizes() {
+        for (n, seed) in [(1500u32, 12345u64), (5000, 99999), (10000, 7)] {
+            let mesh = mesh::build(n, seed as u32);
+            let a = generate(&mesh, seed);
+            let b = generate(&mesh, seed);
+            assert_eq!(a, b, "N={n} seed={seed}: heightmap not deterministic");
+        }
+    }
+
+    /// `p(rng, prob)` returns `true` with the given probability. Boundary
+    /// conditions: prob >= 1.0 → always true; prob <= 0.0 → always false.
+    /// In-range: statistical sanity (not exact, but paired RNGs must agree).
+    #[test]
+    fn p_probability_boundaries() {
+        let mut rng1 = StdRng::seed_from_u64(10);
+        // >= 1.0 always true
+        for _ in 0..10 {
+            assert!(p(&mut rng1, 1.0));
+            assert!(p(&mut rng1, 1.5));
+        }
+        // <= 0.0 always false
+        for _ in 0..10 {
+            assert!(!p(&mut rng1, 0.0));
+            assert!(!p(&mut rng1, -0.5));
+        }
+        // In-range: paired RNGs produce identical sequences
+        let mut rng3 = StdRng::seed_from_u64(11);
+        let mut rng4 = StdRng::seed_from_u64(11);
+        for _ in 0..100 {
+            assert_eq!(p(&mut rng3, 0.5), p(&mut rng4, 0.5));
+        }
+        // Prob 0.5 should produce ~50% true (very loose bound)
+        let mut rng5 = StdRng::seed_from_u64(12);
+        let trues = (0..1000).filter(|_| p(&mut rng5, 0.5)).count();
+        assert!((400..=600).contains(&trues), "0.5 prob yielded {trues}/1000 true");
     }
 }
