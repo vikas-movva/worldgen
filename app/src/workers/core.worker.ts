@@ -3,7 +3,14 @@
 // Step 1.1: exports `generate_mesh(cell_count, seed)` → Mesh.
 // Later phases: generate_world, project_world, edit_heightmap, recompute_dependents, generate_timeline.
 
-import init, { add, generate_mesh } from "../core/worldgen_core.js";
+import init, {
+	add,
+	build_grid_with_heightmap,
+	generate_climate,
+	generate_climate_for_grid,
+	generate_heightmap,
+	generate_mesh,
+} from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
 
@@ -16,7 +23,27 @@ function ensureWasm(): Promise<void> {
 
 type WorkerRequest =
 	| { kind: "add"; reqId: number; a: number; b: number }
-	| { kind: "generate_mesh"; reqId: number; cellCount: number; seed: number };
+	| { kind: "generate_mesh"; reqId: number; cellCount: number; seed: number }
+	| { kind: "generate_heightmap"; reqId: number; mesh: unknown; seed: number }
+	| {
+			kind: "build_grid_with_heightmap";
+			reqId: number;
+			mesh: unknown;
+			seed: number;
+	  }
+	| {
+			kind: "generate_climate";
+			reqId: number;
+			mesh: unknown;
+			heightmap: unknown;
+			opts?: unknown;
+	  }
+	| {
+			kind: "generate_climate_for_grid";
+			reqId: number;
+			grid: unknown;
+			opts?: unknown;
+	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
@@ -26,15 +53,43 @@ type Mesh = {
 		c: number[];
 		i: number[];
 		b: number[];
+		spacing: number[];
+		cells_x: number;
+		cells_y: number;
 	};
 	vertices: {
 		p: [number, number][];
+	};
+	world_w: number;
+	world_h: number;
+};
+
+// The Grid shape (serialized from Rust via serde-wasm-bindgen). M5 seam:
+// geometry + per-cell data. Only `cells.h` is populated until Steps 1.3/1.4
+// fill `temp`/`prec`/`biome`.
+type Grid = {
+	seed: number;
+	mesh: Mesh;
+	cells: {
+		h: number[];
+		temp: number[];
+		prec: number[];
+		biome: number[];
 	};
 };
 
 type WorkerResponse =
 	| { kind: "add"; reqId: number; ok: true; result: number }
 	| { kind: "generate_mesh"; reqId: number; ok: true; result: Mesh }
+	| { kind: "generate_heightmap"; reqId: number; ok: true; result: Uint8Array }
+	| { kind: "build_grid_with_heightmap"; reqId: number; ok: true; result: Grid }
+	| {
+			kind: "generate_climate";
+			reqId: number;
+			ok: true;
+			result: { temp: Int8Array; prec: Uint8Array };
+	  }
+	| { kind: "generate_climate_for_grid"; reqId: number; ok: true; result: Grid }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 let nextReqId = 1;
@@ -54,8 +109,26 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			const result = add(req.a, req.b);
 			send({ kind: "add", reqId, ok: true, result });
 		} else if (req.kind === "generate_mesh") {
-			const result = generate_mesh(req.cellCount, req.seed);
+			const result = generate_mesh(req.cellCount, req.seed >>> 0);
 			send({ kind: "generate_mesh", reqId, ok: true, result });
+		} else if (req.kind === "generate_heightmap") {
+			const result = generate_heightmap(req.mesh, req.seed >>> 0);
+			send({ kind: "generate_heightmap", reqId, ok: true, result });
+		} else if (req.kind === "build_grid_with_heightmap") {
+			// M5 seam: returns a full Grid (geometry + cells.h). Step 1.5 will
+			// chain this into the climate/biomes pipeline.
+			const result = build_grid_with_heightmap(req.mesh, req.seed >>> 0);
+			send({ kind: "build_grid_with_heightmap", reqId, ok: true, result });
+		} else if (req.kind === "generate_climate") {
+			// Step 1.3: temperature + precipitation from a Mesh + heightmap.
+			// Returns { temp: Int8Array, prec: Uint8Array }.
+			const result = generate_climate(req.mesh, req.heightmap as Uint8Array, req.opts ?? {});
+			send({ kind: "generate_climate", reqId, ok: true, result });
+		} else if (req.kind === "generate_climate_for_grid") {
+			// Step 1.3 (grid form): runs climate over an existing Grid and
+			// writes cells.temp/cells.prec back into it. Used by Step 1.5.
+			const result = generate_climate_for_grid(req.grid, req.opts ?? {});
+			send({ kind: "generate_climate_for_grid", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

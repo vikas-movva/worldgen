@@ -6,7 +6,7 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc -b && vite build",
-		"build:core": "cd .. && wasm-pack build core --target web --out-dir app/src/core",
+		"build:core": "cd .. && wasm-pack build core --target web --out-dir app/src/core && cp core/app/src/core/worldgen_core.js core/app/src/core/worldgen_core.d.ts core/app/src/core/worldgen_core_bg.wasm core/app/src/core/worldgen_core_bg.wasm.d.ts app/src/core/ && rm -rf core/app/src/core",
 		"lint": "biome check --write",
 		"preview": "vite preview",
 		"test": "vitest",

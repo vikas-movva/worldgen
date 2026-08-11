@@ -19,21 +19,146 @@ function App() {
 				const pointCount = mesh.points?.length ?? 0;
 				const cellCount = mesh.cells?.i?.length ? mesh.cells.i.length - 1 : 0;
 				const hasVertices = mesh.vertices?.p?.length > 0;
+				const pointsMatchCells = pointCount === cellCount;
+				const countsMatch = pointCount === 1000 && cellCount === 1000;
 				setResult(
 					`generateMesh(1000, 42): points=${pointCount}, cells=${cellCount}, vertices=${mesh.vertices?.p?.length ?? 0} ` +
-						`${pointCount === 1000 && cellCount === 1000 && hasVertices ? "✅ PASS" : "❌ FAIL"}`,
+						`${countsMatch && pointsMatchCells && hasVertices ? "✅ PASS" : "❌ FAIL"}`,
 				);
 			} catch (err) {
 				setResult(`Mesh Error: ${String(err)}`);
 			}
 		}
+		async function testHeightmap() {
+			try {
+				const mesh = await coreApi.generateMesh(1000, 42);
+				const h = await coreApi.generateHeightmap(mesh, 42);
+				const len = h?.length ?? 0;
+				// Validate range 0..100 and compute land fraction.
+				let inRange = true;
+				let land = 0;
+				for (let i = 0; i < len; i++) {
+					if (h[i] < 0 || h[i] > 100) inRange = false;
+					if (h[i] >= 20) land++;
+				}
+				const frac = len > 0 ? land / len : 0;
+				const rangeOk = inRange && len === 1000;
+				const landOk = frac > 0.2 && frac < 0.7;
+				setResult(
+					`generateHeightmap(1000, 42): len=${len}, landFrac=${frac.toFixed(3)} ` +
+						`${rangeOk && landOk ? "✅ PASS" : "❌ FAIL"}`,
+				);
+			} catch (err) {
+				setResult(`Heightmap Error: ${String(err)}`);
+			}
+			// Second seed (7) is the adversarial-review canary: the OLD code
+			// produced 0.804 land at N=1000 seed 7 (above the 0.70 band). A
+			// separate check catches regression even though the default UI shows
+			// seed 42 first.
+			try {
+				const mesh7 = await coreApi.generateMesh(1000, 7);
+				const h7 = await coreApi.generateHeightmap(mesh7, 7);
+				let land7 = 0;
+				for (let i = 0; i < h7.length; i++) if (h7[i] >= 20) land7++;
+				const frac7 = land7 / h7.length;
+				const ok7 = frac7 >= 0.2 && frac7 <= 0.7;
+				setResult(
+					(prev: string) =>
+						prev +
+						`  | seed7 landFrac=${frac7.toFixed(3)} ${ok7 ? "✅ PASS" : "❌ FAIL"}`,
+				);
+			} catch (err) {
+				setResult(
+					(prev: string) => prev + `  | seed7 Heightmap Error: ${String(err)}`,
+				);
+			}
+		}
+
+		async function testClimate() {
+			try {
+				const mesh = await coreApi.generateMesh(1000, 42);
+				const h = await coreApi.generateHeightmap(mesh, 42);
+				const climate = await coreApi.generateClimate(mesh, h);
+				const len = climate.temp?.length ?? 0;
+				const plen = climate.prec?.length ?? 0;
+				// Validate ranges and latitudinal structure.
+				let tempInRange = true;
+				let precInRange = true;
+				let landHot = false; // a high cell near a pole should be cooler than a low equatorial cell
+				let maxT = -128,
+					minT = 127,
+					maxP = 0,
+					minP = 255;
+				for (let i = 0; i < len; i++) {
+					const t = climate.temp[i];
+					if (t < -128 || t > 127) tempInRange = false;
+					maxT = Math.max(maxT, t);
+					minT = Math.min(minT, t);
+				}
+				for (let i = 0; i < plen; i++) {
+					const p = climate.prec[i];
+					if (p < 0 || p > 255) precInRange = false;
+					maxP = Math.max(maxP, p);
+					minP = Math.min(minP, p);
+				}
+				const lensOk = len === 1000 && plen === 1000;
+				const rangesOk = tempInRange && precInRange && lensOk;
+				// Equatorial sea-level cells should be warmer than polar ones.
+				const eqT = avgTempBand(mesh, h, climate.temp, 0.5);
+				const poleT = avgTempBand(mesh, h, climate.temp, 0.1, true);
+				landHot = eqT > poleT;
+				const structureOk = landHot && maxT - minT >= 10 && maxP - minP >= 10;
+				setResult(
+					(prev: string) =>
+						prev +
+						`  | climate: len=${len}, T[${minT},${maxT}] P[${minP},${maxP}] ` +
+						`eqT=${eqT.toFixed(1)} poleT=${poleT.toFixed(1)} ` +
+						`${rangesOk && structureOk ? "✅ PASS" : "❌ FAIL"}`,
+				);
+			} catch (err) {
+				setResult((prev: string) => prev + `  | climate Error: ${String(err)}`);
+			}
+		}
+
+		// Average temperature of sea-level cells in a band of the map.
+		// `fraction` selects a vertical slice; if `poles` is true, take the
+		// top/bottom `fraction` (near the map edges, = high |latitude|),
+		// otherwise the central `fraction` (near the equator).
+		function avgTempBand(
+			mesh: any,
+			h: Uint8Array,
+			temp: Int8Array,
+			fraction: number,
+			poles = false,
+		): number {
+			const pts = mesh.points as [number, number][];
+			const H = mesh.world_h as number;
+			let sum = 0,
+				n = 0;
+			for (let i = 0; i < pts.length; i++) {
+				if (h[i] >= 20) continue; // sea-level (water) only
+				const y = pts[i][1];
+				const rel = y / H; // 0 at top (north) .. 1 at bottom (south)
+				const inBand = poles
+					? rel < fraction || rel > 1 - fraction
+					: Math.abs(rel - 0.5) < fraction / 2;
+				if (inBand) {
+					sum += temp[i];
+					n++;
+				}
+			}
+			return n > 0 ? sum / n : 0;
+		}
+
 		testAdd();
 		testMesh();
+		testHeightmap();
+		testClimate();
 	}, []);
 
 	return (
 		<div style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-			<h1>Worldforge — Phase 0 Verification</h1>
+			<h1>Worldforge — Phase 1.3 Verification</h1>
 			<p style={{ fontSize: "1.25rem", fontWeight: "bold" }}>{result}</p>
 			<hr style={{ margin: "1.5rem 0" }} />
 			<p>

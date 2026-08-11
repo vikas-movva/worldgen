@@ -16,6 +16,7 @@ rand = { version = "0.8", features = ["std_rng"] }
 getrandom = { version = "0.2", features = ["js"] }
 spade = "2"
 console_error_panic_hook = "0.1"
+js-sys = "0.3"
 
 [profile.release]
 opt-level = "z"

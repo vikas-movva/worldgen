@@ -8,6 +8,44 @@
 export function add(a: number, b: number): number;
 
 /**
+ * Step 1.2 (world-assembly form): build a `Grid` from a deserialized `Mesh`
+ * and store the generated heightmap into `grid.cells.h`. This is the shape
+ * Step 1.5 (`generate_world`) will chain: mesh → heightmap → climate → biomes,
+ * each writing into the same `CellData` (adversarial review M5). Returns the
+ * `Grid` serialized as `JsValue` (just the geometry + `h` for now; the other
+ * `CellData` fields are zeroed until Steps 1.3/1.4 land). Exposed as
+ * `build_grid_with_heightmap(mesh, seed)` to JS for the Step 1.5 pipeline.
+ */
+export function build_grid_with_heightmap(mesh_js: any, seed: number): any;
+
+/**
+ * Step 1.3: produce `cells.temp` (Int8Array, °C) and `cells.prec` (Uint8Array)
+ * from a deserialized `Mesh` plus the heightmap `cells.h` (Uint8Array, 0..=100,
+ * `< 20` == water). Climate options are passed as a `JsValue` object whose
+ * fields are all optional (defaults mirror FMG). Returns
+ * `{ temp: Int8Array, prec: Uint8Array }`. Port of FMG `calculateTemperatures`
+ * + `generatePrecipitation` (see `climate.rs`).
+ */
+export function generate_climate(mesh_js: any, heightmap: Uint8Array, opts_js: any): any;
+
+/**
+ * Step 1.3 (grid form): run the climate pipeline over an already-built `Grid`
+ * (which carries both the mesh and `cells.h`) and write `cells.temp` /
+ * `cells.prec` back into the same `Grid`, returning the updated `Grid` as
+ * `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
+ * 1.1→1.4 into one `Grid`.
+ */
+export function generate_climate_for_grid(grid_js: any, opts_js: any): any;
+
+/**
+ * Step 1.2: generate the heightmap `cells.h` (Uint8Array, `0..=100`,
+ * `< 20` == water) from a deserialized `Mesh`. Seeded blob/pit/range/trough
+ * floods ported from FMG's `heightmap-generator.ts`. Exposed as
+ * `generate_heightmap(mesh, seed)` to JS.
+ */
+export function generate_heightmap(mesh_js: any, seed: number): Uint8Array;
+
+/**
  * Step 1.1: generate a deterministic Voronoi mesh from `cell_count` seeded
  * points. Returns a `JsValue` with fields `{ points, cells, vertices }`
  * matching the wire format defined in `mesh::Mesh`.
@@ -25,12 +63,18 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly add: (a: number, b: number) => number;
+    readonly build_grid_with_heightmap: (a: any, b: number) => any;
+    readonly generate_climate: (a: any, b: any, c: any) => any;
+    readonly generate_climate_for_grid: (a: any, b: any) => any;
+    readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
     readonly init: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_exn_store: (a: number) => void;
+    readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;
 }
 
