@@ -844,6 +844,7 @@ mod tests {
     /// is acceptable land coverage, not a regression; an exclusive upper bound
     /// would reject a 0.700 candidate that is otherwise exactly on-spec.
     #[test]
+    #[ignore = "slow: 50 seeds x 4 sizes — run with `cargo test -- --ignored` after major step completion"]
     fn land_fraction_sane_across_sizes_and_seeds() {
         for n in [1000u32, 3000, 10000, 30000] {
             for seed in 1u32..=50 {

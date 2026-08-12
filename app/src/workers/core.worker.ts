@@ -12,6 +12,7 @@ import init, {
 	generate_climate_for_grid,
 	generate_heightmap,
 	generate_mesh,
+	generate_world,
 } from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
@@ -57,6 +58,13 @@ type WorkerRequest =
 			kind: "generate_biomes_for_grid";
 			reqId: number;
 			grid: unknown;
+	  }
+	| {
+			kind: "generate_world";
+			reqId: number;
+			seed: number;
+			cellCount: number;
+			opts?: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -79,8 +87,10 @@ type Mesh = {
 };
 
 // The Grid shape (serialized from Rust via serde-wasm-bindgen). M5 seam:
-// geometry + per-cell data. Only `cells.h` is populated until Steps 1.3/1.4
-// fill `temp`/`prec`/`biome`.
+// geometry + per-cell data. Only `build_grid_with_heightmap` (Step 1.2 form)
+// returns a Grid with only `h` populated; `generate_climate_for_grid` /
+// `generate_biomes_for_grid` fill `temp`/`prec`/`biome`. `generate_world`
+// returns a fully-populated Grid.
 type Grid = {
 	seed: number;
 	mesh: Mesh;
@@ -111,6 +121,7 @@ type WorkerResponse =
 			ok: true;
 			result: Grid;
 	  }
+	| { kind: "generate_world"; reqId: number; ok: true; result: Grid }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 let nextReqId = 1;
@@ -168,6 +179,13 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			// writes cells.biome back into it. Used Within Step 1.5.
 			const result = generate_biomes_for_grid(req.grid);
 			send({ kind: "generate_biomes_for_grid", reqId, ok: true, result });
+		} else if (req.kind === "generate_world") {
+			// Step 1.5: the static world generation pipeline.
+			// Runs mesh → heightmap → climate → biomes in sequence.
+			// Clamp cellCount at worker boundary as defense-in-depth (C1).
+			const n = Math.max(4, Math.min(60_000, req.cellCount >>> 0));
+			const result = generate_world(req.seed >>> 0, n, req.opts ?? {});
+			send({ kind: "generate_world", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

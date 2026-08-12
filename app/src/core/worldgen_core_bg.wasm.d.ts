@@ -9,6 +9,7 @@ export const generate_climate: (a: any, b: any, c: any) => any;
 export const generate_climate_for_grid: (a: any, b: any) => any;
 export const generate_heightmap: (a: any, b: number) => any;
 export const generate_mesh: (a: number, b: number) => any;
+export const generate_world: (a: number, b: number, c: any) => any;
 export const init: () => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

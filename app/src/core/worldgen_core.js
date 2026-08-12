@@ -14,12 +14,10 @@ export function add(a, b) {
 
 /**
  * Step 1.2 (world-assembly form): build a `Grid` from a deserialized `Mesh`
- * and store the generated heightmap into `grid.cells.h`. This is the shape
- * Step 1.5 (`generate_world`) will chain: mesh → heightmap → climate → biomes,
- * each writing into the same `CellData` (adversarial review M5). Returns the
- * `Grid` serialized as `JsValue` (just the geometry + `h` for now; the other
- * `CellData` fields are zeroed until Steps 1.3/1.4 land). Exposed as
- * `build_grid_with_heightmap(mesh, seed)` to JS for the Step 1.5 pipeline.
+ * and store the generated heightmap into `grid.cells.h`. Returns a `Grid`
+ * with only `cells.h` populated (the other `CellData` fields are zeroed).
+ * The Phase 2.5 heightmap editor will call this to start a recompute chain.
+ * Exposed as `build_grid_with_heightmap(mesh, seed)` to JS.
  * @param {any} mesh_js
  * @param {number} seed
  * @returns {any}
@@ -49,8 +47,8 @@ export function generate_biomes(mesh_js, climate_js, heightmap) {
  * Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
  * (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
  * `cells.biome` back into the same `Grid`, returning the updated `Grid` as
- * `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
- * 1.1→1.4 into one `Grid`.
+ * `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
+ * recompute dependents incrementally.
  * @param {any} grid_js
  * @returns {any}
  */
@@ -80,8 +78,8 @@ export function generate_climate(mesh_js, heightmap, opts_js) {
  * Step 1.3 (grid form): run the climate pipeline over an already-built `Grid`
  * (which carries both the mesh and `cells.h`) and write `cells.temp` /
  * `cells.prec` back into the same `Grid`, returning the updated `Grid` as
- * `JsValue`. This is the form Step 1.5 (`generate_world`) will call to chain
- * 1.1→1.4 into one `Grid`.
+ * `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
+ * recompute dependents incrementally.
  * @param {any} grid_js
  * @param {any} opts_js
  * @returns {any}
@@ -115,6 +113,26 @@ export function generate_heightmap(mesh_js, seed) {
  */
 export function generate_mesh(cell_count, seed) {
     const ret = wasm.generate_mesh(cell_count, seed);
+    return ret;
+}
+
+/**
+ * Step 1.5: the static world generation pipeline.
+ * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
+ * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
+ * This is the single entry point the browser/worker calls for a complete world.
+ *
+ * - `seed`: u32, the world seed (clamped to u32::MAX at the JS boundary).
+ * - `cell_count`: u32, target cell count for the Voronoi mesh.
+ * - `opts_js`: optional `ClimateOpts` object (all fields optional, defaults mirror FMG).
+ * Returns the `Grid` serialized as `JsValue` via `serde_wasm_bindgen`.
+ * @param {number} seed
+ * @param {number} cell_count
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function generate_world(seed, cell_count, opts_js) {
+    const ret = wasm.generate_world(seed, cell_count, opts_js);
     return ret;
 }
 

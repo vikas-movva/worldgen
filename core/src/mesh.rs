@@ -116,7 +116,7 @@ pub struct Vertices {
 /// postMessage it (Phase 2 will replace the boundary with transferable
 /// TypedArrays for zero-copy — but the shape stays the same).
 pub fn build(cell_count: u32, seed: u32) -> Mesh {
-    let n = cell_count.max(4) as usize;
+    let n = cell_count.clamp(4, 1_000_000) as usize;
 
     // 1. Deterministic points in the world rectangle.
     let mut rng = StdRng::seed_from_u64(seed as u64);

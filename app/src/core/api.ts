@@ -46,8 +46,9 @@ export type Climate = {
 };
 
 // The Grid shape (serialized from Rust via serde-wasm-bindgen). M5 seam:
-// geometry + per-cell data. Only `cells.h` is populated until Steps 1.3/1.4
-// fill `temp`/`prec`/`biome`.
+// geometry + per-cell data. Only `build_grid_with_heightmap` (Step 1.2 form) returns a
+// Grid with only `h` populated; `generate_climate_for_grid`/`generate_biomes_for_grid`
+// fill `temp`/`prec`/`biome`. `generate_world` returns a fully-populated Grid.
 export type Grid = {
 	seed: number;
 	mesh: Mesh;
@@ -75,6 +76,18 @@ function clampSeed(seed: number): number {
 	return s >>> 0; // force unsigned 32-bit
 }
 
+/// Clamp a user-supplied cell_count into a safe range. The MVP caps at 60k
+/// (worldforge-technical-requirements.md); the Rust mesh clamps to [4, 1_000_000].
+/// Clamping at the JS boundary prevents a negative/overlarge value from
+/// coercing to u32::MAX and capacity-overflow-panicking the WASM module
+/// (adversarial review Phase 1.5 C1).
+function clampCellCount(n: number): number {
+	const v = Math.floor(Number.isFinite(n) ? n : 0);
+	if (v < 1) return 4; // minimum sane mesh for spade
+	if (v > 60_000) return 60_000; // MVP cap
+	return v >>> 0;
+}
+
 function call<T, R>(kind: string, payload: T): Promise<R> {
 	const reqId = nextId();
 	return new Promise((resolve, reject) => {
@@ -91,7 +104,7 @@ export const coreApi = {
 
   /** Step 1.1: generate a deterministic Voronoi mesh. */
   generateMesh(cellCount: number, seed: number): Promise<Mesh> {
-    return call("generate_mesh", { cellCount, seed: clampSeed(seed) });
+    return call("generate_mesh", { cellCount: clampCellCount(cellCount), seed: clampSeed(seed) });
   },
 
   /** Step 1.2: generate the heightmap (Uint8Array, 0-100, <20 = water) from a Mesh. */
@@ -120,7 +133,7 @@ export const coreApi = {
   /**
    * Step 1.3 (grid form): run climate over an existing Grid and write
    * `cells.temp`/`cells.prec` back, returning the updated Grid. Used by the
-   * Step 1.5 pipeline.
+   * Phase 2.5 heightmap editor's `recompute_dependents`.
    */
   generateClimateForGrid(grid: Grid, opts?: unknown): Promise<Grid> {
     return call("generate_climate_for_grid", { grid, opts: opts ?? {} });
@@ -145,15 +158,23 @@ export const coreApi = {
 
   /**
    * Step 1.4 (grid form): run biomes over an existing Grid and write
-   * `cells.biome` back, returning the updated Grid. Used by the Step 1.5
-   * pipeline.
+   * `cells.biome` back, returning the updated Grid. Used by the Phase 2.5
+   * heightmap editor's `recompute_dependents`.
    */
   generateBiomesForGrid(grid: Grid): Promise<Grid> {
     return call("generate_biomes_for_grid", { grid }) as Promise<Grid>;
   },
 
+  /**
+   * Step 1.5: the static world generation pipeline.
+   * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
+   * populated Grid (geometry + cells.h + cells.temp + cells.prec + cells.biome).
+   */
+  generateWorld(seed: number, cellCount: number, opts?: unknown): Promise<Grid> {
+    return call("generate_world", { seed: clampSeed(seed), cellCount: clampCellCount(cellCount), opts: opts ?? {} }) as Promise<Grid>;
+  },
+
   // Placeholders for future phases:
-  // generateWorld(seed, cellCount, opts): Promise<Grid>;
   // projectWorld(pack, timeline, year): Promise<WorldAt>;
   // editHeightmap(grid, ops): Promise<Grid>;
   // recomputeDependents(grid, opts): Promise<DependentResult>;

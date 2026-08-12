@@ -64,16 +64,19 @@ impl Grid {
     }
 
     /// Number of cells in the grid.
+    #[allow(dead_code)]
     pub fn cell_count(&self) -> usize {
         self.mesh.points.len()
     }
 
     /// Borrow the mesh's CSR adjacency/vertex arrays for generators/renderers.
+    #[allow(dead_code)]
     pub fn cells_topology(&self) -> &Cells {
         &self.mesh.cells
     }
 
     /// Borrow the mesh's vertices for the renderer.
+    #[allow(dead_code)]
     pub fn vertices(&self) -> &Vertices {
         &self.mesh.vertices
     }
