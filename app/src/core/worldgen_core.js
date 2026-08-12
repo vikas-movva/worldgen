@@ -16,7 +16,10 @@ export function add(a, b) {
  * Step 1.2 (world-assembly form): build a `Grid` from a deserialized `Mesh`
  * and store the generated heightmap into `grid.cells.h`. Returns a `Grid`
  * with only `cells.h` populated (the other `CellData` fields are zeroed).
- * The Phase 2.5 heightmap editor will call this to start a recompute chain.
+ *
+ * **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+ * sub-step logic to avoid the extra `Grid` serde round-trips. This entry is
+ * kept for the Phase 2.5 heightmap editor's `recompute_dependents` path.
  * Exposed as `build_grid_with_heightmap(mesh, seed)` to JS.
  * @param {any} mesh_js
  * @param {number} seed
@@ -47,8 +50,11 @@ export function generate_biomes(mesh_js, climate_js, heightmap) {
  * Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
  * (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
  * `cells.biome` back into the same `Grid`, returning the updated `Grid` as
- * `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
- * recompute dependents incrementally.
+ * `JsValue`.
+ *
+ * **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+ * biome step. This entry is kept for the Phase 2.5 heightmap editor's
+ * `recompute_dependents` path, which will call it on an edited `Grid`.
  * @param {any} grid_js
  * @returns {any}
  */
@@ -78,8 +84,12 @@ export function generate_climate(mesh_js, heightmap, opts_js) {
  * Step 1.3 (grid form): run the climate pipeline over an already-built `Grid`
  * (which carries both the mesh and `cells.h`) and write `cells.temp` /
  * `cells.prec` back into the same `Grid`, returning the updated `Grid` as
- * `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
- * recompute dependents incrementally.
+ * `JsValue`.
+ *
+ * **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+ * climate step. This entry is kept for the Phase 2.5 heightmap editor's
+ * `recompute_dependents` path, which will call it incrementally on an
+ * edited `Grid` without re-running the full pipeline.
  * @param {any} grid_js
  * @param {any} opts_js
  * @returns {any}

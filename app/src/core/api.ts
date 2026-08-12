@@ -7,18 +7,29 @@ import CoreWorker from "../workers/core.worker.ts?worker";
 
 type Res<T> = { reqId: number; ok: true; result: T } | { reqId: number; ok: false; message: string };
 
-const worker = new CoreWorker() as unknown as Worker;
+// The real worker is created lazily (on first `call`) so merely importing this
+// module in a non-browser (test) environment does not eagerly construct a
+// `Worker`. Unit tests inject a fake worker via `__setWorkerForTest` (below).
+let worker: Worker | null = null;
 
 const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
-worker.onmessage = (e: MessageEvent<Res<any>>) => {
+function handleWorkerMessage(e: MessageEvent<Res<any>>) {
   const res = e.data;
   const entry = pending.get(res.reqId);
   if (!entry) return;
   if (res.ok) entry.resolve(res.result);
   else entry.reject(new Error(res.message));
   pending.delete(res.reqId);
-};
+}
+
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new CoreWorker() as unknown as Worker;
+    worker.onmessage = handleWorkerMessage;
+  }
+  return worker;
+}
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 export type Mesh = {
@@ -69,7 +80,7 @@ function nextId(): number {
 /// f64; `wasm-bindgen` would silently wrap > u32::MAX (4294967295) to a
 /// different seed with no error. We clamp + floor so an out-of-range seed is
 /// deterministic and never panics in WASM (adversarial review M6).
-function clampSeed(seed: number): number {
+export function clampSeed(seed: number): number {
 	const s = Math.floor(Number.isFinite(seed) ? seed : 0);
 	if (s < 0) return 0;
 	if (s > 0xffffffff) return 0xffffffff;
@@ -81,7 +92,7 @@ function clampSeed(seed: number): number {
 /// Clamping at the JS boundary prevents a negative/overlarge value from
 /// coercing to u32::MAX and capacity-overflow-panicking the WASM module
 /// (adversarial review Phase 1.5 C1).
-function clampCellCount(n: number): number {
+export function clampCellCount(n: number): number {
 	const v = Math.floor(Number.isFinite(n) ? n : 0);
 	if (v < 1) return 4; // minimum sane mesh for spade
 	if (v > 60_000) return 60_000; // MVP cap
@@ -92,8 +103,26 @@ function call<T, R>(kind: string, payload: T): Promise<R> {
 	const reqId = nextId();
 	return new Promise((resolve, reject) => {
 		pending.set(reqId, { resolve, reject });
-		worker.postMessage({ kind, reqId, ...payload } as any);
+		getWorker().postMessage({ kind, reqId, ...payload } as any);
 	});
+}
+
+/// Test-only hook: inject a fake worker (e.g. a `postMessage` spy + manual
+/// `onmessage` invocation) so the bridge's request/response contract can be
+/// unit-tested without a real Web Worker or the WASM module. Not part of the
+/// app surface.
+export function __setWorkerForTest(fake: Worker | null): void {
+	if (worker && fake === null) {
+		// Detach the real worker's listener so a disposed test worker can't
+		// fire stray messages into the pending map.
+		worker.onmessage = null;
+	}
+	worker = fake;
+	// Attach the real message handler to the injected worker so it behaves
+	// exactly like the lazily-created one (tests don't have to wire it).
+	if (worker) {
+		worker.onmessage = handleWorkerMessage;
+	}
 }
 
 export const coreApi = {

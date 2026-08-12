@@ -9,8 +9,10 @@
 		"build:core": "cd .. && wasm-pack build core --target web --out-dir app/src/core && cp core/app/src/core/worldgen_core.js core/app/src/core/worldgen_core.d.ts core/app/src/core/worldgen_core_bg.wasm core/app/src/core/worldgen_core_bg.wasm.d.ts app/src/core/ && rm -rf core/app/src/core",
 		"lint": "biome check --write",
 		"preview": "vite preview",
-		"test": "vitest",
-		"test:core": "cargo test --manifest-path ../core/Cargo.toml"
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:core": "cargo test --manifest-path ../core/Cargo.toml",
+		"test:all": "npm run test:core && npm run test"
 	},
 	"dependencies": {
 		"@tiptap/react": "^3.29.2",
@@ -29,8 +31,10 @@
 		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
 		"@vitejs/plugin-react": "^6.0.4",
+		"jsdom": "^25.0.1",
 		"typescript": "~6.0.2",
 		"vite": "^8.2.0",
-		"vite-plugin-wasm": "^3.6.0"
+		"vite-plugin-wasm": "^3.6.0",
+		"vitest": "^3.2.7"
 	}
 }

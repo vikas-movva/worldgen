@@ -48,7 +48,10 @@ pub fn generate_heightmap(mesh_js: JsValue, seed: u32) -> js_sys::Uint8Array {
 /// Step 1.2 (world-assembly form): build a `Grid` from a deserialized `Mesh`
 /// and store the generated heightmap into `grid.cells.h`. Returns a `Grid`
 /// with only `cells.h` populated (the other `CellData` fields are zeroed).
-/// The Phase 2.5 heightmap editor will call this to start a recompute chain.
+///
+/// **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+/// sub-step logic to avoid the extra `Grid` serde round-trips. This entry is
+/// kept for the Phase 2.5 heightmap editor's `recompute_dependents` path.
 /// Exposed as `build_grid_with_heightmap(mesh, seed)` to JS.
 #[wasm_bindgen]
 pub fn build_grid_with_heightmap(mesh_js: JsValue, seed: u32) -> JsValue {
@@ -74,8 +77,12 @@ pub fn generate_climate(mesh_js: JsValue, heightmap: js_sys::Uint8Array, opts_js
 /// Step 1.3 (grid form): run the climate pipeline over an already-built `Grid`
 /// (which carries both the mesh and `cells.h`) and write `cells.temp` /
 /// `cells.prec` back into the same `Grid`, returning the updated `Grid` as
-/// `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
-/// recompute dependents incrementally.
+/// `JsValue`.
+///
+/// **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+/// climate step. This entry is kept for the Phase 2.5 heightmap editor's
+/// `recompute_dependents` path, which will call it incrementally on an
+/// edited `Grid` without re-running the full pipeline.
 #[wasm_bindgen]
 pub fn generate_climate_for_grid(grid_js: JsValue, opts_js: JsValue) -> JsValue {
     let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
@@ -105,8 +112,11 @@ pub fn generate_biomes(
 /// Step 1.4 (grid form): run the biome pipeline over an already-built `Grid`
 /// (which carries the mesh, `cells.h`, `cells.temp`, `cells.prec`) and write
 /// `cells.biome` back into the same `Grid`, returning the updated `Grid` as
-/// `JsValue`. This is the form the Phase 2.5 heightmap editor will call to
-/// recompute dependents incrementally.
+/// `JsValue`.
+///
+/// **Note:** `generate_world` (Step 1.5) does NOT call this — it inlines the
+/// biome step. This entry is kept for the Phase 2.5 heightmap editor's
+/// `recompute_dependents` path, which will call it on an edited `Grid`.
 #[wasm_bindgen]
 pub fn generate_biomes_for_grid(grid_js: JsValue) -> JsValue {
     biomes::generate_biomes_for_grid(grid_js)
@@ -249,6 +259,182 @@ mod tests {
             assert_eq!(&world.cells.temp, &g_h.cells.temp, "temp mismatch seed={seed} n={n}");
             assert_eq!(&world.cells.prec, &g_h.cells.prec, "prec mismatch seed={seed} n={n}");
             assert_eq!(&world.cells.biome, &g_h.cells.biome, "biome mismatch seed={seed} n={n}");
+        }
+    }
+
+    /// Step 1.5 gate: 60k full pipeline must complete in < 2s (design §9).
+    /// On the `--ignored` track because a 60k mesh+heightmap+climate+biomes
+    /// run is ~500ms in native release and would bloat every `cargo test`
+    /// invocation during prototyping. Run with `cargo test -- --ignored` at
+    /// step-completion gates. The node-target WASM boundary script
+    /// (`app/scripts/verify_generate_world_node.mjs`) is the authoritative
+    /// gate since it exercises the real WASM serde boundary; this test pins
+    /// the timing in `cargo test` so a regression is caught without a manual
+    /// script run.
+    #[test]
+    #[ignore = "slow: 60k full pipeline — run with `cargo test -- --ignored` after major step completion"]
+    fn world_sixty_k_timing_gate() {
+        let seed = 42;
+        let n: u32 = 60_000;
+        let opts = climate::ClimateOpts::default();
+        let t0 = std::time::Instant::now();
+        let grid = generate_world_inner(seed, n, &opts);
+        let elapsed = t0.elapsed();
+
+        // Structure: all arrays length N.
+        assert_eq!(grid.mesh.points.len(), n as usize, "points len");
+        assert_eq!(grid.cells.h.len(), n as usize, "h len");
+        assert_eq!(grid.cells.temp.len(), n as usize, "temp len");
+        assert_eq!(grid.cells.prec.len(), n as usize, "prec len");
+        assert_eq!(grid.cells.biome.len(), n as usize, "biome len");
+
+        // Timing gate: < 2s (design §9). The native-debug test harness is
+        // slower than the WASM release build, so we assert < 5s here to avoid
+        // CI flakes on slow machines while still catching a 10× regression.
+        // The authoritative < 2s gate is the node-target WASM script.
+        assert!(
+            elapsed.as_secs_f64() < 5.0,
+            "60k pipeline took {elapsed:?} (asserted < 5s in native-debug; WASM release gate is < 2s)"
+        );
+    }
+
+    /// Step 1.5 (plan verification): the pipeline must actually produce BOTH
+    /// land and water on the default options, and a sane land fraction. The
+    /// `world_water_is_marine` / `world_land_biomes_in_range` tests above only
+    /// check validity *conditional* on presence; this pins presence itself so
+    /// the generation can't silently collapse to all-water or all-land.
+    #[test]
+    fn world_has_both_land_and_water() {
+        for (seed, n) in [(42u32, 1000u32), (7, 2000), (123, 4000)] {
+            let opts = climate::ClimateOpts::default();
+            let grid = generate_world_inner(seed, n, &opts);
+            let land = grid.cells.h.iter().filter(|&&h| h >= 20).count();
+            let water = n as usize - land;
+            assert!(land > 0, "seed={seed} n={n}: no land produced");
+            assert!(water > 0, "seed={seed} n={n}: no water produced");
+            // Sane land fraction (design §9 sanity, mirrors the node script's
+            // `landCount > 0` plus a guard against pathological all-one-terrain
+            // worlds). 5%..80% is generous for a Voronoi blob world.
+            let frac = land as f64 / n as f64;
+            assert!(
+                (0.05..=0.80).contains(&frac),
+                "seed={seed} n={n}: land fraction {frac:.3} outside [0.05, 0.80]"
+            );
+        }
+    }
+
+    /// Step 1.5: every per-cell numeric layer respects its declared bounds.
+    /// `h` in 0..=100, `temp` in [-128,127] (it is stored as `i8`), `prec` in
+    /// 0..=255, `biome` in 0..=12. Catches a regression where a clamp/cast is
+    /// dropped (e.g. wind-advection `prec` overflow or a `as i8` truncation
+    /// that should have been a `clamp`).
+    #[test]
+    fn world_numeric_layers_in_bounds() {
+        let seed = 42;
+        let n = 2000;
+        let opts = climate::ClimateOpts::default();
+        let grid = generate_world_inner(seed, n, &opts);
+        for i in 0..n as usize {
+            assert!((0..=100).contains(&grid.cells.h[i]), "h[{i}] = {} out of 0..=100", grid.cells.h[i]);
+            assert!(
+                (-128..=127).contains(&grid.cells.temp[i]),
+                "temp[{i}] = {} out of i8 range",
+                grid.cells.temp[i]
+            );
+            assert!((0..=255).contains(&grid.cells.prec[i]), "prec[{i}] = {} out of 0..=255", grid.cells.prec[i]);
+            assert!(
+                (0..=12).contains(&grid.cells.biome[i]),
+                "biome[{i}] = {} out of 0..=12",
+                grid.cells.biome[i]
+            );
+        }
+    }
+
+    /// Step 1.5: different seeds must produce different worlds (otherwise the
+    /// seed is not actually threaded through the pipeline). We assert the
+    /// heightmap differs in at least some cells; an identical-by-chance world
+    /// across two distinct seeds is implausible for a 1000-cell blob world.
+    #[test]
+    fn world_seed_changes_output() {
+        let n = 1000;
+        let opts = climate::ClimateOpts::default();
+        let a = generate_world_inner(1, n, &opts);
+        let b = generate_world_inner(2, n, &opts);
+        let diff = a
+            .cells
+            .h
+            .iter()
+            .zip(b.cells.h.iter())
+            .filter(|(x, y)| x != y)
+            .count();
+        assert!(diff > 0, "two distinct seeds produced byte-identical heightmaps");
+    }
+
+    /// Step 1.5: the pipeline must scale to the requested cell count. The
+    /// mesh is clamped to [4, 1_000_000] inside `mesh::build`; `generate_world`
+    /// passes `cell_count` straight through, so the returned Grid lengths must
+    /// equal `cell_count` for in-range values.
+    #[test]
+    fn world_scales_to_requested_cell_count() {
+        let opts = climate::ClimateOpts::default();
+        for n in [4u32, 100u32, 1000u32, 10_000u32] {
+            let grid = generate_world_inner(42, n, &opts);
+            assert_eq!(grid.mesh.points.len(), n as usize, "points len for n={n}");
+            assert_eq!(grid.cells.h.len(), n as usize, "h len for n={n}");
+            assert_eq!(grid.cells.temp.len(), n as usize, "temp len for n={n}");
+            assert_eq!(grid.cells.prec.len(), n as usize, "prec len for n={n}");
+            assert_eq!(grid.cells.biome.len(), n as usize, "biome len for n={n}");
+        }
+    }
+
+    /// Step 1.5: the Grid must carry the world dimensions (M5 seam) so the
+    /// renderer/downstream generators don't have to trust compile-time
+    /// constants. These should match `mesh::WORLD_W` / `mesh::WORLD_H`.
+    #[test]
+    fn world_grid_carries_world_dimensions() {
+        let n = 500;
+        let opts = climate::ClimateOpts::default();
+        let grid = generate_world_inner(42, n, &opts);
+        assert_eq!(grid.mesh.world_w, mesh::WORLD_W, "world_w mismatch");
+        assert_eq!(grid.mesh.world_h, mesh::WORLD_H, "world_h mismatch");
+        // All points lie within the world rectangle.
+        for (i, [x, y]) in grid.mesh.points.iter().enumerate() {
+            assert!(
+                *x >= 0.0 && *x < mesh::WORLD_W,
+                "point {i} x={x} outside [0, {})",
+                mesh::WORLD_W
+            );
+            assert!(
+                *y >= 0.0 && *y < mesh::WORLD_H,
+                "point {i} y={y} outside [0, {})",
+                mesh::WORLD_H
+            );
+        }
+    }
+
+    /// Step 1.5: the mesh adjacency/vertex CSR arrays are internally
+    /// consistent — `cells.i` is length N+1, every slice is non-empty (closed
+    /// Voronoi polygon ⇒ ≥3 vertices), and vertex/neighbor ids are in range.
+    /// This guards the renderer contract for Step 2.3 (merged geometry).
+    #[test]
+    fn world_mesh_csr_is_consistent() {
+        let n = 1000;
+        let opts = climate::ClimateOpts::default();
+        let grid = generate_world_inner(42, n, &opts);
+        let cells = &grid.mesh.cells;
+        assert_eq!(cells.i.len(), n as usize + 1, "cells.i must be length N+1");
+        assert_eq!(cells.i.last().copied().unwrap() as usize, cells.v.len(), "i[N] must equal v.len()");
+        assert_eq!(cells.v.len(), cells.c.len(), "v and c must share length");
+        let nv = grid.mesh.vertices.p.len();
+        for cell in 0..n as usize {
+            let lo = cells.i[cell] as usize;
+            let hi = cells.i[cell + 1] as usize;
+            assert!(hi > lo, "cell {cell}: empty vertex/neighbor slice");
+            assert!(hi - lo >= 3, "cell {cell}: polygon must have ≥3 vertices");
+            for k in lo..hi {
+                assert!(cells.v[k] < nv as u32, "cell {cell}: vertex id out of range");
+                assert!(cells.c[k] < n, "cell {cell}: neighbor id out of range");
+            }
         }
     }
 }

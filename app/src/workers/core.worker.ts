@@ -141,7 +141,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			const result = add(req.a, req.b);
 			send({ kind: "add", reqId, ok: true, result });
 		} else if (req.kind === "generate_mesh") {
-			const result = generate_mesh(req.cellCount, req.seed >>> 0);
+			// Clamp cellCount at worker boundary as defense-in-depth (C1).
+			const n = Math.max(4, Math.min(60_000, req.cellCount >>> 0));
+			const result = generate_mesh(n, req.seed >>> 0);
 			send({ kind: "generate_mesh", reqId, ok: true, result });
 		} else if (req.kind === "generate_heightmap") {
 			const result = generate_heightmap(req.mesh, req.seed >>> 0);
