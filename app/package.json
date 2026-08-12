@@ -10,6 +10,7 @@
 		"lint": "biome check --write",
 		"preview": "vite preview",
 		"verify:canvas": "node scripts/verify_mapcanvas.mjs",
+		"verify:step23": "node scripts/verify_step23.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:core": "cargo test --manifest-path ../core/Cargo.toml",

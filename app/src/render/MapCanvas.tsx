@@ -13,7 +13,8 @@
 import { Application, Container, Graphics } from "pixi.js";
 import { useEffect, useRef, useState } from "react";
 import type { Grid } from "../core/api";
-import { useGrid } from "../state/worldgenStore";
+import { useGrid, useWorldgenStore } from "../state/worldgenStore";
+import { WorldMap, attachCamera } from "./layers";
 
 // Dark map background (matches the app theme) so the canvas is visible before
 // any geometry is drawn. The placeholder text is drawn with Pixi primitives so
@@ -62,6 +63,8 @@ export function MapCanvas({
 	const destroyedRef = useRef(false);
 	const onReadyRef = useRef(onReady);
 	onReadyRef.current = onReady;
+	const worldMapRef = useRef<WorldMap | null>(null);
+	const unsubRef = useRef<(() => void) | null>(null);
 
 	// Surface a minimal status string for debugging + tests. The component is
 	// intentionally side-effect-only for rendering; this state does not drive
@@ -135,6 +138,39 @@ export function MapCanvas({
 			drawPlaceholder();
 			worldLayer.addChild(placeholder);
 
+			// Build the terrain + biome render from the current Grid, and keep it
+			// in sync with the store (regeneration / layer toggles) without
+			// re-mounting the canvas.
+			let worldMap: WorldMap | null = null;
+			let detachCamera: (() => void) | null = null;
+			const buildMap = (grid: Grid | null) => {
+				if (!grid) return;
+				worldMap = new WorldMap(grid, { initialLayers: useWorldgenStore.getState().layerEnabled });
+				worldMapRef.current = worldMap;
+				worldLayer.addChild(worldMap.view);
+				detachCamera = attachCamera(worldMap.view, app.canvas);
+				if (placeholder.parent) worldLayer.removeChild(placeholder);
+				setStatus("world ready");
+			};
+			const rebuildMap = (grid: Grid | null) => {
+				if (worldMap) {
+					detachCamera?.();
+					worldLayer.removeChild(worldMap.view);
+					worldMap.destroy();
+					worldMap = null;
+					worldMapRef.current = null;
+				}
+				buildMap(grid);
+			};
+			buildMap(useWorldgenStore.getState().grid);
+
+			// One subscription covers grid regeneration + layer toggles.
+			const unsub = useWorldgenStore.subscribe((state, prev) => {
+				if (state.grid !== prev.grid) rebuildMap(state.grid);
+				if (state.layerEnabled !== prev.layerEnabled) worldMap?.setLayers(state.layerEnabled);
+			});
+			unsubRef.current = unsub;
+
 			// Keep the placeholder centred when the container size changes.
 			// Pixi's resizeTo handles the renderer/canvas size; we redraw the
 			// placeholder so it stays visually centred.
@@ -155,6 +191,13 @@ export function MapCanvas({
 		return () => {
 			destroyedRef.current = true;
 			cancelled = true;
+			unsubRef.current?.();
+			unsubRef.current = null;
+			const wm = worldMapRef.current;
+			if (wm) {
+				wm.destroy();
+				worldMapRef.current = null;
+			}
 			const app = appRef.current;
 			if (app) {
 				// Fully tear down: remove the canvas from the DOM and force a

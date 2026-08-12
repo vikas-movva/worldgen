@@ -14,6 +14,8 @@ function App() {
 	const grid = useWorldgenStore((s) => s.grid);
 	const setGrid = useWorldgenStore((s) => s.setGrid);
 	const setGenerationMeta = useWorldgenStore((s) => s.setGenerationMeta);
+	const layerEnabled = useWorldgenStore((s) => s.layerEnabled);
+	const toggleLayer = useWorldgenStore((s) => s.toggleLayer);
 
 	const canvasHandleRef = useRef<MapCanvasHandle | null>(null);
 
@@ -155,6 +157,16 @@ function App() {
 				>
 					{busy ? "Generating..." : "Generate 60k world"}
 				</button>
+				<LayerToggle
+					label="Terrain"
+					active={layerEnabled.terrain}
+					onClick={() => toggleLayer("terrain")}
+				/>
+				<LayerToggle
+					label="Biome"
+					active={layerEnabled.biome}
+					onClick={() => toggleLayer("biome")}
+				/>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
 					rAF: {tickCount} {grid ? `| grid.cells=${grid.cells.h.length}` : ""}
 				</span>
@@ -188,6 +200,34 @@ function App() {
 				</pre>
 			</footer>
 		</div>
+	);
+}
+
+function LayerToggle({
+	label,
+	active,
+	onClick,
+}: {
+	label: string;
+	active: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			aria-pressed={active}
+			style={{
+				padding: "0.35rem 0.85rem",
+				fontSize: "0.9rem",
+				cursor: "pointer",
+				border: active ? "1px solid #2f81f7" : "1px solid #30363d",
+				background: active ? "#1f6feb" : "transparent",
+				color: active ? "#ffffff" : "#8b949e",
+			}}
+		>
+			{label}
+		</button>
 	);
 }
 

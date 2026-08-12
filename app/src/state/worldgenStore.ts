@@ -1,8 +1,13 @@
 // Zustand store for worldgen state.
 // Step 2.2: holds the current Grid for the renderer.
+// Step 2.3: adds per-layer visibility (terrain/biome) so the UI can toggle
+// without forcing a geometry rebuild.
 
 import { create } from "zustand";
 import type { Climate, Grid, Mesh } from "../core/api";
+import type { LayerName } from "../render/layers";
+
+export type LayerState = Record<LayerName, boolean>;
 
 export type WorldgenState = {
 	grid: Grid | null;
@@ -14,6 +19,8 @@ export type WorldgenState = {
 		startedAt: number;
 		finishedAt: number;
 	} | null;
+	/** Per-layer visibility for the PixiJS renderer (Step 2.3). */
+	layerEnabled: LayerState;
 };
 
 export type WorldgenActions = {
@@ -21,6 +28,8 @@ export type WorldgenActions = {
 	setMesh: (mesh: Mesh) => void;
 	setClimate: (climate: Climate) => void;
 	setGenerationMeta: (meta: WorldgenState["generation"]) => void;
+	/** Toggle a render layer on/off (terrain/biome). */
+	toggleLayer: (layer: LayerName) => void;
 	clear: () => void;
 };
 
@@ -30,10 +39,15 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		mesh: null,
 		climate: null,
 		generation: null,
+		layerEnabled: { terrain: true, biome: false },
 		setGrid: (grid) => set({ grid }),
 		setMesh: (mesh) => set({ mesh }),
 		setClimate: (climate) => set({ climate }),
 		setGenerationMeta: (generation) => set({ generation }),
+		toggleLayer: (layer) =>
+			set((s) => ({
+				layerEnabled: { ...s.layerEnabled, [layer]: !s.layerEnabled[layer] },
+			})),
 		clear: () =>
 			set({ grid: null, mesh: null, climate: null, generation: null }),
 	}),
