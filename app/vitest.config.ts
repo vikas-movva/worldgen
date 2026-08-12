@@ -5,10 +5,10 @@ import { defineConfig } from "vitest/config";
 // exist, but the bridge is exercised with an injected fake worker — no real
 // Web Worker or WASM module is required.
 export default defineConfig({
-  test: {
-    environment: "jsdom",
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
-    // Keep output compact; the bridge tests are fast and synchronous-ish.
-    silent: false,
-  },
+	test: {
+		environment: "jsdom",
+		include: ["src/**/*.{test,spec}.{ts,tsx}"],
+		// Keep output compact; the bridge tests are fast and synchronous-ish.
+		silent: false,
+	},
 });
