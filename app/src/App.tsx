@@ -1,8 +1,26 @@
-import { useEffect, useState } from "react";
-import { coreApi } from "./core/api";
+import { useEffect, useRef, useState } from "react";
+import { coreApi, type Grid, type Mesh } from "./core/api";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
+	const [worldResult, setWorldResult] = useState<string>("");
+	const [busy, setBusy] = useState(false);
+	// Stopwatch counters to demonstrate the main thread is NOT blocked
+	// while the worker runs the 60k generation.  Each rAF tick bumps
+	// `tickCount`.  If the main thread were blocked, the tick stream
+	// would freeze during generation.
+	const [tickCount, setTickCount] = useState(0);
+	const tickRef = useRef(0);
+	useEffect(() => {
+		let raf = 0;
+		const loop = () => {
+			tickRef.current += 1;
+			setTickCount(tickRef.current);
+			raf = requestAnimationFrame(loop);
+		};
+		raf = requestAnimationFrame(loop);
+		return () => cancelAnimationFrame(raf);
+	}, []);
 
 	useEffect(() => {
 		async function testAdd() {
@@ -69,7 +87,7 @@ function App() {
 				);
 			} catch (err) {
 				setResult(
-					(prev: string) => prev + `  | seed7 Heightmap Error: ${String(err)}`,
+					(prev: string) => `${prev}  | seed7 Heightmap Error: ${String(err)}`,
 				);
 			}
 		}
@@ -116,7 +134,7 @@ function App() {
 						`${rangesOk && structureOk ? "✅ PASS" : "❌ FAIL"}`,
 				);
 			} catch (err) {
-				setResult((prev: string) => prev + `  | climate Error: ${String(err)}`);
+				setResult((prev: string) => `${prev}  | climate Error: ${String(err)}`);
 			}
 		}
 
@@ -125,7 +143,7 @@ function App() {
 		// top/bottom `fraction` (near the map edges, = high |latitude|),
 		// otherwise the central `fraction` (near the equator).
 		function avgTempBand(
-			mesh: any,
+			mesh: Mesh,
 			h: Uint8Array,
 			temp: Int8Array,
 			fraction: number,
@@ -178,7 +196,7 @@ function App() {
 						`landValid=${landOk} ${rangesOk ? "✅ PASS" : "❌ FAIL"}`,
 				);
 			} catch (err) {
-				setResult((prev: string) => prev + `  | biomes Error: ${String(err)}`);
+				setResult((prev: string) => `${prev}  | biomes Error: ${String(err)}`);
 			}
 		}
 
@@ -189,10 +207,97 @@ function App() {
 		testBiomes();
 	}, []);
 
+	// Step 2.1: fire `generateWorld(42, 60000)` on the worker thread.
+	// The UI stays responsive while the WASM runs off-main-thread; the
+	// tick counter keeps incrementing through the await.
+	async function runGenerateWorld() {
+		if (busy) return;
+		setBusy(true);
+		setWorldResult("⏳ Generating 60k world on worker thread…");
+		const tickBefore = tickRef.current;
+		const t0 = performance.now();
+		try {
+			const grid: Grid = await coreApi.generateWorld(42, 60_000, {});
+			const t1 = performance.now();
+			const tickAfter = tickRef.current;
+			const n = grid.cells.h.length;
+			let land = 0;
+			let waterMarine = true;
+			let landValid = true;
+			const hist = new Map<number, number>();
+			for (let i = 0; i < n; i++) {
+				const b = grid.cells.biome[i];
+				hist.set(b, (hist.get(b) ?? 0) + 1);
+				if (grid.cells.h[i] >= 20) {
+					land++;
+					if (b < 1 || b > 12) landValid = false;
+				} else if (b !== 0) {
+					waterMarine = false;
+				}
+			}
+			const fieldsOk =
+				n === 60_000 &&
+				grid.cells.temp.length === n &&
+				grid.cells.prec.length === n &&
+				grid.cells.biome.length === n &&
+				grid.mesh.points.length === n;
+			const gatePass = fieldsOk && t1 - t0 < 2000 && waterMarine && landValid;
+			const histStr = [...hist.entries()]
+				.sort((a, b) => a[0] - b[0])
+				.map(([id, c]) => `${id}:${c}`)
+				.join(" ");
+			setWorldResult(
+				`generateWorld(42, 60000) = ${(t1 - t0).toFixed(0)}ms ` +
+					`${gatePass ? "PASS (<2s gate)" : "FAIL"}\n` +
+					`  points=${grid.mesh.points.length} verts=${grid.mesh.vertices.p.length} ` +
+					`h/temp/prec/biome=${n} land=${land} (${((land / n) * 100).toFixed(1)}%)\n` +
+					`  waterMarine=${waterMarine} landValid=${landValid}\n` +
+					`  biome hist: ${histStr}\n` +
+					`  rAF ticks during gen: ${tickAfter - tickBefore} (UI ${tickAfter - tickBefore > 30 ? "responsive" : "blocked?"})`,
+			);
+		} catch (err) {
+			setWorldResult(`Error: ${String(err)}`);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	return (
 		<div style={{ padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-			<h1>Worldforge — Phase 1.3 Verification</h1>
+			<h1>Worldforge — Phase 2.1 Verification</h1>
 			<p style={{ fontSize: "1.25rem", fontWeight: "bold" }}>{result}</p>
+			<hr style={{ margin: "1.5rem 0" }} />
+			<h2>Step 2.1 — Worker bridge: generateWorld on the worker thread</h2>
+			<p>
+				<button
+					type="button"
+					onClick={runGenerateWorld}
+					disabled={busy}
+					style={{
+						padding: "0.5rem 1rem",
+						fontSize: "1rem",
+						cursor: busy ? "wait" : "pointer",
+					}}
+				>
+					{busy ? "Generating…" : "Generate 60k world"}
+				</button>{" "}
+				<span style={{ fontSize: "0.85rem", color: "#555" }}>
+					rAF ticks: {tickCount} (main-thread liveness indicator)
+				</span>
+			</p>
+			<pre
+				style={{
+					background: "#f4f4f4",
+					padding: "0.75rem",
+					borderRadius: 6,
+					whiteSpace: "pre-wrap",
+					fontSize: "0.85rem",
+					minHeight: "2rem",
+				}}
+			>
+				{worldResult ||
+					"Click the button to generate a 60k world on the worker thread."}
+			</pre>
 			<hr style={{ margin: "1.5rem 0" }} />
 			<p>
 				<strong>Stack:</strong> Vite + React 19 + TypeScript + PixiJS v8 +
