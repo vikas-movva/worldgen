@@ -6,8 +6,8 @@
 //
 // Design (see worldbuilding-tool-design.md, "Render layers"): every cell is one
 // polygon in a SINGLE vertex/index buffer. Each vertex stores its cell id as a
-// UV, which indexes a 1×N cell-id data texture. Colouring is then a pure texture
-// swap:
+// UV into a square data texture (texDim × texDim >= N). Colouring is then a
+// pure texture swap:
 //   - terrain  -> heightmap gradient texture (h -> RGBA)
 //   - biome    -> biome palette texture (biome id -> RGBA)
 // Two Mesh objects share ONE geometry (one draw call each) and differ only by
@@ -29,11 +29,15 @@ const STYLE = new TextureStyle({
 	addressMode: "clamp-to-edge",
 });
 
-/** Build a 1×N RGBA data texture (one texel per cell) from a Uint8Array. */
-function dataTexture(data: Uint8Array, cellCount: number): Texture {
-	return Texture.from(
-		{ resource: data, width: cellCount, height: 1, style: STYLE, format: "rgba8unorm" },
-	);
+/** Build a texDim×texDim RGBA data texture (one texel per cell) from a Uint8Array. */
+function dataTexture(data: Uint8Array, texDim: number): Texture {
+	return Texture.from({
+		resource: data,
+		width: texDim,
+		height: texDim,
+		style: STYLE,
+		format: "rgba8unorm",
+	});
 }
 
 /**
@@ -51,27 +55,144 @@ export class WorldMap {
 	private biomeMesh: Mesh | null = null;
 	private textures: Texture[] = [];
 	private layers: LayerState = { terrain: true, biome: false };
+	private worldW: number;
+	private worldH: number;
 
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
 		const geoData = buildWorldGeometry(grid);
 		this.geometry = geoData.geometry;
+		this.worldW = geoData.worldW;
+		this.worldH = geoData.worldH;
+		const texDim = geoData.texDim;
 		const heightTex = dataTexture(
-			buildHeightTextureData(grid.cells.h),
-			geoData.cellCount,
+			buildHeightTextureData(grid.cells.h, texDim),
+			texDim,
 		);
 		const biomeTex = dataTexture(
-			buildBiomeTextureData(grid.cells.biome),
-			geoData.cellCount,
+			buildBiomeTextureData(grid.cells.biome, texDim),
+			texDim,
 		);
 		this.textures = [heightTex, biomeTex];
 
-		this.terrainMesh = new Mesh({ geometry: this.geometry, texture: heightTex });
+		this.terrainMesh = new Mesh({
+			geometry: this.geometry,
+			texture: heightTex,
+		});
 		this.biomeMesh = new Mesh({ geometry: this.geometry, texture: biomeTex });
 
 		this.view = new Container({ isRenderGroup: true });
 		this.view.addChild(this.terrainMesh, this.biomeMesh);
 		this.applyLayers();
+	}
+
+	/** User zoom multiplier (1 = fit-to-screen, 0.15..24). */
+	private zoom = 1;
+	/** Pan offset in screen pixels, applied on top of the centred fit position. */
+	private panX = 0;
+	private panY = 0;
+
+	/**
+	 * Base fit scale (without zoom multiplier), cached so zoom-toward-cursor
+	 * can compute world-to-screen coordinate transforms.
+	 */
+	private baseScaleX = 1;
+	private baseScaleY = 1;
+
+	/**
+	 * Scale and center the world map to fill the given screen dimensions.
+	 *
+	 * The merged geometry is in normalized [0,1]^2 space: each cell's position
+	 * is (x / worldW, 1 - y / worldH). Since worldW and worldH differ, the
+	 * pre-normalization step preserves the world's aspect by uniformly
+	 * remapping both axes. Fit-contain the world's aspect ratio inside the
+	 * screen, centering it, so the map is always fully visible regardless of
+	 * viewport size. Set non-uniform view.scale(x, y) so the pre-normalized
+	 * square [0,1]^2 renders with the world's true aspect ratio.
+	 *
+	 * The user's pan offset is preserved: the final position is the centred
+	 * fit position plus (panX, panY). Only `resetView()` re-zeroes the pan.
+	 */
+	fitToScreen(screenW: number, screenH: number): void {
+		if (screenW <= 0 || screenH <= 0) return;
+		const worldAspect = this.worldW / this.worldH;
+		const screenAspect = screenW / screenH;
+		let xScale: number;
+		let yScale: number;
+		if (screenAspect > worldAspect) {
+			// Screen is wider -> fit height; extra horizontal space = letterbox.
+			yScale = screenH;
+			xScale = screenH * worldAspect;
+		} else {
+			// Screen is narrower -> fit width; extra vertical space = pillarbox.
+			xScale = screenW;
+			yScale = screenW / worldAspect;
+		}
+		this.baseScaleX = xScale;
+		this.baseScaleY = yScale;
+		// Apply the current user zoom multiplier on top of the fit scale.
+		// This separates "fit the map to the screen" from "let the user zoom
+		// in/out with the wheel", so the zoom bounds operate on a sane [0.15, 24]
+		// multiplier instead of the raw pixel scale (which is hundreds).
+		const zx = xScale * this.zoom;
+		const zy = yScale * this.zoom;
+		this.view.scale.set(zx, zy);
+		this.view.x = (screenW - zx) / 2 + this.panX;
+		this.view.y = (screenH - zy) / 2 + this.panY;
+	}
+
+	/**
+	 * Set the user zoom multiplier (1 = fit-to-screen), zooming toward a
+	 * focal point so the world coordinate under the cursor stays under the
+	 * cursor. If `focus` is omitted the plain fit is re-applied (used by
+	 * resize and programmatic zoom).
+	 */
+	setZoom(
+		zoom: number,
+		screenW: number,
+		screenH: number,
+		focus?: { x: number; y: number },
+	): void {
+		const clamped = Math.max(0.15, Math.min(24, zoom));
+		if (focus) {
+			// World coordinate under the cursor before zoom change.
+			const oldScaleX = this.baseScaleX * this.zoom;
+			const oldScaleY = this.baseScaleY * this.zoom;
+			const oldOriginX = (screenW - oldScaleX) / 2 + this.panX;
+			const oldOriginY = (screenH - oldScaleY) / 2 + this.panY;
+			const worldX = (focus.x - oldOriginX) / oldScaleX;
+			const worldW = (focus.y - oldOriginY) / oldScaleY;
+			// Apply new zoom.
+			this.zoom = clamped;
+			const newScaleX = this.baseScaleX * this.zoom;
+			const newScaleY = this.baseScaleY * this.zoom;
+			// Adjust pan so the same world coordinate stays under the cursor.
+			this.panX = focus.x - (screenW - newScaleX) / 2 - worldX * newScaleX;
+			this.panY = focus.y - (screenH - newScaleY) / 2 - worldW * newScaleY;
+		} else {
+			this.zoom = clamped;
+		}
+		this.fitToScreen(screenW, screenH);
+	}
+
+	/** Add a screen-space delta to the pan offset (drag). Re-applies the fit. */
+	panBy(dx: number, dy: number, screenW: number, screenH: number): void {
+		this.panX += dx;
+		this.panY += dy;
+		this.fitToScreen(screenW, screenH);
+	}
+
+	/** Reset pan and zoom to defaults (fit-to-screen, centred). */
+	resetView(screenW: number, screenH: number): void {
+		this.zoom = 1;
+		this.panX = 0;
+		this.panY = 0;
+		this.fitToScreen(screenW, screenH);
+	}
+
+	/** Get the current user zoom multiplier. */
+	getZoom(): number {
+		return this.zoom;
 	}
 
 	private applyLayers(): void {
@@ -104,7 +225,10 @@ export class WorldMap {
 			this.geometry = null;
 		}
 		this.textures.forEach((t) => {
-			t.destroy(true);
+			// Destroy the texture but NOT the shared TextureStyle (passing
+			// false). The module-level STYLE singleton is reused by every
+			// WorldMap instance; destroying it corrupts subsequent maps.
+			t.destroy(false);
 		});
 		this.textures = [];
 	}
@@ -112,13 +236,28 @@ export class WorldMap {
 
 /**
  * Attach pan/zoom camera controls to a Pixi `Container` (the world map view).
+ *
+ * The zoom operates as a MULTIPLIER on top of the base fit scale, not as an
+ * absolute scale. This is because `fitToScreen` sets a non-uniform pixel scale
+ * (e.g. x=896, y=717) that would blow past any reasonable zoom bound if treated
+ * as the zoom level itself. Instead, the wheel adjusts a `zoom` factor (default
+ * 1.0) clamped to [zoomMin, zoomMax], and the WorldMap applies
+ * `fitScale * zoom` on both axes, preserving the non-uniform aspect ratio.
+ *
  * Returns a detach function that removes the listeners.
  */
 export function attachCamera(
-	view: Container,
 	target: HTMLElement,
-	bounds = { min: 0.15, max: 24 },
+	opts: {
+		worldMap: WorldMap;
+		screenSize: () => { w: number; h: number };
+		zoomMin?: number;
+		zoomMax?: number;
+	} = { worldMap: null as never, screenSize: () => ({ w: 0, h: 0 }) },
 ): () => void {
+	const zoomMin = opts.zoomMin ?? 0.15;
+	const zoomMax = opts.zoomMax ?? 24;
+	const { worldMap, screenSize } = opts;
 	let dragging = false;
 	let lastX = 0;
 	let lastY = 0;
@@ -126,8 +265,17 @@ export function attachCamera(
 	const onWheel = (e: WheelEvent) => {
 		e.preventDefault();
 		const factor = Math.exp(-e.deltaY * 0.0015);
-		const next = Math.max(bounds.min, Math.min(bounds.max, view.scale.x * factor));
-		view.scale.set(next);
+		const current = worldMap.getZoom();
+		const next = Math.max(zoomMin, Math.min(zoomMax, current * factor));
+		const { w, h } = screenSize();
+		// Zoom toward the cursor: the world coordinate under the mouse stays
+		// under the mouse. `focus` is the cursor position relative to the
+		// canvas element (the target of the wheel event).
+		const rect = target.getBoundingClientRect();
+		worldMap.setZoom(next, w, h, {
+			x: e.clientX - rect.left,
+			y: e.clientY - rect.top,
+		});
 	};
 	const onDown = (e: PointerEvent) => {
 		dragging = true;
@@ -137,8 +285,8 @@ export function attachCamera(
 	};
 	const onMove = (e: PointerEvent) => {
 		if (!dragging) return;
-		view.x += e.clientX - lastX;
-		view.y += e.clientY - lastY;
+		const { w, h } = screenSize();
+		worldMap.panBy(e.clientX - lastX, e.clientY - lastY, w, h);
 		lastX = e.clientX;
 		lastY = e.clientY;
 	};

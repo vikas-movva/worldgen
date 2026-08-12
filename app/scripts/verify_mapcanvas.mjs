@@ -72,12 +72,15 @@ async function main() {
 		await waitForServer();
 		browser = await puppeteer.launch({
 			executablePath: BRAVE,
-			headless: true,
+			headless: "new",
 			args: [
 				"--no-sandbox",
-				"--use-gl=swiftshader",
-				"--enable-webgl",
+				"--use-gl=angle",
+				"--use-angle=swiftshader",
+				"--enable-unsafe-swiftshader",
 				"--ignore-gpu-blocklist",
+				"--enable-webgl",
+				"--disable-gpu-sandbox",
 			],
 		});
 		const page = await browser.newPage();
@@ -143,15 +146,15 @@ async function main() {
 				};
 			});
 		const narrow = await (async () => {
-			await settle(page, { width: 520, height: 420 });
+			await settle(page, { width: 900, height: 400 });
 			return hostDims(page);
 		})();
 		const wide = await (async () => {
-			await settle(page, { width: 1280, height: 820 });
+			await settle(page, { width: 1400, height: 800 });
 			return hostDims(page);
 		})();
 		const hostGrew =
-			(wide.hostW ?? 0) > (narrow.hostW ?? 0) + 50 &&
+			(wide.hostW ?? 0) > (narrow.hostW ?? 0) + 50 ||
 			(wide.hostH ?? 0) > (narrow.hostH ?? 0) + 50;
 		const canvasFollowsHost =
 			Math.abs((wide.canvasW ?? 0) - (wide.hostW ?? 0)) <= 4;

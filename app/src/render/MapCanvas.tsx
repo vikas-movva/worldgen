@@ -14,7 +14,7 @@ import { Application, Container, Graphics } from "pixi.js";
 import { useEffect, useRef, useState } from "react";
 import type { Grid } from "../core/api";
 import { useGrid, useWorldgenStore } from "../state/worldgenStore";
-import { WorldMap, attachCamera } from "./layers";
+import { attachCamera, WorldMap } from "./layers";
 
 // Dark map background (matches the app theme) so the canvas is visible before
 // any geometry is drawn. The placeholder text is drawn with Pixi primitives so
@@ -65,6 +65,7 @@ export function MapCanvas({
 	onReadyRef.current = onReady;
 	const worldMapRef = useRef<WorldMap | null>(null);
 	const unsubRef = useRef<(() => void) | null>(null);
+	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
 	// Surface a minimal status string for debugging + tests. The component is
 	// intentionally side-effect-only for rendering; this state does not drive
@@ -121,6 +122,14 @@ export function MapCanvas({
 			worldLayer.label = "worldLayer";
 			app.stage.addChild(worldLayer);
 
+			// Debug hook for verify scripts — set early so diagnostics can
+			// inspect even before the world is built.
+			(window as unknown as Record<string, unknown>).__WORLDFORGE_DEBUG__ = {
+				app,
+				worldLayer,
+				worldMapRef,
+			};
+
 			// Placeholder: a centred filled rect so the canvas is visibly alive
 			// before Step 2.3 draws real polygons. Replaced when terrain lands.
 			const placeholder = new Graphics();
@@ -145,10 +154,19 @@ export function MapCanvas({
 			let detachCamera: (() => void) | null = null;
 			const buildMap = (grid: Grid | null) => {
 				if (!grid) return;
-				worldMap = new WorldMap(grid, { initialLayers: useWorldgenStore.getState().layerEnabled });
+				worldMap = new WorldMap(grid, {
+					initialLayers: useWorldgenStore.getState().layerEnabled,
+				});
 				worldMapRef.current = worldMap;
+				// Fit the normalized [0,1]^2 geometry into the canvas pixel space.
+				// Without this the entire world renders in a ~1px area at the
+				// top-left corner — the root cause of the blank-canvas bug.
+				worldMap.fitToScreen(app.screen.width, app.screen.height);
 				worldLayer.addChild(worldMap.view);
-				detachCamera = attachCamera(worldMap.view, app.canvas);
+				detachCamera = attachCamera(app.canvas, {
+					worldMap,
+					screenSize: () => ({ w: app.screen.width, h: app.screen.height }),
+				});
 				if (placeholder.parent) worldLayer.removeChild(placeholder);
 				setStatus("world ready");
 			};
@@ -167,14 +185,46 @@ export function MapCanvas({
 			// One subscription covers grid regeneration + layer toggles.
 			const unsub = useWorldgenStore.subscribe((state, prev) => {
 				if (state.grid !== prev.grid) rebuildMap(state.grid);
-				if (state.layerEnabled !== prev.layerEnabled) worldMap?.setLayers(state.layerEnabled);
+				if (state.layerEnabled !== prev.layerEnabled)
+					worldMap?.setLayers(state.layerEnabled);
 			});
 			unsubRef.current = unsub;
 
 			// Keep the placeholder centred when the container size changes.
 			// Pixi's resizeTo handles the renderer/canvas size; we redraw the
-			// placeholder so it stays visually centred.
-			app.renderer.on("resize", drawPlaceholder);
+			// placeholder so it stays visually centred. Also re-fit the world
+			// map so the terrain stays visible after a window resize.
+			const onResize = () => {
+				drawPlaceholder();
+				// Re-fit the world map on resize. fitToScreen re-applies the
+				// current zoom multiplier, so a resize doesn't reset zoom.
+				if (worldMap) {
+					worldMap.fitToScreen(app.screen.width, app.screen.height);
+				}
+			};
+			app.renderer.on("resize", onResize);
+
+			// Belt-and-suspenders: Pixi's `resizeTo` uses a ResizeObserver
+			// internally, but in some headless / flex-layout scenarios the
+			// initial measurement fires before layout settles, leaving the
+			// canvas undersized (508px vs 1216px container). This explicit
+			// observer forces a renderer resize to the real container size
+			// whenever it changes.
+			const resizeObserver = new ResizeObserver((entries) => {
+				const entry = entries[0];
+				if (!entry) return;
+				const w = Math.round(entry.contentRect.width);
+				const h = Math.round(entry.contentRect.height);
+				if (
+					w > 0 &&
+					h > 0 &&
+					(w !== app.screen.width || h !== app.screen.height)
+				) {
+					app.renderer.resize(w, h);
+				}
+			});
+			resizeObserver.observe(host);
+			resizeObserverRef.current = resizeObserver;
 
 			appRef.current = app;
 			worldLayerRef.current = worldLayer;
@@ -193,6 +243,8 @@ export function MapCanvas({
 			cancelled = true;
 			unsubRef.current?.();
 			unsubRef.current = null;
+			resizeObserverRef.current?.disconnect();
+			resizeObserverRef.current = null;
 			const wm = worldMapRef.current;
 			if (wm) {
 				wm.destroy();
@@ -209,6 +261,8 @@ export function MapCanvas({
 			}
 			appRef.current = null;
 			worldLayerRef.current = null;
+			delete (window as unknown as Record<string, unknown>)
+				.__WORLDFORGE_DEBUG__;
 		};
 		// Init effect only re-runs on mount/unmount. A separate effect below
 		// reflects `grid` presence into the status string without re-mounting.

@@ -6,6 +6,7 @@ import { useWorldgenStore } from "./state/worldgenStore";
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
 	const [busy, setBusy] = useState(false);
+	const [seed, setSeed] = useState(42);
 	// Stopwatch counter — main-thread liveness indicator. If the worker blocks
 	// the main thread, the rAF tick stream freezes during generation.
 	const [tickCount, setTickCount] = useState(0);
@@ -89,12 +90,12 @@ function App() {
 		const tickBefore = tickRef.current;
 		const t0 = performance.now();
 		try {
-			const g: Grid = await coreApi.generateWorld(42, 60_000, {});
+			const g: Grid = await coreApi.generateWorld(seed, 60_000, {});
 			const t1 = performance.now();
 			const tickAfter = tickRef.current;
 			setGrid(g);
 			setGenerationMeta({
-				seed: 42,
+				seed,
 				cellCount: g.cells.h.length,
 				startedAt: t0,
 				finishedAt: t1,
@@ -105,7 +106,7 @@ function App() {
 			setResult(
 				(prev: string) =>
 					prev +
-					`  | generateWorld(42, 60k) = ${(t1 - t0).toFixed(0)}ms ` +
+					`  | generateWorld(${seed}, 60k) = ${(t1 - t0).toFixed(0)}ms ` +
 					`points=${g.mesh.points.length} land=${((land / n) * 100).toFixed(1)}% ` +
 					`rAF=${tickAfter - tickBefore} ${t1 - t0 < 2000 && tickAfter - tickBefore > 30 ? "PASS" : "FAIL"}`,
 			);
@@ -157,6 +158,52 @@ function App() {
 				>
 					{busy ? "Generating..." : "Generate 60k world"}
 				</button>
+				<label
+					style={{
+						display: "flex",
+						alignItems: "center",
+						gap: "0.4rem",
+						fontSize: "0.85rem",
+						color: "#8b949e",
+					}}
+				>
+					Seed:
+					<input
+						type="number"
+						value={seed}
+						disabled={busy}
+						onChange={(e) => {
+							const v = Number.parseInt(e.target.value, 10);
+							setSeed(Number.isNaN(v) ? 0 : v);
+						}}
+						style={{
+							width: "5.5rem",
+							padding: "0.3rem 0.4rem",
+							fontSize: "0.85rem",
+							fontFamily: "monospace",
+							color: "#e6edf3",
+							background: "#0d1117",
+							border: "1px solid #30363d",
+							borderRadius: "4px",
+						}}
+					/>
+				</label>
+				<button
+					type="button"
+					onClick={() => setSeed(Math.floor(Math.random() * 1_000_000))}
+					disabled={busy}
+					style={{
+						padding: "0.35rem 0.6rem",
+						fontSize: "0.85rem",
+						cursor: busy ? "wait" : "pointer",
+						border: "1px solid #30363d",
+						background: "transparent",
+						color: "#8b949e",
+					}}
+					title="Randomize seed"
+				>
+					&#x1f3b2;
+				</button>
 				<LayerToggle
 					label="Terrain"
 					active={layerEnabled.terrain}
@@ -168,7 +215,8 @@ function App() {
 					onClick={() => toggleLayer("biome")}
 				/>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
-					rAF: {tickCount} {grid ? `| grid.cells=${grid.cells.h.length}` : ""}
+					rAF: {tickCount}{" "}
+					{grid ? `| grid.cells=${grid.cells.h.length} seed=${seed}` : ""}
 				</span>
 			</header>
 			<main style={{ flex: "1 1 auto", position: "relative", minHeight: 0 }}>
