@@ -212,6 +212,27 @@ export const coreApi = {
     return call("edit_heightmap", { grid, ops }) as Promise<Grid>;
   },
 
+  /**
+   * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
+   * set (the brush-radius cells). Runs `recompute_temp_local` (altitude lapse)
+   * then `recompute_biome_local` (h/temp/prec + neighbor mean) in the worker,
+   * returning `{ temp: Int8Array, biome: Uint8Array }` holding ONLY the
+   * requested cells' values (in cellIds order) so the renderer can patch just
+   * those texels during a brush drag without a full texture re-upload. Both
+   * are pure functions → deterministic.
+   */
+  recomputeTempBiomeLocal(
+    grid: Grid,
+    cellIds: number[],
+    opts?: unknown,
+  ): Promise<{ temp: Int8Array; biome: Uint8Array }> {
+    return call("recompute_temp_biome_local", {
+      grid,
+      cellIds,
+      opts: opts ?? {},
+    }) as Promise<{ temp: Int8Array; biome: Uint8Array }>;
+  },
+
   // Placeholders for future phases:
   // projectWorld(pack, timeline, year): Promise<WorldAt>;
   // recomputeDependents(grid, opts): Promise<DependentResult>;

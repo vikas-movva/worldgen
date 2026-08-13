@@ -12,6 +12,7 @@ export const generate_heightmap: (a: any, b: number) => any;
 export const generate_mesh: (a: number, b: number) => any;
 export const generate_world: (a: number, b: number, c: any) => any;
 export const init: () => void;
+export const recompute_temp_biome_local: (a: any, b: any, c: any) => any;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;

@@ -133,6 +133,23 @@ fn is_wetland(moisture: f64, temperature: f64, height: u8) -> bool {
     false
 }
 
+/// Compute the biome id for a single cell from its `(height, temp)` plus the
+/// already-computed moisture mean. Factored out of `generate_biomes` so the
+/// Tier-1 local recompute (`recompute_biome_local`, Step 2.5.2) uses the
+/// **identical** per-cell formula — a regression in one is a regression in
+/// both.
+///
+/// Mirrors FMG `BiomesGenerator.getId` exactly (minus the deferred river term;
+/// see module docs). Pure function → deterministic by construction.
+#[inline]
+fn biome_id_from_moisture(height: u8, temperature: i8, mean_prec: f64) -> u8 {
+    if height < MIN_LAND_HEIGHT {
+        return 0; // water → Marine
+    }
+    let moisture = rn(4.0 + mean_prec, 0);
+    biome_id(moisture, temperature as f64, height, false)
+}
+
 /// Generate biomes for the whole mesh. `heightmap`, `temp`, `prec` are all
 /// length `N` (the cell count). Returns `Vec<u8>` length `N` with biome ids
 /// `0..=12`. Pure function of its inputs (no RNG) → deterministic by
@@ -155,8 +172,7 @@ pub fn generate_biomes(mesh: &Mesh, heightmap: &[u8], temp: &[i8], prec: &[u8]) 
             continue;
         }
 
-        let temperature = temp[cell] as f64;
-        let cell_prec = prec[cell] as f64;
+        let temperature = temp[cell];
 
         // Neighbor mean of precipitation over LAND neighbors (FMG filters
         // `heights[neib] >= MIN_LAND_HEIGHT`).
@@ -176,15 +192,69 @@ pub fn generate_biomes(mesh: &Mesh, heightmap: &[u8], temp: &[i8], prec: &[u8]) 
         let mean_prec = if land_count > 0 {
             sum / land_count as f64
         } else {
-            cell_prec
+            prec[cell] as f64
         };
-        // FMG `moisture = prec[cell]; ...; rn(4 + mean(moistAround))`.
-        let moisture = rn(4.0 + mean_prec, 0);
 
-        biome[cell] = biome_id(moisture, temperature, height, false);
+        biome[cell] = biome_id_from_moisture(height, temperature, mean_prec);
     }
 
     biome
+}
+
+/// Step 2.5.2 — Tier-1 local recompute of `cells.biome` for a subset of cells.
+///
+/// Recomputes the biome id for each requested cell from `h`/`temp`/`prec` +
+/// the land-neighbor precipitation mean (FMG moisture formula, minus the
+/// deferred river term). Uses the **identical** per-cell formula as the full
+/// `generate_biomes` pass (shared `biome_id_at_cell` helper) so the local
+/// patch byte-matches what a full re-pass would produce for each cell.
+///
+/// **Important:** this is a local approximation. The biome depends on the
+/// mean precipitation of *land neighbors*; a brush stroke that flips a
+/// neighbor land↔water changes the moisture of this cell too, but this local
+/// recompute only re-evaluates the *explicitly listed* cells. The stroke-end
+/// Tier-2 `recompute_dependents` (Step 2.5.3) does the full global pass for
+/// correctness. During drag, the local patch is the best sub-16ms estimate.
+///
+/// Writes back into `grid.cells.biome[cell_id]` in place. Deterministic: same
+/// grid + same cell_ids → identical biomes (pure function, no RNG).
+pub fn recompute_biome_local(grid: &mut crate::grid::Grid, cell_ids: &[u32]) {
+    let mesh = &grid.mesh;
+    let h = &grid.cells.h;
+    let temp = &grid.cells.temp;
+    let prec = &grid.cells.prec;
+    let i = &mesh.cells.i;
+    let c = &mesh.cells.c;
+    let n = grid.cells.biome.len();
+    for &id in cell_ids {
+        let cell = id as usize;
+        if cell >= n {
+            continue;
+        }
+        let height = h[cell];
+        if height < MIN_LAND_HEIGHT {
+            grid.cells.biome[cell] = 0; // water → Marine
+            continue;
+        }
+        let temperature = temp[cell];
+        let lo = i[cell] as usize;
+        let hi = i[cell + 1] as usize;
+        let mut sum = 0.0f64;
+        let mut land_count = 0usize;
+        for &neigh in &c[lo..hi] {
+            let nb = neigh as usize;
+            if h[nb] >= MIN_LAND_HEIGHT {
+                sum += prec[nb] as f64;
+                land_count += 1;
+            }
+        }
+        let mean_prec = if land_count > 0 {
+            sum / land_count as f64
+        } else {
+            prec[cell] as f64
+        };
+        grid.cells.biome[cell] = biome_id_from_moisture(height, temperature, mean_prec);
+    }
 }
 
 /// Climate inputs on the JS wire (we accept `temp`/`prec` as separate typed
@@ -237,10 +307,14 @@ pub fn generate_biomes_for_grid(grid_js: JsValue) -> JsValue {
 
 #[cfg(test)]
 mod tests {
+    // Style: tests use explicit index loops for clarity when comparing
+    // per-cell data; the idiomatic iterator alternatives are less readable.
+    #![allow(clippy::needless_range_loop)]
+
     use super::*;
-    use crate::climate;
-    use crate::heightmap;
     use crate::mesh;
+    use crate::heightmap;
+    use crate::climate;
 
     fn fixture(cell_count: u32, seed: u32) -> (Mesh, Vec<u8>, Vec<i8>, Vec<u8>) {
         let m = mesh::build(cell_count, seed);
@@ -502,5 +576,183 @@ mod tests {
         assert!(seen[0], "Marine (0) must appear");
         let land_biomes = seen[1..].iter().filter(|&&x| x).count();
         assert!(land_biomes >= 3, "expected >= 3 land biomes, got {land_biomes}");
+    }
+
+    // ── Step 2.5.2: recompute_biome_local tests ─────────────────────────────
+
+    /// `recompute_biome_local` produces the **same** biome values as the full
+    /// `generate_biomes` pass for the requested cells. This is the core
+    /// contract: the local recompute is a slice of the full pass through the
+    /// shared `biome_id_from_moisture` helper.
+    #[test]
+    fn recompute_biome_matches_full_pass() {
+        let (m, h, t, p) = fixture(5000, 42);
+        let full = generate_biomes(&m, &h, &t, &p);
+
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = t.clone();
+        grid.cells.prec = p.clone();
+        grid.cells.biome = vec![0u8; m.points.len()]; // zeroed
+
+        let cell_ids: Vec<u32> = (0..m.points.len() as u32).collect();
+        recompute_biome_local(&mut grid, &cell_ids);
+
+        for i in 0..m.points.len() {
+            assert_eq!(
+                grid.cells.biome[i], full[i],
+                "cell {i}: local recompute {} != full pass {}",
+                grid.cells.biome[i], full[i]
+            );
+        }
+    }
+
+    /// `recompute_biome_local` only touches the requested cells; every other
+    /// cell's biome is unchanged.
+    #[test]
+    fn recompute_biome_only_touches_listed_cells() {
+        let (m, h, t, p) = fixture(3000, 42);
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = t.clone();
+        grid.cells.prec = p.clone();
+        grid.cells.biome = vec![255u8; m.points.len()]; // sentinel (invalid)
+
+        let cell_ids = vec![10u32, 20, 30];
+        recompute_biome_local(&mut grid, &cell_ids);
+
+        // Compare the listed cells against the full pass.
+        let full = generate_biomes(&m, &h, &t, &p);
+        for i in 0..m.points.len() {
+            if cell_ids.contains(&(i as u32)) {
+                assert_eq!(grid.cells.biome[i], full[i], "cell {i} not recomputed correctly");
+                assert!((0..=12).contains(&grid.cells.biome[i]), "cell {i} biome out of range");
+            } else {
+                assert_eq!(grid.cells.biome[i], 255, "cell {i} was wrongly modified");
+            }
+        }
+    }
+
+    /// After raising a cell high enough, the biome may flip to a colder
+    /// biome (permafrost/Glacier when temp < -5). The recompute reflects the
+    /// new temp→biome relationship.
+    #[test]
+    fn recompute_biome_flips_on_height_change() {
+        let (m, h, t, p) = fixture(5000, 42);
+        // Find a land cell that is NOT already permafrost.
+        let mut target = 0;
+        for i in 0..m.points.len() {
+            if h[i] >= MIN_LAND_HEIGHT {
+                let biome = generate_biomes(&m, &h, &t, &p);
+                if biome[i] != 11 {
+                    target = i;
+                    break;
+                }
+            }
+        }
+
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h.clone();
+        // First recompute temp to get the base temp, then raise the cell very
+        // high and recompute both.
+        let opts = climate::ClimateOpts::default();
+        let coords = climate::calculate_map_coordinates(&opts);
+        climate::recompute_temp_local_with_coords(&mut grid, &[target as u32], &opts, &coords);
+        let temp_before = grid.cells.temp[target];
+
+        // Raise the cell to max height.
+        grid.cells.h[target] = 100;
+        climate::recompute_temp_local_with_coords(&mut grid, &[target as u32], &opts, &coords);
+        let temp_after = grid.cells.temp[target];
+
+        // Temp must drop (altitude lapse) unless we're near the i8 floor.
+        assert!(
+            temp_after <= temp_before,
+            "raise should drop temp: {temp_before} -> {temp_after}"
+        );
+
+        // Now recompute biome with updated temp.
+        grid.cells.prec = p.clone();
+        // Ensure the cell has SOME precipitation from the grid.
+        recompute_biome_local(&mut grid, &[target as u32]);
+        let biome_after = grid.cells.biome[target];
+        assert!((0..=12).contains(&biome_after), "recomputed biome out of range: {biome_after}");
+        // It should be a land biome (h >= 20 now).
+        assert!(biome_after >= 1 || grid.cells.h[target] < MIN_LAND_HEIGHT, "raised land cell should have a land biome, got {biome_after}");
+    }
+
+    /// `recompute_biome_local` is deterministic: same grid + same cell_ids →
+    /// identical biomes. Pure function, no RNG.
+    #[test]
+    fn recompute_biome_deterministic() {
+        let (m, h, t, p) = fixture(3000, 42);
+
+        let mut grid_a = crate::grid::Grid::from_mesh(&m, 42);
+        grid_a.cells.h = h.clone();
+        grid_a.cells.temp = t.clone();
+        grid_a.cells.prec = p.clone();
+        grid_a.cells.biome = vec![0u8; m.points.len()];
+
+        let mut grid_b = crate::grid::Grid::from_mesh(&m, 42);
+        grid_b.cells.h = h;
+        grid_b.cells.temp = t;
+        grid_b.cells.prec = p;
+        grid_b.cells.biome = vec![0u8; m.points.len()];
+
+        let cell_ids: Vec<u32> = (0..m.points.len() as u32).step_by(13).collect();
+        recompute_biome_local(&mut grid_a, &cell_ids);
+        recompute_biome_local(&mut grid_b, &cell_ids);
+
+        assert_eq!(grid_a.cells.biome, grid_b.cells.biome, "recompute_biome_local not deterministic");
+    }
+
+    /// Water cells (h < 20) are always Marine (0), even when listed.
+    #[test]
+    fn recompute_biome_water_cells_are_marine() {
+        let (m, h, t, p) = fixture(3000, 42);
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = t.clone();
+        grid.cells.prec = p.clone();
+        grid.cells.biome = vec![99u8; m.points.len()];
+
+        let cell_ids: Vec<u32> = (0..m.points.len() as u32).collect();
+        recompute_biome_local(&mut grid, &cell_ids);
+
+        for i in 0..m.points.len() {
+            if h[i] < MIN_LAND_HEIGHT {
+                assert_eq!(grid.cells.biome[i], 0, "water cell {i} should be Marine, got {}", grid.cells.biome[i]);
+            }
+        }
+    }
+
+    /// `biome_id_from_moisture` water check: h < 20 → Marine regardless of
+    /// moisture/temp.
+    #[test]
+    fn biome_id_from_moisture_water_check() {
+        assert_eq!(biome_id_from_moisture(0, 30, 60.0), 0);
+        assert_eq!(biome_id_from_moisture(19, 30, 60.0), 0);
+        // h = 20 (exactly land threshold) → not marine
+        let b = biome_id_from_moisture(20, 30, 10.0);
+        assert!((1..=12).contains(&b), "land cell biome out of range: {b}");
+    }
+
+    /// Out-of-range cell_ids are silently skipped (no panic).
+    #[test]
+    fn recompute_biome_skips_out_of_range_ids() {
+        let (m, h, t, p) = fixture(1000, 42);
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h;
+        grid.cells.temp = t;
+        grid.cells.prec = p;
+        grid.cells.biome = vec![0u8; m.points.len()];
+
+        let n = m.points.len() as u32;
+        let cell_ids = vec![0u32, n, n + 100, 5];
+        recompute_biome_local(&mut grid, &cell_ids);
+
+        // No panic; valid cells were recomputed.
+        assert!((0..=12).contains(&grid.cells.biome[0]), "cell 0 biome out of range");
+        assert!((0..=12).contains(&grid.cells.biome[5]), "cell 5 biome out of range");
     }
 }

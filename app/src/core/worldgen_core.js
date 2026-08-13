@@ -166,6 +166,26 @@ export function generate_world(seed, cell_count, opts_js) {
 export function init() {
     wasm.init();
 }
+
+/**
+ * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
+ * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
+ * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
+ * ONLY the values for the requested `cellIds` (in the same order), so the
+ * renderer can patch just those texels during a brush drag without a full
+ * texture re-upload. Temp uses altitude lapse; biome uses h/temp/prec +
+ * land-neighbor mean. Both are pure functions → deterministic.
+ *
+ * Exposed as `recompute_temp_biome_local(grid, cellIds, opts)` to JS.
+ * @param {any} grid_js
+ * @param {any} cell_ids_js
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function recompute_temp_biome_local(grid_js, cell_ids_js, opts_js) {
+    const ret = wasm.recompute_temp_biome_local(grid_js, cell_ids_js, opts_js);
+    return ret;
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

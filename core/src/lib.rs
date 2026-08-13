@@ -131,6 +131,49 @@ pub fn edit_heightmap(grid_js: JsValue, ops_js: JsValue) -> JsValue {
     heightmap_edit::edit_heightmap_js(grid_js, ops_js)
 }
 
+/// Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
+/// set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
+/// `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
+/// ONLY the values for the requested `cellIds` (in the same order), so the
+/// renderer can patch just those texels during a brush drag without a full
+/// texture re-upload. Temp uses altitude lapse; biome uses h/temp/prec +
+/// land-neighbor mean. Both are pure functions → deterministic.
+///
+/// Exposed as `recompute_temp_biome_local(grid, cellIds, opts)` to JS.
+#[wasm_bindgen]
+pub fn recompute_temp_biome_local(grid_js: JsValue, cell_ids_js: JsValue, opts_js: JsValue) -> JsValue {
+    let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("recompute_temp_biome_local: failed to deserialize Grid");
+    let cell_ids: Vec<u32> = serde_wasm_bindgen::from_value(cell_ids_js)
+        .expect("recompute_temp_biome_local: failed to deserialize cellIds");
+    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
+        .unwrap_or_else(|_| climate::ClimateOpts::default());
+
+    // Temp first (biome depends on temp).
+    let coords = climate::calculate_map_coordinates(&opts);
+    climate::recompute_temp_local_with_coords(&mut grid, &cell_ids, &opts, &coords);
+    // Biome next (reads updated temp).
+    biomes::recompute_biome_local(&mut grid, &cell_ids);
+
+    // Return only the affected cells' temp + biome (in cellIds order) for a
+    // texture patch.
+    let n = cell_ids.len();
+    let temp_arr = js_sys::Int8Array::new_with_length(n as u32);
+    let biome_arr = js_sys::Uint8Array::new_with_length(n as u32);
+    let grid_n = grid.cells.temp.len();
+    for (i, &id) in cell_ids.iter().enumerate() {
+        let cell = id as usize;
+        if cell < grid_n {
+            temp_arr.set_index(i as u32, grid.cells.temp[cell]);
+            biome_arr.set_index(i as u32, grid.cells.biome[cell]);
+        }
+    }
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &JsValue::from_str("temp"), &temp_arr).expect("set temp");
+    js_sys::Reflect::set(&obj, &JsValue::from_str("biome"), &biome_arr).expect("set biome");
+    obj.into()
+}
+
 /// Step 1.5: the static world generation pipeline.
 /// Runs mesh → heightmap → climate → biomes in sequence and returns a fully
 /// populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).

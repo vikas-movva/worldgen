@@ -408,6 +408,81 @@ describe("coreApi.editHeightmap", () => {
   });
 });
 
+// ---- recomputeTempBiomeLocal (Step 2.5.2) --------------------------------
+
+describe("coreApi.recomputeTempBiomeLocal", () => {
+  it("sends the exact { kind, reqId, grid, cellIds, opts } wire message", () => {
+    const grid = makeFakeGrid(1000, 42);
+    const cellIds = [10, 20, 30];
+    coreApi.recomputeTempBiomeLocal(grid, cellIds);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "recompute_temp_biome_local",
+      grid,
+      cellIds: [10, 20, 30],
+      opts: {},
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("defaults opts to {} when not provided", () => {
+    const grid = makeFakeGrid(100, 1);
+    coreApi.recomputeTempBiomeLocal(grid, [0, 1]);
+    expect(fake.lastMessage).toMatchObject({
+      opts: {},
+    });
+  });
+
+  it("forwards custom opts on the wire", () => {
+    const grid = makeFakeGrid(100, 1);
+    const opts = { temperature_equator: 30, height_exponent: 2.5 };
+    coreApi.recomputeTempBiomeLocal(grid, [5, 6], opts);
+    expect(fake.lastMessage).toMatchObject({ opts });
+  });
+
+  it("resolves with { temp: Int8Array, biome: Uint8Array } from worker", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const result = {
+      temp: new Int8Array([10, 15, 20]),
+      biome: new Uint8Array([3, 6, 9]),
+    };
+    const p = coreApi.recomputeTempBiomeLocal(grid, [0, 1, 2]);
+    fake.reply(result);
+    const res = await p;
+    expect(res.temp).toBeInstanceOf(Int8Array);
+    expect(res.biome).toBeInstanceOf(Uint8Array);
+    expect(Array.from(res.temp)).toEqual([10, 15, 20]);
+    expect(Array.from(res.biome)).toEqual([3, 6, 9]);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.recomputeTempBiomeLocal(grid, [0]);
+    fake.replyError("wasm panic: bad grid");
+    await expect(p).rejects.toThrow(/bad grid/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const g1 = makeFakeGrid(100, 1);
+    const g2 = makeFakeGrid(100, 2);
+    const p1 = coreApi.recomputeTempBiomeLocal(g1, [1, 2]);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.recomputeTempBiomeLocal(g2, [3, 4]);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    // Deliver replies out of order.
+    fake.reply({ temp: new Int8Array([99, 98]), biome: new Uint8Array([7, 8]) });
+    fake.lastMessage = firstMsg;
+    fake.reply({ temp: new Int8Array([1, 2]), biome: new Uint8Array([3, 4]) });
+
+    const r2 = await p2;
+    const r1 = await p1;
+    expect(Array.from(r2.temp)).toEqual([99, 98]);
+    expect(Array.from(r1.temp)).toEqual([1, 2]);
+  });
+});
+
 // ---- helpers -------------------------------------------------------------
 
 function makeFakeGrid(n: number, seed: number): Grid {

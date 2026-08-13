@@ -14,6 +14,7 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_world,
+	recompute_temp_biome_local,
 } from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
@@ -72,6 +73,13 @@ type WorkerRequest =
 			reqId: number;
 			grid: unknown;
 			ops: unknown;
+	  }
+	| {
+			kind: "recompute_temp_biome_local";
+			reqId: number;
+			grid: unknown;
+			cellIds: number[];
+			opts?: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -130,6 +138,12 @@ type WorkerResponse =
 	  }
 	| { kind: "generate_world"; reqId: number; ok: true; result: Grid }
 	| { kind: "edit_heightmap"; reqId: number; ok: true; result: Grid }
+	| {
+			kind: "recompute_temp_biome_local";
+			reqId: number;
+			ok: true;
+			result: { temp: Int8Array; biome: Uint8Array };
+	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 let nextReqId = 1;
@@ -200,6 +214,17 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			// Step 2.5.1: apply a batch of heightmap edit ops to grid.cells.h.
 			const result = edit_heightmap(req.grid, req.ops);
 			send({ kind: "edit_heightmap", reqId, ok: true, result });
+		} else if (req.kind === "recompute_temp_biome_local") {
+			// Step 2.5.2: Tier-1 local recompute of temp + biome for the
+			// brush-radius cell set. Returns { temp: Int8Array, biome: Uint8Array }
+			// holding only the affected cells' values (in cellIds order) for a
+			// texture patch.
+			const result = recompute_temp_biome_local(
+				req.grid,
+				req.cellIds,
+				req.opts ?? {},
+			);
+			send({ kind: "recompute_temp_biome_local", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

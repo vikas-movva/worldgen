@@ -138,7 +138,7 @@ fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
 
 /// FMG `calculateMapCoordinates`: derive the latitude band covered by the map
 /// from `mapSize` / `latitude` options.
-fn calculate_map_coordinates(opts: &ClimateOpts) -> MapCoords {
+pub fn calculate_map_coordinates(opts: &ClimateOpts) -> MapCoords {
     let size_fraction = opts.map_size / 100.0;
     let lat_shift = opts.latitude / 100.0;
     let lat_t = round1(size_fraction * 180.0);
@@ -164,48 +164,120 @@ fn altitude_drop(h: u8, exponent: f64) -> f64 {
     round1((height_above / 1000.0) * 6.5)
 }
 
+/// Temperature curve parameters derived from `ClimateOpts` (FMG). Extracted
+/// so both the full pass and the local recompute use the identical formula.
+struct TempCurve {
+    t0: f64,
+    t1: f64,
+    tg: f64,
+    tnt: f64,
+    ng: f64,
+    tst: f64,
+    sg: f64,
+    exponent: f64,
+}
+
+impl TempCurve {
+    fn from_opts(opts: &ClimateOpts) -> TempCurve {
+        let t0 = 16.0; // tropics[0]
+        let t1 = -20.0; // tropics[1]
+        let tg = 0.15; // tropicalGradient
+        let tnt = opts.temperature_equator - t0 * tg; // tempNorthTropic
+        let ng = (tnt - opts.temperature_north_pole) / (90.0 - t0); // northernGradient
+        let tst = opts.temperature_equator + t1 * tg; // tempSouthTropic
+        let sg = (tst - opts.temperature_south_pole) / (90.0 + t1); // southernGradient
+        TempCurve { t0, t1, tg, tnt, ng, tst, sg, exponent: opts.height_exponent }
+    }
+
+    /// FMG `calculateSeaLevelTemp(latitude)` — the sea-level temperature curve.
+    #[inline]
+    fn sea_level_temp(&self, latitude: f64, opts: &ClimateOpts) -> f64 {
+        let is_tropical = latitude <= self.t0 && latitude >= self.t1;
+        if is_tropical {
+            opts.temperature_equator - latitude.abs() * self.tg
+        } else if latitude > 0.0 {
+            self.tnt - (latitude - self.t0) * self.ng
+        } else {
+            self.tst + (latitude - self.t1) * self.sg
+        }
+    }
+}
+
+/// Compute the temperature of a single cell from its `(y, h)` given the
+/// options + the derived latitude band. Factored out of
+/// `calculate_temperatures` so the Tier-1 local recompute
+/// (`recompute_temp_local`, Step 2.5.2) uses the **identical** formula via a
+/// shared code path — a regression in one is a regression in both.
+///
+/// Returns the temperature quantized to `i8` (FMG `Int8Array` assignment:
+/// `as i8` truncates toward zero, matching JS).
+#[inline]
+fn temp_at_cell(y: f64, h_cell: u8, opts: &ClimateOpts, curve: &TempCurve, world_h: f64, coords: &MapCoords) -> i8 {
+    let lat = latitude_at_y(y, world_h, coords);
+    let sea_level = curve.sea_level_temp(lat, opts);
+    let drop = altitude_drop(h_cell, curve.exponent);
+    let t = clamp(sea_level - drop, -128.0, 127.0);
+    t as i8
+}
+
 /// Compute `cells.temp` for every cell (FMG `calculateTemperatures`).
 ///
 /// Temperature is computed **per cell** from the cell's actual world `y`
 /// (rather than per grid-row), which is more accurate on an irregular mesh.
 pub fn calculate_temperatures(mesh: &Mesh, h: &[u8], opts: &ClimateOpts, coords: &MapCoords) -> Vec<i8> {
     let n = mesh.points.len();
-
-    // Temperature curve parameters (FMG).
-    let t0 = 16.0; // tropics[0]
-    let t1 = -20.0; // tropics[1]
-    let tg = 0.15; // tropicalGradient
-    let tnt = opts.temperature_equator - t0 * tg; // tempNorthTropic
-    let ng = (tnt - opts.temperature_north_pole) / (90.0 - t0); // northernGradient
-    let tst = opts.temperature_equator + t1 * tg; // tempSouthTropic
-    let sg = (tst - opts.temperature_south_pole) / (90.0 + t1); // southernGradient
-
-    let exponent = opts.height_exponent;
+    let curve = TempCurve::from_opts(opts);
     let world_h = mesh.world_h;
-
-    // Inline the sea-level temperature curve (FMG `calculateSeaLevelTemp`).
-    let sea_level_temp = |latitude: f64| -> f64 {
-        let is_tropical = latitude <= t0 && latitude >= t1;
-        if is_tropical {
-            opts.temperature_equator - latitude.abs() * tg
-        } else if latitude > 0.0 {
-            tnt - (latitude - t0) * ng
-        } else {
-            tst + (latitude - t1) * sg
-        }
-    };
-
     let mut temp = vec![0i8; n];
     for cell in 0..n {
         let y = mesh.points[cell][1];
-        let lat = latitude_at_y(y, world_h, coords);
-        let sea_level = sea_level_temp(lat);
-        let drop = altitude_drop(h[cell], exponent);
-        let t = clamp(sea_level - drop, -128.0, 127.0);
-        // Int8Array assignment truncates toward zero in FMG; `as i8` matches.
-        temp[cell] = t as i8;
+        temp[cell] = temp_at_cell(y, h[cell], opts, &curve, world_h, coords);
     }
     temp
+}
+
+/// Step 2.5.2 — Tier-1 local recompute of `cells.temp` for a subset of cells.
+///
+/// Recomputes temperature **from `h` (altitude lapse) only** — temperature is a
+/// pure function of `(y, h[cell], opts, coords)`, so a local recompute is
+/// exactly a fresh call of `temp_at_cell` per affected cell. No precipitation
+/// dependency (that is a Tier-2, stroke-end global pass). Used during brush
+/// drag (`pointermove`) so the author sees temperature update live.
+///
+/// Writes back into `grid.cells.temp[cell_id]` in place. Deterministic: same
+/// grid + same cell_ids → identical temps (pure function, no RNG).
+///
+/// Note: the combined `recompute_temp_biome_local` WASM entry uses
+/// `recompute_temp_local_with_coords` directly (to share one `MapCoords`).
+/// This convenience entry is kept as a standalone public API for callers that
+/// only need temperature.
+#[allow(dead_code)]
+pub fn recompute_temp_local(grid: &mut crate::grid::Grid, cell_ids: &[u32], opts: &ClimateOpts) {
+    let coords = calculate_map_coordinates(opts);
+    recompute_temp_local_with_coords(grid, cell_ids, opts, &coords);
+}
+
+/// Same as `recompute_temp_local` but with caller-supplied `MapCoords`. Avoids
+/// recomputing the map coords when the caller already has them (the combined
+/// `recompute_temp_biome_local` entry reuses one `coords` for both temp and
+/// biome).
+pub fn recompute_temp_local_with_coords(
+    grid: &mut crate::grid::Grid,
+    cell_ids: &[u32],
+    opts: &ClimateOpts,
+    coords: &MapCoords,
+) {
+    let curve = TempCurve::from_opts(opts);
+    let world_h = grid.mesh.world_h;
+    let n = grid.cells.temp.len();
+    for &id in cell_ids {
+        let cell = id as usize;
+        if cell >= n {
+            continue;
+        }
+        let y = grid.mesh.points[cell][1];
+        grid.cells.temp[cell] = temp_at_cell(y, grid.cells.h[cell], opts, &curve, world_h, coords);
+    }
 }
 
 /// Orographic precipitation at one step (FMG `getPrecipitation`). `h_cur` is
@@ -473,6 +545,10 @@ pub fn generate_climate_js(mesh_js: JsValue, heightmap: Uint8Array, opts_js: JsV
 
 #[cfg(test)]
 mod tests {
+    // Style: tests use explicit index loops for clarity when comparing
+    // per-cell data; the idiomatic iterator alternatives are less readable.
+    #![allow(clippy::needless_range_loop)]
+
     use super::*;
     use crate::mesh;
     use crate::heightmap;
@@ -1343,5 +1419,168 @@ mod tests {
             northerly > 0 || southerly > 0,
             "vertical monsoon branch must be reachable: northerly={northerly} southerly={southerly}"
         );
+    }
+
+    // ── Step 2.5.2: recompute_temp_local tests ──────────────────────────────
+
+    /// `recompute_temp_local` must produce the **same** temp values as the full
+    /// `calculate_temperatures` pass for the requested cells. This is the
+    /// core contract: the local recompute is a slice of the full pass through
+    /// the shared `temp_at_cell` helper.
+    #[test]
+    fn recompute_temp_matches_full_pass() {
+        let (mesh, h) = fixture(5000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let full_temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+
+        let mut grid = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = vec![0i8; mesh.points.len()]; // start zeroed
+
+        let cell_ids: Vec<u32> = (0..mesh.points.len() as u32).collect();
+        recompute_temp_local_with_coords(&mut grid, &cell_ids, &opts, &coords);
+
+        for i in 0..mesh.points.len() {
+            assert_eq!(
+                grid.cells.temp[i], full_temp[i],
+                "cell {i}: local recompute {} != full pass {}",
+                grid.cells.temp[i], full_temp[i]
+            );
+        }
+    }
+
+    /// `recompute_temp_local` only touches the requested cells; every other
+    /// cell is unchanged. This is the contract for a brush drag: patch only the
+    /// affected texels.
+    #[test]
+    fn recompute_temp_only_touches_listed_cells() {
+        let (mesh, h) = fixture(3000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let mut grid = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = vec![99i8; mesh.points.len()]; // sentinel
+
+        // Recompute only cells 10, 20, 30.
+        let cell_ids = vec![10u32, 20, 30];
+        recompute_temp_local_with_coords(&mut grid, &cell_ids, &opts, &coords);
+
+        for i in 0..mesh.points.len() {
+            if cell_ids.contains(&(i as u32)) {
+                // These cells were recomputed; they must match the full-pass
+                // formula.
+                let y = mesh.points[i][1];
+                let curve = TempCurve::from_opts(&opts);
+                let expected = temp_at_cell(y, h[i], &opts, &curve, mesh.world_h, &coords);
+                assert_eq!(grid.cells.temp[i], expected, "cell {i} was not recomputed correctly");
+            } else {
+                // Untouched.
+                assert_eq!(grid.cells.temp[i], 99, "cell {i} was wrongly modified");
+            }
+        }
+    }
+
+    /// After a `raise` (h increases), the temperature must drop or stay the
+    /// same (altitude lapse). This is the live-editing contract: painting a
+    /// mountain makes the cell colder.
+    #[test]
+    fn recompute_temp_drops_after_raise() {
+        let (mesh, h) = fixture(5000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+
+        let mut grid = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid.cells.h = h.clone();
+        let full_temp = calculate_temperatures(&mesh, &h, &opts, &coords);
+        grid.cells.temp = full_temp.clone();
+
+        // Pick a land cell near the center.
+        let world_h = mesh.world_h;
+        let world_w = mesh.world_w;
+        let mut center = 0;
+        let mut best_dist = f64::MAX;
+        for i in 0..mesh.points.len() {
+            if h[i] < SEA_LEVEL {
+                continue;
+            }
+            let [x, y] = mesh.points[i];
+            let d = (x - world_w / 2.0).powi(2) + (y - world_h / 2.0).powi(2);
+            if d < best_dist {
+                best_dist = d;
+                center = i;
+            }
+        }
+
+        // Raise it significantly.
+        grid.cells.h[center] = 95;
+        let before = grid.cells.temp[center];
+        recompute_temp_local_with_coords(&mut grid, &[center as u32], &opts, &coords);
+        let after = grid.cells.temp[center];
+
+        assert!(
+            after <= before,
+            "raise should drop or maintain temp: {before} -> {after}"
+        );
+        // A large raise should produce a *visible* drop unless the cell was
+        // already at the i8 floor.
+        if before > -120 {
+            assert!(after < before, "raise should produce a visible temp drop: {before} -> {after}");
+        }
+    }
+
+    /// `recompute_temp_local` is deterministic: same grid + same cell_ids →
+    /// identical temps. Pure function, no RNG.
+    #[test]
+    fn recompute_temp_deterministic() {
+        let (mesh, h) = fixture(3000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+
+        let mut grid_a = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid_a.cells.h = h.clone();
+        grid_a.cells.temp = vec![0i8; mesh.points.len()];
+        let mut grid_b = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid_b.cells.h = h;
+        grid_b.cells.temp = vec![0i8; mesh.points.len()];
+
+        let cell_ids: Vec<u32> = (0..mesh.points.len() as u32).step_by(7).collect();
+        recompute_temp_local_with_coords(&mut grid_a, &cell_ids, &opts, &coords);
+        recompute_temp_local_with_coords(&mut grid_b, &cell_ids, &opts, &coords);
+
+        assert_eq!(grid_a.cells.temp, grid_b.cells.temp, "recompute_temp_local not deterministic");
+    }
+
+    /// Out-of-range cell_ids are silently skipped (no panic). Defense against
+    /// a bad brush stroke sending an id past the grid length.
+    #[test]
+    fn recompute_temp_skips_out_of_range_ids() {
+        let (mesh, h) = fixture(1000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+        let mut grid = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid.cells.h = h;
+        grid.cells.temp = vec![0i8; mesh.points.len()];
+
+        let n = mesh.points.len() as u32;
+        let cell_ids = vec![0, n, n + 100, 5]; // 2 out-of-range ids mixed in
+        recompute_temp_local_with_coords(&mut grid, &cell_ids, &opts, &coords);
+
+        // Cells 0 and 5 were recomputed; no panic.
+        assert!(grid.cells.temp[0] != 0 || grid.cells.temp[5] != 0, "at least one in-range cell should have nonzero temp");
+    }
+
+    /// `TempCurve::from_opts` produces the same parameters as the old inline
+    /// formula — regression guard for the refactor that extracted it.
+    #[test]
+    fn temp_curve_matches_inline_formula() {
+        let opts = default_opts();
+        let curve = TempCurve::from_opts(&opts);
+        assert_eq!(curve.t0, 16.0);
+        assert_eq!(curve.t1, -20.0);
+        assert_eq!(curve.tg, 0.15);
+        assert_eq!(curve.exponent, opts.height_exponent);
+        // tempNorthTropic = temperature_equator - t0 * tg
+        assert_eq!(curve.tnt, opts.temperature_equator - 16.0 * 0.15);
     }
 }

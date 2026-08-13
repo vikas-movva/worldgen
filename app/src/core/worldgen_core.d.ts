@@ -104,6 +104,19 @@ export function generate_world(seed: number, cell_count: number, opts_js: any): 
  */
 export function init(): void;
 
+/**
+ * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
+ * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
+ * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
+ * ONLY the values for the requested `cellIds` (in the same order), so the
+ * renderer can patch just those texels during a brush drag without a full
+ * texture re-upload. Temp uses altitude lapse; biome uses h/temp/prec +
+ * land-neighbor mean. Both are pure functions → deterministic.
+ *
+ * Exposed as `recompute_temp_biome_local(grid, cellIds, opts)` to JS.
+ */
+export function recompute_temp_biome_local(grid_js: any, cell_ids_js: any, opts_js: any): any;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -119,6 +132,7 @@ export interface InitOutput {
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly init: () => void;
+    readonly recompute_temp_biome_local: (a: any, b: any, c: any) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
