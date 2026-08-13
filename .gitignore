@@ -21,3 +21,6 @@ app/dist
 # Editor
 .vscode
 .idea
+
+# Agents
+/agent
