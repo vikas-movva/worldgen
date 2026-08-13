@@ -60,6 +60,9 @@ export type Climate = {
 // geometry + per-cell data. Only `build_grid_with_heightmap` (Step 1.2 form) returns a
 // Grid with only `h` populated; `generate_climate_for_grid`/`generate_biomes_for_grid`
 // fill `temp`/`prec`/`biome`. `generate_world` returns a fully-populated Grid.
+// Step 2.5.4: entity index arrays (`state`/`province`/`culture`/`religion`/`burg`)
+// and drainage arrays (`fl`/`r`/`conf`) are now part of the wire type — the entity
+// repair cascade mutates `state`/`province`/`burg` on land↔water flips.
 export type Grid = {
 	seed: number;
 	mesh: Mesh;
@@ -68,6 +71,16 @@ export type Grid = {
 		temp: number[];
 		prec: number[];
 		biome: number[];
+		/** Entity index arrays (Phase 3). -1 (or 0 for burg) == unassigned. */
+		state: number[];
+		province: number[];
+		culture: number[];
+		religion: number[];
+		burg: number[];
+		/** Drainage arrays (Step 2.5.3). fl = flux, r = river id, conf = confluence. */
+		fl: number[];
+		r: number[];
+		conf: number[];
 	};
 };
 
@@ -297,6 +310,24 @@ export const coreApi = {
       grid,
       opts: opts ?? {},
     }) as Promise<DependentResult>;
+  },
+
+  /**
+   * Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
+   * `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
+   * (number >= 0) or -1 if the grid has no cells. O(1)-ish, deterministic.
+   */
+  pickCell(grid: Grid, x: number, y: number): Promise<number> {
+    return call("pick_cell", { grid, x, y }) as Promise<number>;
+  },
+
+  /**
+   * Step 2.5.4: reset `grid.cells.h` to the original seeded heightmap,
+   * discarding all edits. Also reinitializes entity index arrays to
+   * "unassigned". Returns the updated Grid.
+   */
+  resetHeightmap(grid: Grid): Promise<Grid> {
+    return call("reset_heightmap", { grid }) as Promise<Grid>;
   },
 
   // Placeholders for future phases:

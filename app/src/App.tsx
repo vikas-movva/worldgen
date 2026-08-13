@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { coreApi, type Grid } from "./core/api";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
+import { WorldMap } from "./render/layers";
+import { HeightmapEditor } from "./ui/HeightmapEditor";
 import { useWorldgenStore } from "./state/worldgenStore";
 
 function App() {
@@ -19,6 +21,8 @@ function App() {
 	const toggleLayer = useWorldgenStore((s) => s.toggleLayer);
 
 	const canvasHandleRef = useRef<MapCanvasHandle | null>(null);
+	const [worldMap, setWorldMap] = useState<WorldMap | null>(null);
+	const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
 
 	useEffect(() => {
 		let raf = 0;
@@ -219,12 +223,31 @@ function App() {
 					{grid ? `| grid.cells=${grid.cells.h.length} seed=${seed}` : ""}
 				</span>
 			</header>
-			<main style={{ flex: "1 1 auto", position: "relative", minHeight: 0 }}>
-				<MapCanvas
-					onReady={(handle) => {
-						canvasHandleRef.current = handle;
-					}}
-				/>
+			<main style={{ flex: "1 1 auto", position: "relative", minHeight: 0, display: "flex" }}>
+				<div style={{ flex: "1 1 auto", position: "relative", minHeight: 0 }}>
+					<MapCanvas
+						onReady={(handle) => {
+							canvasHandleRef.current = handle;
+						}}
+						onWorldMapChange={(wm, el) => {
+							setWorldMap(wm);
+							setCanvasEl(el);
+						}}
+					/>
+				</div>
+				{grid && (
+					<div
+						style={{
+							flex: "0 0 auto",
+							maxWidth: 260,
+							padding: "0.5rem",
+							overflowY: "auto",
+							borderLeft: "1px solid #30363d",
+						}}
+					>
+						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
+					</div>
+				)}
 			</main>
 			<footer
 				style={{

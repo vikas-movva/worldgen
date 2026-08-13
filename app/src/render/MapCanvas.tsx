@@ -24,20 +24,30 @@ const BG_COLOR = 0x0d1117;
 const PLACEHOLDER_COLOR = 0x1f2c3d;
 
 export type MapCanvasHandle = {
-	/** The Pixi Application, or null before init / after destroy. */
-	app: Application | null;
-	/** Root container for layers added by later steps (terrain, biome, ...). */
-	worldLayer: Container | null;
+  /** The Pixi Application, or null before init / after destroy. */
+  app: Application | null;
+  /** Root container for layers added by later steps (terrain, biome, ...). */
+  worldLayer: Container | null;
+  /** Step 2.5.4: the WorldMap instance (for screen->world transform + selection). */
+  worldMap: WorldMap | null;
+  /** Step 2.5.4: the canvas DOM element (for attaching pointer listeners). */
+  canvasEl: HTMLCanvasElement | null;
 };
 
 export type MapCanvasProps = {
-	/**
-	 * Optional callback fired once the Pixi Application has initialised. The
-	 * caller receives the app + the root `worldLayer` container it should add
-	 * its layers to. Used by tests and by later steps to mount terrain/biome
-	 * meshes without re-querying the ref.
-	 */
-	onReady?: (handle: MapCanvasHandle) => void;
+  /**
+   * Optional callback fired once the Pixi Application has initialised. The
+   * caller receives the app + the root `worldLayer` container it should add
+   * its layers to. Used by tests and by later steps to mount terrain/biome
+   * meshes without re-querying the ref.
+   */
+  onReady?: (handle: MapCanvasHandle) => void;
+  /**
+   * Step 2.5.4: fired whenever the `WorldMap` instance is (re)built or
+   * destroyed. The editor uses this to get the current `WorldMap` for
+   * screen->world transform + cell selection overlay.
+   */
+  onWorldMapChange?: (worldMap: WorldMap | null, canvasEl: HTMLCanvasElement | null) => void;
 };
 
 /**
@@ -55,17 +65,20 @@ export type MapCanvasProps = {
  *   canvas node.
  */
 export function MapCanvas({
-	onReady,
+  onReady,
+  onWorldMapChange,
 }: MapCanvasProps = {}): React.ReactElement {
-	const containerRef = useRef<HTMLDivElement | null>(null);
-	const appRef = useRef<Application | null>(null);
-	const worldLayerRef = useRef<Container | null>(null);
-	const destroyedRef = useRef(false);
-	const onReadyRef = useRef(onReady);
-	onReadyRef.current = onReady;
-	const worldMapRef = useRef<WorldMap | null>(null);
-	const unsubRef = useRef<(() => void) | null>(null);
-	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const appRef = useRef<Application | null>(null);
+  const worldLayerRef = useRef<Container | null>(null);
+  const destroyedRef = useRef(false);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const onWorldMapChangeRef = useRef(onWorldMapChange);
+  onWorldMapChangeRef.current = onWorldMapChange;
+  const worldMapRef = useRef<WorldMap | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
 	// Surface a minimal status string for debugging + tests. The component is
 	// intentionally side-effect-only for rendering; this state does not drive
@@ -169,6 +182,8 @@ export function MapCanvas({
 				});
 				if (placeholder.parent) worldLayer.removeChild(placeholder);
 				setStatus("world ready");
+				// Step 2.5.4: notify the editor that a new WorldMap is available.
+				onWorldMapChangeRef.current?.(worldMap, app.canvas);
 			};
 			const rebuildMap = (grid: Grid | null) => {
 				if (worldMap) {
@@ -177,6 +192,7 @@ export function MapCanvas({
 					worldMap.destroy();
 					worldMap = null;
 					worldMapRef.current = null;
+					onWorldMapChangeRef.current?.(null, app.canvas);
 				}
 				buildMap(grid);
 			};

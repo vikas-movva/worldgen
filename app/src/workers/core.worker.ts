@@ -14,8 +14,10 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_world,
+	pick_cell,
 	recompute_dependents,
 	recompute_temp_biome_local,
+	reset_heightmap,
 } from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
@@ -87,6 +89,18 @@ type WorkerRequest =
 			reqId: number;
 			grid: unknown;
 			opts?: unknown;
+	  }
+	| {
+			kind: "pick_cell";
+			reqId: number;
+			grid: unknown;
+			x: number;
+			y: number;
+	  }
+	| {
+			kind: "reset_heightmap";
+			reqId: number;
+			grid: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -113,6 +127,8 @@ type Mesh = {
 // returns a Grid with only `h` populated; `generate_climate_for_grid` /
 // `generate_biomes_for_grid` fill `temp`/`prec`/`biome`. `generate_world`
 // returns a fully-populated Grid.
+// Step 2.5.4: entity index arrays and drainage arrays are part of the wire
+// type — the entity repair cascade mutates `state`/`province`/`burg`.
 type Grid = {
 	seed: number;
 	mesh: Mesh;
@@ -121,6 +137,14 @@ type Grid = {
 		temp: number[];
 		prec: number[];
 		biome: number[];
+		state: number[];
+		province: number[];
+		culture: number[];
+		religion: number[];
+		burg: number[];
+		fl: number[];
+		r: number[];
+		conf: number[];
 	};
 };
 
@@ -156,6 +180,18 @@ type WorkerResponse =
 			reqId: number;
 			ok: true;
 			result: unknown;
+	  }
+	| {
+			kind: "pick_cell";
+			reqId: number;
+			ok: true;
+			result: number;
+	  }
+	| {
+			kind: "reset_heightmap";
+			reqId: number;
+			ok: true;
+			result: Grid;
 	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
@@ -241,9 +277,19 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 		} else if (req.kind === "recompute_dependents") {
 			// Step 2.5.3: full debounced dependent recompute — drainage
 			// (rivers + lakes + flux), climate (temp + prec), biome full-pass,
-			// and entity-repair stub. Returns a DependentResult.
+			// and entity-repair cascade. Returns a DependentResult.
 			const result = recompute_dependents(req.grid, req.opts ?? {});
 			send({ kind: "recompute_dependents", reqId, ok: true, result });
+		} else if (req.kind === "pick_cell") {
+			// Step 2.5.4: pick the nearest cell to world-space (x, y).
+			// Returns a cell id (u32) or -1 if no cells.
+			const result = pick_cell(req.grid, req.x, req.y);
+			send({ kind: "pick_cell", reqId, ok: true, result });
+		} else if (req.kind === "reset_heightmap") {
+			// Step 2.5.4: reset grid.cells.h to the original seeded heightmap.
+			// Also reinitializes entity index arrays to "unassigned".
+			const result = reset_heightmap(req.grid);
+			send({ kind: "reset_heightmap", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

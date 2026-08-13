@@ -105,6 +105,15 @@ export function generate_world(seed: number, cell_count: number, opts_js: any): 
 export function init(): void;
 
 /**
+ * Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
+ * `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
+ * as a `u32`, or `-1` if the grid has no cells. O(1)-ish, deterministic.
+ *
+ * Exposed as `pick_cell(grid, x, y)` to JS.
+ */
+export function pick_cell(grid_js: any, x: number, y: number): number;
+
+/**
  * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
  *
  * Runs the complete drainage → climate → biome → entity-repair cascade on an
@@ -138,6 +147,18 @@ export function recompute_dependents(grid_js: any, opts_js: any): any;
  */
 export function recompute_temp_biome_local(grid_js: any, cell_ids_js: any, opts_js: any): any;
 
+/**
+ * Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
+ * Regenerates `h` from `grid.seed` + `grid.mesh` using the same
+ * `heightmap::generate` used by `generate_world`. Also reinitializes the
+ * entity index arrays (`state`/`province`/`culture`/`religion`/`burg`) to
+ * their "unassigned" sentinels, since Reset means "discard all edits".
+ * Returns the updated `Grid` as `JsValue`.
+ *
+ * Exposed as `reset_heightmap(grid)` to JS.
+ */
+export function reset_heightmap(grid_js: any): any;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -153,8 +174,10 @@ export interface InitOutput {
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly init: () => void;
+    readonly pick_cell: (a: any, b: number, c: number) => number;
     readonly recompute_dependents: (a: any, b: any) => any;
     readonly recompute_temp_biome_local: (a: any, b: any, c: any) => any;
+    readonly reset_heightmap: (a: any) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

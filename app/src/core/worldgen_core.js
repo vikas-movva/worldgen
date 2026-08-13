@@ -168,6 +168,22 @@ export function init() {
 }
 
 /**
+ * Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
+ * `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
+ * as a `u32`, or `-1` if the grid has no cells. O(1)-ish, deterministic.
+ *
+ * Exposed as `pick_cell(grid, x, y)` to JS.
+ * @param {any} grid_js
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function pick_cell(grid_js, x, y) {
+    const ret = wasm.pick_cell(grid_js, x, y);
+    return ret;
+}
+
+/**
  * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
  *
  * Runs the complete drainage → climate → biome → entity-repair cascade on an
@@ -211,6 +227,23 @@ export function recompute_dependents(grid_js, opts_js) {
  */
 export function recompute_temp_biome_local(grid_js, cell_ids_js, opts_js) {
     const ret = wasm.recompute_temp_biome_local(grid_js, cell_ids_js, opts_js);
+    return ret;
+}
+
+/**
+ * Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
+ * Regenerates `h` from `grid.seed` + `grid.mesh` using the same
+ * `heightmap::generate` used by `generate_world`. Also reinitializes the
+ * entity index arrays (`state`/`province`/`culture`/`religion`/`burg`) to
+ * their "unassigned" sentinels, since Reset means "discard all edits".
+ * Returns the updated `Grid` as `JsValue`.
+ *
+ * Exposed as `reset_heightmap(grid)` to JS.
+ * @param {any} grid_js
+ * @returns {any}
+ */
+export function reset_heightmap(grid_js) {
+    const ret = wasm.reset_heightmap(grid_js);
     return ret;
 }
 function __wbg_get_imports() {

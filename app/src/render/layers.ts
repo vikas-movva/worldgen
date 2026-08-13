@@ -16,7 +16,7 @@
 // A small camera (drag-to-pan, wheel-to-zoom) transforms `view` so the map can
 // be inspected at 60k cells without re-tessellation.
 
-import { Container, Mesh, Texture, TextureStyle } from "pixi.js";
+import { Container, Graphics, Mesh, Texture, TextureStyle } from "pixi.js";
 import type { Grid } from "../core/api";
 import { buildWorldGeometry, type MeshGeometryData } from "./buildGeometry";
 import { buildBiomeTextureData, buildHeightTextureData } from "./palette";
@@ -193,6 +193,78 @@ export class WorldMap {
 	/** Get the current user zoom multiplier. */
 	getZoom(): number {
 		return this.zoom;
+	}
+
+	/**
+	 * Step 2.5.4: inverse-transform a screen-space point to world-space
+	 * coordinates. Used by the heightmap editor + cell picker to map a
+	 * click on the canvas to a world (x, y) for `pickCell`.
+	 *
+	 * The forward transform (from `buildGeometry.ts` + `fitToScreen`):
+	 *   nx = x / worldW          (normalize to [0,1])
+	 *   ny = 1 - y / worldH       (flip y so north is up)
+	 *   screen = view.origin + normalized * view.scale
+	 *
+	 * The inverse:
+	 *   normalized = (screen - view.origin) / view.scale
+	 *   x = nx * worldW
+	 *   y = (1 - ny) * worldH
+	 */
+	screenToWorld(screenX: number, screenY: number): { x: number; y: number } {
+		const originX = this.view.x;
+		const originY = this.view.y;
+		const scaleX = this.view.scale.x;
+		const scaleY = this.view.scale.y;
+		const nx = (screenX - originX) / scaleX;
+		const ny = (screenY - originY) / scaleY;
+		return {
+			x: nx * this.worldW,
+			y: (1 - ny) * this.worldH,
+		};
+	}
+
+	/**
+	 * Step 2.5.4: draw a selection outline around a cell. The outline is a
+	 * `Graphics` polyline of the cell's polygon ring (from `mesh.cells.v` +
+	 * `vertices.p`), added as a child of `view` so it inherits pan/zoom.
+	 * Pass `cellId = -1` to clear the selection.
+	 */
+	private selectionGfx: Graphics | null = null;
+	setSelected(grid: Grid, cellId: number): void {
+		// Clear existing selection.
+		if (this.selectionGfx) {
+			this.selectionGfx.clear();
+		}
+		if (cellId < 0 || cellId >= grid.mesh.points.length) {
+			return;
+		}
+		if (!this.selectionGfx) {
+			this.selectionGfx = new Graphics();
+			this.selectionGfx.label = "selection";
+			this.view.addChild(this.selectionGfx);
+		}
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+
+		const lo = cellI[cellId] as number;
+		const hi = cellI[cellId + 1] as number;
+		const k = hi - lo;
+		if (k < 3) return;
+
+		const gfx = this.selectionGfx;
+		gfx.clear();
+		gfx.moveTo(nx(vpts[cellV[lo] as number][0]), ny(vpts[cellV[lo] as number][1]));
+		for (let r = 1; r < k; r++) {
+			const vid = cellV[lo + r] as number;
+			gfx.lineTo(nx(vpts[vid][0]), ny(vpts[vid][1]));
+		}
+		gfx.closePath();
+		gfx.stroke({ color: 0xffff00, width: 2, alignment: 0.5 });
 	}
 
 	private applyLayers(): void {

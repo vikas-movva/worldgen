@@ -21,7 +21,20 @@ export type WorldgenState = {
 	} | null;
 	/** Per-layer visibility for the PixiJS renderer (Step 2.3). */
 	layerEnabled: LayerState;
+	/** Step 2.5.4: heightmap editor tool mode. */
+	editorTool: EditorTool;
+	/** Step 2.5.4: brush radius (in relative units, 1.0 = moderate). */
+	brushRadius: number;
+	/** Step 2.5.4: brush strength (0.0 = no effect, 1.0 = max). */
+	brushStrength: number;
+	/** Step 2.5.4: currently selected cell (-1 = none). */
+	selectedCellId: number;
 };
+
+export type EditorTool =
+	| "raise" | "lower" | "flatten" | "smooth"
+	| "range" | "trough" | "strait" | "mask" | "invert" | "add" | "multiply"
+	| "select";
 
 export type WorldgenActions = {
 	setGrid: (grid: Grid) => void;
@@ -30,6 +43,14 @@ export type WorldgenActions = {
 	setGenerationMeta: (meta: WorldgenState["generation"]) => void;
 	/** Toggle a render layer on/off (terrain/biome). */
 	toggleLayer: (layer: LayerName) => void;
+	/** Step 2.5.4: set the active editor tool. */
+	setEditorTool: (tool: EditorTool) => void;
+	/** Step 2.5.4: set brush radius. */
+	setBrushRadius: (radius: number) => void;
+	/** Step 2.5.4: set brush strength. */
+	setBrushStrength: (strength: number) => void;
+	/** Step 2.5.4: set the selected cell id (-1 = none). */
+	setSelectedCellId: (id: number) => void;
 	clear: () => void;
 };
 
@@ -40,6 +61,10 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		climate: null,
 		generation: null,
 		layerEnabled: { terrain: true, biome: false },
+		editorTool: "raise",
+		brushRadius: 30,
+		brushStrength: 0.5,
+		selectedCellId: -1,
 		setGrid: (grid) => set({ grid }),
 		setMesh: (mesh) => set({ mesh }),
 		setClimate: (climate) => set({ climate }),
@@ -48,8 +73,12 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			set((s) => ({
 				layerEnabled: { ...s.layerEnabled, [layer]: !s.layerEnabled[layer] },
 			})),
+		setEditorTool: (editorTool) => set({ editorTool, selectedCellId: editorTool === "select" ? -1 : -1 }),
+		setBrushRadius: (brushRadius) => set({ brushRadius }),
+		setBrushStrength: (brushStrength) => set({ brushStrength }),
+		setSelectedCellId: (selectedCellId) => set({ selectedCellId }),
 		clear: () =>
-			set({ grid: null, mesh: null, climate: null, generation: null }),
+			set({ grid: null, mesh: null, climate: null, generation: null, selectedCellId: -1 }),
 	}),
 );
 

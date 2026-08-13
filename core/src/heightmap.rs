@@ -163,6 +163,44 @@ fn find_grid_cell(view: &MeshView, x: f64, y: f64) -> usize {
     view.cells.spacing.get(slot).copied().unwrap_or(0) as usize
 }
 
+/// Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
+/// `cells.spacing` spatial grid (`find_grid_cell`) to get a bucket cell,
+/// then refines by checking the bucket cell + its neighbors for the truly
+/// nearest one (Euclidean distance to cell center). O(1)-ish, deterministic.
+///
+/// Returns `None` only if the mesh has no cells (edge case).
+pub fn pick_cell(mesh: &crate::mesh::Mesh, x: f64, y: f64) -> Option<u32> {
+    let n = mesh.points.len();
+    if n == 0 {
+        return None;
+    }
+    let view = MeshView::from_mesh(mesh);
+    let bucket = find_grid_cell(&view, x, y);
+
+    // Check the bucket cell + its neighbors for the nearest one.
+    let mut best = bucket;
+    let [bx, by] = mesh.points[bucket];
+    let mut best_d2 = (bx - x).powi(2) + (by - y).powi(2);
+
+    let csr_i = &mesh.cells.i;
+    let csr_c = &mesh.cells.c;
+    if bucket < csr_i.len() - 1 {
+        let lo = csr_i[bucket] as usize;
+        let hi = csr_i[bucket + 1] as usize;
+        for &nb in &csr_c[lo..hi] {
+            let nb = nb as usize;
+            let [px, py] = mesh.points[nb];
+            let d2 = (px - x).powi(2) + (py - y).powi(2);
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best = nb;
+            }
+        }
+    }
+
+    Some(best as u32)
+}
+
 /// Pick a point at fractional range `[minFrac, maxFrac]` of the world axis.
 /// FMG `getPointInRange(range, length)` parses `range` as two ints /100 and
 /// returns `rand(minFrac*length, maxFrac*length)`.
@@ -1179,6 +1217,59 @@ mod tests {
         // OOB beyond world clamp to last slot
         let oob_pos = find_grid_cell(&view, view.world_w + 100.0, view.world_h + 100.0);
         assert!(oob_pos < n);
+    }
+
+    /// Step 2.5.4: `pick_cell` returns the nearest cell to `(x, y)`, refining
+    /// the `find_grid_cell` bucket result by checking the bucket + its
+    /// neighbors. The returned cell's center must be at least as close to the
+    /// query point as the bucket cell's center.
+    #[test]
+    fn pick_cell_returns_nearest() {
+        let mesh = mesh::build(3000, 42);
+        // Query the exact center of cell 100.
+        let [cx, cy] = mesh.points[100];
+        let picked = pick_cell(&mesh, cx, cy).expect("pick_cell should return Some");
+        assert_eq!(picked, 100, "querying cell 100's center should return cell 100");
+    }
+
+    /// Step 2.5.4: `pick_cell` picks a cell closer to the query point than
+    /// the raw bucket lookup when the query is on a Voronoi boundary.
+    #[test]
+    fn pick_cell_refines_bucket_lookup() {
+        let mesh = mesh::build(3000, 42);
+        // Query a point between two cells — pick_cell should return the closer one.
+        let [x0, y0] = mesh.points[200];
+        let neighbors: Vec<usize> = {
+            let lo = mesh.cells.i[200] as usize;
+            let hi = mesh.cells.i[201] as usize;
+            mesh.cells.c[lo..hi].iter().map(|&n| n as usize).collect()
+        };
+        assert!(!neighbors.is_empty(), "cell 200 should have neighbors");
+        // Find the nearest neighbor to cell 200.
+        let nearest_nb = neighbors.iter().copied().min_by_key(|&nb| {
+            let [nx, ny] = mesh.points[nb];
+            ((nx - x0).powi(2) + (ny - y0).powi(2)) as i64
+        }).unwrap();
+        // Query a point 70% of the way from cell 200 toward its nearest neighbor.
+        // That should pick the neighbor (it's closer to the midpoint).
+        let [nx, ny] = mesh.points[nearest_nb];
+        let qx = x0 + 0.7 * (nx - x0);
+        let qy = y0 + 0.7 * (ny - y0);
+        let picked = pick_cell(&mesh, qx, qy).expect("pick_cell should return Some");
+        assert_eq!(picked, nearest_nb as u32, "query 70% toward nearest neighbor should pick the neighbor");
+    }
+
+    /// Step 2.5.4: `pick_cell` handles OOB coordinates gracefully (returns a
+    /// valid cell id, not a panic).
+    #[test]
+    fn pick_cell_handles_out_of_bounds() {
+        let mesh = mesh::build(500, 42);
+        // Far OOB — should still return a valid cell.
+        let picked = pick_cell(&mesh, -9999.0, -9999.0);
+        assert!(picked.is_some(), "pick_cell should not return None for OOB");
+        // Zero-cell mesh edge case.
+        // (We can't easily create a zero-cell mesh via mesh::build, so we
+        // rely on the `n == 0` guard inside pick_cell.)
     }
 
     /// `build_range` constructs a ridge path from `start` to `end` by greedy

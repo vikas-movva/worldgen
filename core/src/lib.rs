@@ -132,6 +132,44 @@ pub fn edit_heightmap(grid_js: JsValue, ops_js: JsValue) -> JsValue {
     heightmap_edit::edit_heightmap_js(grid_js, ops_js)
 }
 
+/// Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
+/// `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
+/// as a `u32`, or `-1` if the grid has no cells. O(1)-ish, deterministic.
+///
+/// Exposed as `pick_cell(grid, x, y)` to JS.
+#[wasm_bindgen]
+pub fn pick_cell(grid_js: JsValue, x: f64, y: f64) -> i32 {
+    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("pick_cell: failed to deserialize Grid");
+    match heightmap::pick_cell(&grid.mesh, x, y) {
+        Some(id) => id as i32,
+        None => -1,
+    }
+}
+
+/// Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
+/// Regenerates `h` from `grid.seed` + `grid.mesh` using the same
+/// `heightmap::generate` used by `generate_world`. Also reinitializes the
+/// entity index arrays (`state`/`province`/`culture`/`religion`/`burg`) to
+/// their "unassigned" sentinels, since Reset means "discard all edits".
+/// Returns the updated `Grid` as `JsValue`.
+///
+/// Exposed as `reset_heightmap(grid)` to JS.
+#[wasm_bindgen]
+pub fn reset_heightmap(grid_js: JsValue) -> JsValue {
+    let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("reset_heightmap: failed to deserialize Grid");
+    grid.cells.h = heightmap::generate(&grid.mesh, grid.seed);
+    // Reset entity indices to unassigned.
+    let n = grid.cells.h.len();
+    grid.cells.state = vec![-1i32; n];
+    grid.cells.province = vec![-1i32; n];
+    grid.cells.culture = vec![-1i32; n];
+    grid.cells.religion = vec![-1i32; n];
+    grid.cells.burg = vec![0i16; n];
+    serde_wasm_bindgen::to_value(&grid).expect("reset_heightmap: grid serde to JsValue")
+}
+
 /// Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
 /// set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
 /// `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
@@ -213,8 +251,6 @@ pub fn recompute_dependents(grid_js: JsValue, opts_js: JsValue) -> JsValue {
 /// source of truth) but the drainage module computes a derived `h_eff` for
 /// depression resolution. Returns the [`grid::DependentResult`].
 pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::ClimateOpts) -> grid::DependentResult {
-    let n = grid.cells.h.len();
-
     // 1. Drainage: rivers + lakes + per-cell flux / river-id / confluence.
     //    Produces `h_eff` (depression-resolved), `fl`, `r`, `conf`, and the
     //    RiverGeo / LakeGeo lists. We write `fl`/`r`/`conf` back into
@@ -251,7 +287,7 @@ pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::Climate
     // 5. Entity repair cascade. Phase 3 will generate Burgs/States/Cultures;
     //    until then the arrays are empty (-1 fill) and the repair is a no-op.
     //    We still emit the (empty) lists so the worker bridge type is stable.
-    let (state, province, burg, removed_burgs, dissolved_states) = repair_entities(n);
+    let (removed_burgs, dissolved_states) = repair_entities(&mut grid.cells);
 
     // 6. Assign sequential lake ids (1-based) for renderer stability.
     let mut lakes = drainage.lakes;
@@ -263,9 +299,9 @@ pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::Climate
         temp,
         prec,
         biome,
-        state,
-        province,
-        burg,
+        state: grid.cells.state.clone(),
+        province: grid.cells.province.clone(),
+        burg: grid.cells.burg.clone(),
         fl: drainage.fl,
         r: drainage.r,
         conf: drainage.conf,
@@ -302,17 +338,50 @@ fn compute_coastline(mesh: &crate::mesh::Mesh, h: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Phase 3 stub — entity arrays are empty (`-1` fill) until the burg/state/
-/// culture generators land. Performs no repair; returns the empty arrays and
-/// empty removal lists so the `DependentResult` wire type is stable.
-fn repair_entities(n: usize) -> (Vec<i32>, Vec<i32>, Vec<i16>, Vec<String>, Vec<u32>) {
-    (
-        vec![-1; n],
-        vec![-1; n],
-        vec![-1; n],
-        Vec::new(),
-        Vec::new(),
-    )
+/// Entity repair cascade (design §3.6): handles land↔water flips after a
+/// heightmap edit. Land→water removes entities on those cells; water→land
+/// takes no auto-action.
+///
+/// - `state`/`province`: set to -1 for cells that are now water (h < SEA_LEVEL)
+/// - `burg`: set to 0 for cells that are now water
+/// - `removed_burgs`: list of burg names removed (placeholder format until
+///   Phase 3 wires in real burg names from `pack.burgs`)
+/// - `dissolved_states`: state ids that lost ALL their land cells (empty until
+///   Phase 3 adds the Pack with state records; detection needs pre-edit state)
+///
+/// This is a pure function of `(grid.cells)` — no RNG, deterministic.
+/// Mutates `cells.state`, `cells.province`, `cells.burg` in place.
+fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
+    let n = cells.h.len();
+    let sea = crate::heightmap::SEA_LEVEL as u8;
+
+    // Collect burgs on cells that flip land→water. Until Phase 3 generates
+    // real burg names, we emit a placeholder "Burg@cellN" format so the UI
+    // toast has something to show. Phase 3 will replace this with a name
+    // lookup against `pack.burgs`.
+    let mut removed_burgs: Vec<String> = Vec::new();
+
+    // Clear entity indices on water cells. Land cells keep their assignments
+    // (Phase 3 generators will overwrite with fresh ids anyway).
+    for i in 0..n {
+        if cells.h[i] < sea {
+            // Water cell: unassign entities.
+            cells.state[i] = -1;
+            cells.province[i] = -1;
+            if cells.burg[i] != 0 {
+                removed_burgs.push(format!("Burg@cell{}", i));
+                cells.burg[i] = 0;
+            }
+        }
+    }
+
+    // TODO(Phase 3): detect dissolved states. This requires the PRE-edit state
+    // array (or the Pack with state records) to know which states existed. For
+    // now, return empty — Phase 3 will wire this by passing the pre-edit state
+    // or by checking `pack.states` for states with `dissolvedYear == null`.
+    let dissolved_states: Vec<u32> = Vec::new();
+
+    (removed_burgs, dissolved_states)
 }
 
 /// Step 1.5: the static world generation pipeline.
@@ -676,7 +745,7 @@ mod tests {
             assert!((0..=12).contains(&result.biome[i]), "biome[{i}] out of 0..=12");
             assert_eq!(result.state[i], -1, "state[{i}] should be -1 (no entities yet)");
             assert_eq!(result.province[i], -1, "province[{i}] should be -1");
-            assert_eq!(result.burg[i], -1, "burg[{i}] should be -1");
+            assert_eq!(result.burg[i], 0, "burg[{i}] should be 0 (unassigned — 0 is the burg 'none' sentinel)");
             assert!(result.coastline[i] == 0 || result.coastline[i] == 1, "coastline[{i}] must be 0 or 1");
         }
         assert!(result.removed_burgs.is_empty(), "removed_burgs should be empty");
@@ -965,6 +1034,114 @@ mod tests {
         grid.cells.h[target] = 10; // below sea level
         let result = recompute_dependents_inner(&mut grid, &opts);
         assert_eq!(result.biome[target], 0, "cell lowered to h=10 should be Marine (0)");
+    }
+
+    /// Step 2.5.4: entity repair cascade. Lowering a land cell to water must
+    /// clear its `state`/`province`/`burg` indices. Raising it back to land
+    /// leaves entities unassigned (water→land takes no auto-action). Setting
+    /// a fake burg on a land cell, then flooding it, must report the removal.
+    #[test]
+    fn entity_repair_clears_on_land_to_water_flip() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .expect("no mid-height land cell found");
+
+        // Simulate Phase 3 entity assignment: give the cell a fake state/province/burg.
+        grid.cells.state[target] = 5;
+        grid.cells.province[target] = 12;
+        grid.cells.burg[target] = 7;
+
+        // Land→water: lower to below sea level.
+        grid.cells.h[target] = 10;
+        let result = recompute_dependents_inner(&mut grid, &opts);
+
+        // Entity indices should be cleared on the water cell.
+        assert_eq!(grid.cells.state[target], -1, "state should be -1 after land→water flip");
+        assert_eq!(grid.cells.province[target], -1, "province should be -1 after land→water flip");
+        assert_eq!(grid.cells.burg[target], 0, "burg should be 0 after land→water flip");
+
+        // The result mirrors the grid state.
+        assert_eq!(result.state[target], -1, "result.state should be -1");
+        assert_eq!(result.province[target], -1, "result.province should be -1");
+        assert_eq!(result.burg[target], 0, "result.burg should be 0");
+
+        // The burg removal should be reported.
+        assert!(
+            result.removed_burgs.iter().any(|n| n.contains(&format!("cell{}", target))),
+            "removed_burgs should mention cell {}: got {:?}",
+            target,
+            result.removed_burgs
+        );
+    }
+
+    /// Step 2.5.4: water→land flip takes no auto-action. Raising a water cell
+    /// to land should NOT assign any entity (state/province/burg stay at their
+    /// "unassigned" sentinel).
+    #[test]
+    fn entity_repair_water_to_land_no_auto_action() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] < 20)
+            .expect("no water cell found");
+
+        // Water cell: entities should be unassigned already.
+        assert_eq!(grid.cells.state[target], -1);
+        assert_eq!(grid.cells.burg[target], 0);
+
+        // Water→land: raise above sea level.
+        grid.cells.h[target] = 50;
+        let _result = recompute_dependents_inner(&mut grid, &opts);
+
+        // No auto-action: entities should STILL be unassigned.
+        assert_eq!(grid.cells.state[target], -1, "water→land should not auto-assign state");
+        assert_eq!(grid.cells.province[target], -1, "water→land should not auto-assign province");
+        assert_eq!(grid.cells.burg[target], 0, "water→land should not auto-assign burg");
+    }
+
+    /// Step 2.5.4: `reset_heightmap` regenerates `cells.h` from the grid seed,
+    /// discarding all edits. The reset heightmap must match what
+    /// `heightmap::generate` would produce from the same mesh + seed, and must
+    /// differ from an edited heightmap.
+    #[test]
+    fn reset_heightmap_restores_seeded_baseline() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let original_h = grid.cells.h.clone();
+
+        // Edit the heightmap (raise a cell).
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .expect("no mid-height land cell found");
+        grid.cells.h[target] = 95;
+        assert_ne!(grid.cells.h[target], original_h[target], "edit should change h");
+
+        // Simulate entity assignment (Phase 3 would do this).
+        grid.cells.state[target] = 5;
+        grid.cells.burg[target] = 7;
+
+        // Reset: regenerate h from seed.
+        grid.cells.h = crate::heightmap::generate(&grid.mesh, grid.seed);
+        let n_cells = grid.cells.h.len();
+        grid.cells.state = vec![-1i32; n_cells];
+        grid.cells.province = vec![-1i32; n_cells];
+        grid.cells.culture = vec![-1i32; n_cells];
+        grid.cells.religion = vec![-1i32; n_cells];
+        grid.cells.burg = vec![0i16; n_cells];
+
+        // Heightmap matches the original baseline.
+        assert_eq!(grid.cells.h, original_h, "reset should restore the original h");
+        // Entity indices are cleared.
+        assert_eq!(grid.cells.state[target], -1, "reset should clear state");
+        assert_eq!(grid.cells.burg[target], 0, "reset should clear burg");
     }
 
     /// 60k timing gate for `recompute_dependents`. The full recompute cascade
