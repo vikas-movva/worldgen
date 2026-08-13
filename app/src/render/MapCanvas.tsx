@@ -249,6 +249,8 @@ export function MapCanvas({
 			onReadyRef.current?.({
 				app,
 				worldLayer,
+				worldMap: null,
+				canvasEl: app.canvas,
 			});
 		}
 

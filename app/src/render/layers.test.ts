@@ -69,6 +69,14 @@ function quadGrid(n = 1, worldW = 1000, worldH = 1000): Grid {
 			temp: new Array(n).fill(0),
 			prec: new Array(n).fill(0),
 			biome: new Array(n).fill(0),
+			state: new Array(n).fill(0),
+			province: new Array(n).fill(0),
+			culture: new Array(n).fill(0),
+			religion: new Array(n).fill(0),
+			burg: new Array(n).fill(0),
+			fl: new Array(n).fill(0),
+			r: new Array(n).fill(0),
+			conf: new Array(n).fill(0),
 		},
 	};
 }
