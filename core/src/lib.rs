@@ -8,6 +8,7 @@ use wasm_bindgen::prelude::*;
 
 mod mesh;
 mod heightmap;
+mod heightmap_edit;
 mod grid;
 mod climate;
 mod biomes;
@@ -120,6 +121,14 @@ pub fn generate_biomes(
 #[wasm_bindgen]
 pub fn generate_biomes_for_grid(grid_js: JsValue) -> JsValue {
     biomes::generate_biomes_for_grid(grid_js)
+}
+
+/// Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
+/// `grid.cells.h` in place. Deterministic: same `grid` + same `ops` yields
+/// byte-identical `h`. Exposed as `edit_heightmap(grid, ops)` to JS.
+#[wasm_bindgen]
+pub fn edit_heightmap(grid_js: JsValue, ops_js: JsValue) -> JsValue {
+    heightmap_edit::edit_heightmap_js(grid_js, ops_js)
 }
 
 /// Step 1.5: the static world generation pipeline.

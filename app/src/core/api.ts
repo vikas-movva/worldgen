@@ -203,9 +203,37 @@ export const coreApi = {
     return call("generate_world", { seed: clampSeed(seed), cellCount: clampCellCount(cellCount), opts: opts ?? {} }) as Promise<Grid>;
   },
 
+  /**
+   * Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
+   * `grid.cells.h` in place (in the worker). Deterministic: same grid + same
+   * ops yields byte-identical `h`. Returns the updated Grid.
+   */
+  editHeightmap(grid: Grid, ops: EditOp[]): Promise<Grid> {
+    return call("edit_heightmap", { grid, ops }) as Promise<Grid>;
+  },
+
   // Placeholders for future phases:
   // projectWorld(pack, timeline, year): Promise<WorldAt>;
-  // editHeightmap(grid, ops): Promise<Grid>;
   // recomputeDependents(grid, opts): Promise<DependentResult>;
   // generateTimeline(pack, seed, params): Promise<Event[]>;
+};
+
+/**
+ * Step 2.5.1: an edit operation. Brush modes (Raise/Lower/Flatten/Smooth) use
+ * `center_cell` + `radius` + `strength`; `cells` is the pre-gathered radius
+ * set (empty = gather at runtime). Macro modes use `cells` as the ordered path
+ * and `strength` as a multiplier/offset. `target_cell` is used by Range/Trough
+ * as the ridge walk endpoint (FMG `addRange`/`addTrough`).
+ */
+export type EditMode =
+  | "Raise" | "Lower" | "Flatten" | "Smooth"
+  | "Range" | "Trough" | "Strait" | "Mask" | "Invert" | "Add" | "Multiply";
+
+export type EditOp = {
+  mode: EditMode;
+  center_cell: number;
+  target_cell: number;
+  radius: number;
+  strength: number;
+  cells: number[];
 };

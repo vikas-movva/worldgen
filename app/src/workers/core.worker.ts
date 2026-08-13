@@ -6,6 +6,7 @@
 import init, {
 	add,
 	build_grid_with_heightmap,
+	edit_heightmap,
 	generate_biomes,
 	generate_biomes_for_grid,
 	generate_climate,
@@ -65,6 +66,12 @@ type WorkerRequest =
 			seed: number;
 			cellCount: number;
 			opts?: unknown;
+	  }
+	| {
+			kind: "edit_heightmap";
+			reqId: number;
+			grid: unknown;
+			ops: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -122,6 +129,7 @@ type WorkerResponse =
 			result: Grid;
 	  }
 	| { kind: "generate_world"; reqId: number; ok: true; result: Grid }
+	| { kind: "edit_heightmap"; reqId: number; ok: true; result: Grid }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 let nextReqId = 1;
@@ -188,6 +196,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			const n = Math.max(4, Math.min(60_000, req.cellCount >>> 0));
 			const result = generate_world(req.seed >>> 0, n, req.opts ?? {});
 			send({ kind: "generate_world", reqId, ok: true, result });
+		} else if (req.kind === "edit_heightmap") {
+			// Step 2.5.1: apply a batch of heightmap edit ops to grid.cells.h.
+			const result = edit_heightmap(req.grid, req.ops);
+			send({ kind: "edit_heightmap", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

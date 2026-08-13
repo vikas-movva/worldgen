@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const add: (a: number, b: number) => number;
 export const build_grid_with_heightmap: (a: any, b: number) => any;
+export const edit_heightmap: (a: any, b: any) => any;
 export const generate_biomes: (a: any, b: any, c: any) => any;
 export const generate_biomes_for_grid: (a: any) => any;
 export const generate_climate: (a: any, b: any, c: any) => any;

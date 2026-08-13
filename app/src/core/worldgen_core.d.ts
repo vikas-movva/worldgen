@@ -20,6 +20,13 @@ export function add(a: number, b: number): number;
 export function build_grid_with_heightmap(mesh_js: any, seed: number): any;
 
 /**
+ * Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
+ * `grid.cells.h` in place. Deterministic: same `grid` + same `ops` yields
+ * byte-identical `h`. Exposed as `edit_heightmap(grid, ops)` to JS.
+ */
+export function edit_heightmap(grid_js: any, ops_js: any): any;
+
+/**
  * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
  * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
  * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
@@ -103,6 +110,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly add: (a: number, b: number) => number;
     readonly build_grid_with_heightmap: (a: any, b: number) => any;
+    readonly edit_heightmap: (a: any, b: any) => any;
     readonly generate_biomes: (a: any, b: any, c: any) => any;
     readonly generate_biomes_for_grid: (a: any) => any;
     readonly generate_climate: (a: any, b: any, c: any) => any;

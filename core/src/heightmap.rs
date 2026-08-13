@@ -209,7 +209,7 @@ fn get_blob_power(cells: usize) -> f64 {
 }
 
 /// FMG `linePower` table, keyed by cell count.
-fn get_line_power(cells: usize) -> f64 {
+pub fn get_line_power(cells: usize) -> f64 {
     let table: &[(usize, f64)] = &[
         (1000, 0.75),
         (2000, 0.77),
@@ -387,7 +387,7 @@ fn add_pit(view: &MeshView, h: &mut [u8], rng: &mut StdRng, start: usize, blob_p
 /// Build the main ridge path from `start` to `end` walking the neighbor that
 /// minimizes squared distance to `end`, with `randomness` chance to halve the
 /// distance (FMG `getRange`). `used` prevents revisits.
-fn build_range(view: &MeshView, rng: &mut StdRng, start: usize, end: usize, randomness: f64) -> Vec<usize> {
+pub fn build_range(view: &MeshView, rng: &mut StdRng, start: usize, end: usize, randomness: f64) -> Vec<usize> {
     let mut used = vec![false; view.points.len()];
     let mut range = vec![start];
     used[start] = true;

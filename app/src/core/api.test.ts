@@ -19,6 +19,8 @@ import {
   clampSeed,
   coreApi,
   type Grid,
+  type EditOp,
+  type EditMode,
 } from "./api";
 
 // ---- fake worker harness -------------------------------------------------
@@ -230,6 +232,179 @@ describe("coreApi request routing", () => {
   it("generateWorld defaults opts to {} when omitted", () => {
     coreApi.generateWorld(1, 10);
     expect((fake.lastMessage as AnyReq).opts).toEqual({});
+  });
+});
+
+// ---- editHeightmap (Step 2.5.1) ------------------------------------------
+
+describe("coreApi.editHeightmap", () => {
+  it("returns a Promise (off-main-thread contract)", () => {
+    const grid = makeFakeGrid(1000, 42);
+    const ops: EditOp[] = [
+      {
+        mode: "Raise",
+        center_cell: 100,
+        target_cell: 0,
+        radius: 500.0,
+        strength: 0.5,
+        cells: [],
+      },
+    ];
+    const p = coreApi.editHeightmap(grid, ops);
+    expect(p).toBeInstanceOf(Promise);
+  });
+
+  it("emits the exact 'edit_heightmap' wire message with grid + ops", () => {
+    const grid = makeFakeGrid(1000, 42);
+    const ops: EditOp[] = [
+      {
+        mode: "Raise",
+        center_cell: 100,
+        target_cell: 0,
+        radius: 500.0,
+        strength: 0.5,
+        cells: [],
+      },
+      {
+        mode: "Lower",
+        center_cell: 200,
+        target_cell: 0,
+        radius: 300.0,
+        strength: 0.3,
+        cells: [200, 201, 202],
+      },
+    ];
+    coreApi.editHeightmap(grid, ops);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "edit_heightmap",
+      grid,
+      ops,
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("resolves with the worker's updated Grid result", async () => {
+    const grid = makeFakeGrid(1000, 42);
+    const ops: EditOp[] = [
+      {
+        mode: "Raise",
+        center_cell: 100,
+        target_cell: 0,
+        radius: 500.0,
+        strength: 0.5,
+        cells: [],
+      },
+    ];
+    const expected = makeFakeGrid(1000, 42);
+    expected.cells.h[100] = 75; // simulate raise
+    const p = coreApi.editHeightmap(grid, ops);
+    fake.reply(expected);
+    const result = await p;
+    expect(result).toBe(expected);
+    // Verify the returned grid has the modified height
+    expect(result.cells.h[100]).toBe(75);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(1000, 42);
+    const ops: EditOp[] = [
+      {
+        mode: "Raise",
+        center_cell: 100,
+        target_cell: 0,
+        radius: 500.0,
+        strength: 0.5,
+        cells: [],
+      },
+    ];
+    const p = coreApi.editHeightmap(grid, ops);
+    fake.replyError("wasm panicked: edit_heightmap failed");
+    await expect(p).rejects.toThrow(/edit_heightmap failed/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const grid1 = makeFakeGrid(1000, 1);
+    const grid2 = makeFakeGrid(1000, 2);
+    const ops1: EditOp[] = [
+      {
+        mode: "Raise",
+        center_cell: 100,
+        target_cell: 0,
+        radius: 500.0,
+        strength: 0.5,
+        cells: [],
+      },
+    ];
+    const ops2: EditOp[] = [
+      {
+        mode: "Lower",
+        center_cell: 200,
+        target_cell: 0,
+        radius: 300.0,
+        strength: 0.3,
+        cells: [],
+      },
+    ];
+    const p1 = coreApi.editHeightmap(grid1, ops1);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.editHeightmap(grid2, ops2);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    const g1 = makeFakeGrid(1000, 1);
+    g1.cells.h[100] = 80;
+
+    // Deliver replies out of order to prove reqId routing.
+    fake.replyError("boom on second"); // satisfies p2's message (reqId = second)
+    fake.lastMessage = firstMsg; // point the fake at p1 for the next reply
+    fake.reply(g1); // satisfies p1
+
+    await expect(p2).rejects.toThrow("boom on second");
+    await expect(p1).resolves.toBe(g1);
+  });
+
+  it("forwards all EditMode variants on the wire", () => {
+    const modes: EditMode[] = [
+      "Raise",
+      "Lower",
+      "Flatten",
+      "Smooth",
+      "Range",
+      "Trough",
+      "Strait",
+      "Mask",
+      "Invert",
+      "Add",
+      "Multiply",
+    ];
+    for (const mode of modes) {
+      const grid = makeFakeGrid(100, 42);
+      const ops: EditOp[] = [
+        {
+          mode,
+          center_cell: 10,
+          target_cell: 50,
+          radius: 100.0,
+          strength: 0.5,
+          cells: [10, 11, 12],
+        },
+      ];
+      coreApi.editHeightmap(grid, ops);
+      expect(fake.lastMessage).toMatchObject({
+        kind: "edit_heightmap",
+        ops: [
+          {
+            mode,
+            center_cell: 10,
+            target_cell: 50,
+            radius: 100.0,
+            strength: 0.5,
+            cells: [10, 11, 12],
+          },
+        ],
+      });
+    }
   });
 });
 

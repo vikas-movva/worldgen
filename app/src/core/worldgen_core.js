@@ -31,6 +31,19 @@ export function build_grid_with_heightmap(mesh_js, seed) {
 }
 
 /**
+ * Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
+ * `grid.cells.h` in place. Deterministic: same `grid` + same `ops` yields
+ * byte-identical `h`. Exposed as `edit_heightmap(grid, ops)` to JS.
+ * @param {any} grid_js
+ * @param {any} ops_js
+ * @returns {any}
+ */
+export function edit_heightmap(grid_js, ops_js) {
+    const ret = wasm.edit_heightmap(grid_js, ops_js);
+    return ret;
+}
+
+/**
  * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
  * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
  * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
@@ -199,6 +212,10 @@ function __wbg_get_imports() {
             const ret = typeof(val) === 'object' && val !== null;
             return ret;
         },
+        __wbg___wbindgen_is_string_e6f02f0ea5f20a32: function(arg0) {
+            const ret = typeof(arg0) === 'string';
+            return ret;
+        },
         __wbg___wbindgen_is_undefined_6cff064c44e0d823: function(arg0) {
             const ret = arg0 === undefined;
             return ret;
@@ -236,6 +253,10 @@ function __wbg_get_imports() {
             const ret = arg0.done;
             return ret;
         },
+        __wbg_entries_7774d489e1da5f4f: function(arg0) {
+            const ret = Object.entries(arg0);
+            return ret;
+        },
         __wbg_error_757e9472f8410341: function(arg0, arg1) {
             let deferred0_0;
             let deferred0_1;
@@ -246,6 +267,10 @@ function __wbg_get_imports() {
             } finally {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
+        },
+        __wbg_get_c0c8f8d7da0c03dd: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
         },
         __wbg_get_d173c0308df22d37: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
