@@ -17,8 +17,7 @@ coastline, temperature, precipitation, and biomes recompute from it.
 
 ## Features (current status)
 
-This is an active, early-stage build (implementation is tracked step-by-step in
-[]()). Landed so far:
+This is an active, early-stage build. Landed so far:
 
 - **Deterministic Rust → WASM core** (`core/`) — seeded, byte-identical output
   across runs for a given seed.
@@ -68,7 +67,7 @@ worldgen/
 │   ├── src/state/ # Zustand stores
 │   ├── src/workers/# Web Worker bridge
 │   └── scripts/   # node-side verification harnesses
-└──           # design doc, implementation plan, progress, FMG research
+└── scripts/       # node-side verification harnesses
 ```
 
 > **Note:** the compiled WASM artifact (`app/src/core/worldgen_core_bg.wasm`)
@@ -143,20 +142,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). Key rules: keep the four-layer
 separation (core never imports UI; renderer never mutates state; state has no
 render code), preserve determinism (seeded RNG only), and never commit secrets
 or `.env` files.
-
----
-
-## Documentation
-
-- [``]() — the
-  design doc (architecture, data model, scope decisions).
-- [``]()
-  — step-by-step, agent-ready implementation plan with verification gates.
-- [``]()
-  — technical requirements.
-- [``]() — current step status.
-- [``]() — source study of
-  Azgaar's FMG that informed the design.
 
 ---
 

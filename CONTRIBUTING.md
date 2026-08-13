@@ -6,8 +6,7 @@ so the build stays deterministic and the architecture stays clean.
 
 ## Architecture rules (non-negotiable)
 
-The project enforces a strict four-layer separation (from
-[``]()):
+The project enforces a strict four-layer separation:
 
 - **Core (`core/`) never imports UI.** The Rust → WASM core is pure compute
   (mesh, heightmap, climate, biomes, rivers, event engine). It has no knowledge
@@ -67,5 +66,5 @@ provider/key at runtime — nothing is stored in the repo.
 
 ## Docs
 
-Keep [``]() in sync when you complete or start
-a step. Design changes belong in the design doc / implementation plan.
+Keep progress notes in sync when you complete or start a step. Design changes
+belong in the design documentation.

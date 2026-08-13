@@ -21,6 +21,3 @@ app/dist
 # Editor
 .vscode
 .idea
-
-# Living status doc (intentionally untracked; regenerates each step)
-
