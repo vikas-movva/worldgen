@@ -1,6 +1,6 @@
-/docs
 # Rust / wasm-pack
 core/target
+core/app
 target
 
 # Node / Vite
@@ -8,9 +8,19 @@ app/node_modules
 app/dist
 *.local
 
+# Secrets — never commit credentials
+.env
+.env.*
+
+# Logs
+*.log
+
 # OS
 .DS_Store
 
 # Editor
 .vscode
 .idea
+
+# Living status doc (intentionally untracked; regenerates each step)
+
