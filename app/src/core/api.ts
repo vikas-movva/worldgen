@@ -90,13 +90,25 @@ export type LakeGeo = {
 	closed: boolean;
 };
 
-/** Step 2.5.3: full dependent recompute result. `removed_burgs` /
- * `dissolved_states` are empty until Phase 3 entities are generated. */
+/** Step 2.5.3: full dependent recompute result. `removed_burgs` is a list of
+ * burg NAMES (strings) for the warning toast — matches Rust `Vec<String>`.
+ * `dissolved_states` is a list of state ids. `state`/`province`/`burg` are
+ * post-repair entity index arrays (length N, `-1` = unassigned). `fl`/`r`/`conf`
+ * are drainage arrays from `rivers::compute_drainage`. `coastline` is the
+ * land-water boundary mask (1 = land cell adjacent to water). All are empty /
+ * `-1`-filled until Phase 3 entities are generated. */
 export type DependentResult = {
 	temp: Int8Array | number[];
 	prec: Uint8Array | number[];
 	biome: Uint8Array | number[];
-	removed_burgs: number[];
+	state: Int32Array | number[];
+	province: Int32Array | number[];
+	burg: Int16Array | number[];
+	fl: Uint16Array | number[];
+	r: Uint16Array | number[];
+	conf: Uint16Array | number[];
+	coastline: Uint8Array | number[];
+	removed_burgs: string[];
 	dissolved_states: number[];
 	rivers: RiverGeo[];
 	lakes: LakeGeo[];

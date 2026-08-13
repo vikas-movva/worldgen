@@ -552,16 +552,16 @@ describe("coreApi.recomputeDependents", () => {
     const secondMsg = fake.lastMessage!;
     expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
 
-    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), removed_burgs: [], dissolved_states: [], rivers: [], lakes: [] });
+    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), state: new Int32Array(100).fill(-1), province: new Int32Array(100).fill(-1), burg: new Int16Array(100).fill(-1), fl: new Uint16Array(100), r: new Uint16Array(100), conf: new Uint16Array(100), coastline: new Uint8Array(100), removed_burgs: [], dissolved_states: [], rivers: [], lakes: [] });
     fake.lastMessage = firstMsg;
-    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), removed_burgs: [3], dissolved_states: [], rivers: [], lakes: [] });
+    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), state: new Int32Array(100).fill(-1), province: new Int32Array(100).fill(-1), burg: new Int16Array(100).fill(-1), fl: new Uint16Array(100), r: new Uint16Array(100), conf: new Uint16Array(100), coastline: new Uint8Array(100), removed_burgs: ["Helms Deep"], dissolved_states: [], rivers: [], lakes: [] });
 
     const r2 = await p2;
     const r1 = await p1;
     // First reply (reqId=2, to p2): removed_burgs = []
-    // Second reply (reqId=1, to p1): removed_burgs = [3]
+    // Second reply (reqId=1, to p1): removed_burgs = ["Helms Deep"]
     expect(r2.removed_burgs).toEqual([]);
-    expect(r1.removed_burgs).toEqual([3]);
+    expect(r1.removed_burgs).toEqual(["Helms Deep"]);
   });
 });
 

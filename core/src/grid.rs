@@ -165,6 +165,11 @@ pub struct LakeGeo {
 /// and the new river/lake geometry. The renderer swaps data textures from
 /// this; the entity repair cascade fills `removed_burgs`/`dissolved_states`
 /// for the warning toast.
+///
+/// Drainage arrays `fl`/`r`/`conf` are included so downstream consumers
+/// (biome moisture's river-flux bonus, the Tier-1 local recompute, and the
+/// Phase 3 entity generators) can read drainage state without re-running
+/// the full cascade.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct DependentResult {
     pub temp: Vec<i8>,
@@ -173,6 +178,15 @@ pub struct DependentResult {
     pub state: Vec<i32>,
     pub province: Vec<i32>,
     pub burg: Vec<i16>,
+    /// Per-cell water flux (discharge), from `rivers::compute_drainage`.
+    pub fl: Vec<u16>,
+    /// River id at each cell (0 = none), from `rivers::compute_drainage`.
+    pub r: Vec<u16>,
+    /// Confluence flag (0 = none; nonzero = confluence flux).
+    pub conf: Vec<u16>,
+    /// Coastline mask: `true` for land cells adjacent to water (h < SEA_LEVEL).
+    /// Computed by `recompute_dependents_inner` as the coastline/land-water step.
+    pub coastline: Vec<u8>,
     pub removed_burgs: Vec<String>,
     pub dissolved_states: Vec<u32>,
     pub rivers: Vec<RiverGeo>,
