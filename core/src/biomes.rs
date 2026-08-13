@@ -206,15 +206,28 @@ pub fn generate_biomes(mesh: &Mesh, heightmap: &[u8], temp: &[i8], prec: &[u8]) 
 /// Recomputes the biome id for each requested cell from `h`/`temp`/`prec` +
 /// the land-neighbor precipitation mean (FMG moisture formula, minus the
 /// deferred river term). Uses the **identical** per-cell formula as the full
-/// `generate_biomes` pass (shared `biome_id_at_cell` helper) so the local
-/// patch byte-matches what a full re-pass would produce for each cell.
+/// `generate_biomes` pass (shared `biome_id_from_moisture` helper).
 ///
-/// **Important:** this is a local approximation. The biome depends on the
-/// mean precipitation of *land neighbors*; a brush stroke that flips a
-/// neighbor land↔water changes the moisture of this cell too, but this local
-/// recompute only re-evaluates the *explicitly listed* cells. The stroke-end
-/// Tier-2 `recompute_dependents` (Step 2.5.3) does the full global pass for
-/// correctness. During drag, the local patch is the best sub-16ms estimate.
+/// **Byte-match scope.** The local patch byte-matches what a full
+/// `generate_biomes` re-pass would produce for each cell **iff the moisture
+/// inputs are unchanged** — i.e. the cell's own `prec` and the `prec` of its
+/// land neighbors are the same values the full pass would see. Temperature
+/// (recomputed by `recompute_temp_local` first, altitude lapse, no prec
+/// dependency) always matches unconditionally.
+///
+/// **This is a local approximation after a heightmap edit.** Raising or
+/// lowering a cell changes the orographic `prec` of that cell and, via the
+/// wind pass, of its neighbors. The Tier-1 helper reads the **stale**
+/// `grid.cells.prec` (it does not rerun the precipitation pass), so a biome
+/// that depends on a changed moisture mean can diverge from a fresh
+/// from-scratch world regen (verified empirically: raising cell 250 in a
+/// seed=99999 test flips biome 6→8 because neighbor `prec` moved). Likewise
+/// a brush stroke that flips a neighbor land↔water changes the moisture of
+/// this cell, but this local recompute only re-evaluates the *explicitly
+/// listed* cells. Both divergences are reconciled by the stroke-end Tier-2
+/// `recompute_dependents` (Step 2.5.3) full pass. During drag, the local patch
+/// is the best sub-16ms estimate; the user sees the corrected biome on
+/// pointerup.
 ///
 /// Writes back into `grid.cells.biome[cell_id]` in place. Deterministic: same
 /// grid + same cell_ids → identical biomes (pure function, no RNG).
@@ -754,5 +767,246 @@ mod tests {
         // No panic; valid cells were recomputed.
         assert!((0..=12).contains(&grid.cells.biome[0]), "cell 0 biome out of range");
         assert!((0..=12).contains(&grid.cells.biome[5]), "cell 5 biome out of range");
+    }
+
+    /// `recompute_biome_local` actually READS `grid.cells.prec` (via the
+    /// land-neighbor moisture mean). With `Grid::from_mesh` zeroing `prec`, a
+    /// bug that used a hardcoded constant instead of `prec` would still pass
+    /// `recompute_biome_matches_full_pass` (both paths agree on the zero-prec
+    /// grid). This test fixes two grids identically except `prec` and asserts
+    /// at least one land cell's biome differs — proving the helper consumes
+    /// `prec`. It scans all cells and requires the divergence on a real mesh
+    /// rather than a hand-picked id, so it survives seed/fixture changes.
+    #[test]
+    fn recompute_biome_reads_prec() {
+        let (m, h, t, p) = fixture(3000, 42);
+
+        // Grid A: real prec from the climate fixture.
+        let mut grid_a = crate::grid::Grid::from_mesh(&m, 42);
+        grid_a.cells.h = h.clone();
+        grid_a.cells.temp = t.clone();
+        grid_a.cells.prec = p.clone();
+        let all: Vec<u32> = (0..m.points.len() as u32).collect();
+        recompute_biome_local(&mut grid_a, &all);
+
+        // Grid B: identical except prec flooded high (255) everywhere. The
+        // moisture mean shifts up for any land cell with at least one land
+        // neighbor, which must move at least one biome across a matrix
+        // threshold on a 3000-cell mesh.
+        let mut grid_b = crate::grid::Grid::from_mesh(&m, 42);
+        grid_b.cells.h = h.clone();
+        grid_b.cells.temp = t.clone();
+        grid_b.cells.prec = vec![255u8; m.points.len()];
+        recompute_biome_local(&mut grid_b, &all);
+
+        let mut diverged = 0usize;
+        for i in 0..m.points.len() {
+            if h[i] < MIN_LAND_HEIGHT {
+                continue; // water → always Marine regardless of prec
+            }
+            if grid_a.cells.biome[i] != grid_b.cells.biome[i] {
+                diverged += 1;
+            }
+        }
+        assert!(
+            diverged > 0,
+            "no land biome changed when prec went 0..255 everywhere — \
+             recompute_biome_local is not reading grid.cells.prec"
+        );
+    }
+
+    /// The Tier-1 local recompute is a documented approximation: after a
+    /// heightmap edit that changes the orographic `prec` (via the climate wind
+    /// pass), the local helper reads STALE `prec` while a fresh full
+    /// pass recomputes `prec` from the edited `h`. The biomes can therefore
+    /// diverge, and Step 2.5.3's `recompute_dependents` reconciles them.
+    ///
+    /// This test reproduces that divergence at the Rust level (the WASM R6
+    /// gate exercises it at the boundary): build a grid, raise a CLUSTER of
+    /// land cells (a brush-radius group, mirrors real usage), regenerate
+    /// climate fully (new temp + new prec), then compare a local biome
+    /// recompute over the cluster (which sees the new temp but the OLD prec)
+    /// against a fresh `generate_biomes` full pass (new temp + new prec). It
+    /// asserts across the whole cluster rather than one cell, because the
+    /// divergence at cell `c` requires one of `c`'s LAND NEIGHBORS' `prec` to
+    /// have moved — a single-cell edit rarely moves the neighbor's prec
+    /// enough, but a cluster edit reliably does. It asserts:
+    ///   (a) at least one cluster cell's biome diverges, AND
+    ///   (b) every divergence is *attributed* — the diverging cell or one of
+    ///       its neighbors had its `prec` change between the old and new
+    ///       climate passes (the stale-prec mechanism, not a logic bug).
+    #[test]
+    fn recompute_biome_diverges_when_prec_changes() {
+        let seeds = [42u32, 1337, 99999];
+        let mut saw_divergence = false;
+        let mut saw_unattributed = false;
+
+        for &seed in &seeds {
+            let (m, h, _t, p) = fixture(3000, seed);
+
+            // Pick a land cell near the center, then gather a small radius
+            // cluster around it (a brush footprint). Editing a cluster moves
+            // neighbor prec reliably across at least one cluster edge cell.
+            let world_h = m.world_h;
+            let world_w = m.world_w;
+            let mut center = 0usize;
+            let mut best = f64::MAX;
+            for i in 0..m.points.len() {
+                if h[i] < MIN_LAND_HEIGHT {
+                    continue;
+                }
+                let [x, y] = m.points[i];
+                let d = (x - world_w / 2.0).powi(2) + (y - world_h / 2.0).powi(2);
+                if d < best {
+                    best = d;
+                    center = i;
+                }
+            }
+            let [cx, cy] = m.points[center];
+            let radius = (world_w.min(world_h)) * 0.06; // ~6% of world → ~10-20 cells
+            let mut cluster: Vec<u32> = Vec::new();
+            for i in 0..m.points.len() {
+                let [px, py] = m.points[i];
+                if ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() <= radius {
+                    cluster.push(i as u32);
+                }
+            }
+
+            // Raise every land cell in the cluster by a MODERATE amount (to 50),
+            // not to a peak. An extreme raise (h=95) drives the cell into the
+            // cold-glacier regime where biome is determined by temp+h alone
+            // and the moisture divergence vanishes (verified empirically:
+            // raise_to=95 → diverged=0 across all seeds; raise_to=50 →
+            // diverged=14/16/20). A moderate raise keeps the biome
+            // moisture-sensitive so the stale-prec path diverges from the
+            // fresh-prec path — the contract under test.
+            let mut h_edited = h.clone();
+            for &id in &cluster {
+                let i = id as usize;
+                if h_edited[i] >= MIN_LAND_HEIGHT {
+                    h_edited[i] = 50;
+                }
+            }
+
+            // Fresh full climate pass over the EDITED heightmap.
+            let opts = climate::ClimateOpts::default();
+            let (t_new, p_new) = climate::generate_climate(&m, &h_edited, &opts);
+
+            // Local path: grid carrying NEW temp but the OLD prec (stale).
+            let mut grid_local = crate::grid::Grid::from_mesh(&m, seed as u64);
+            grid_local.cells.h = h_edited.clone();
+            grid_local.cells.temp = t_new.clone();
+            grid_local.cells.prec = p.clone(); // STALE prec — the Tier-1 approximation
+            grid_local.cells.biome = vec![0u8; m.points.len()];
+            recompute_biome_local(&mut grid_local, &cluster);
+
+            // Full path: grid carrying NEW temp AND new prec.
+            let biome_full = generate_biomes(&m, &h_edited, &t_new, &p_new);
+
+            for &id in &cluster {
+                let cell = id as usize;
+                let local_biome = grid_local.cells.biome[cell];
+                let full_biome = biome_full[cell];
+                if local_biome != full_biome {
+                    saw_divergence = true;
+                    // Attribute: the cell or a neighbor had its prec change.
+                    let lo = m.cells.i[cell] as usize;
+                    let hi = m.cells.i[cell + 1] as usize;
+                    let mut prec_moved = p[cell] != p_new[cell];
+                    for &nb in &m.cells.c[lo..hi] {
+                        let n = nb as usize;
+                        if p[n] != p_new[n] {
+                            prec_moved = true;
+                            break;
+                        }
+                    }
+                    if !prec_moved {
+                        saw_unattributed = true;
+                        eprintln!(
+                            "seed={seed} cell={cell}: biome local={local_biome} full={full_biome} \
+                             but no prec moved in cell or neighbors"
+                        );
+                    }
+                }
+            }
+        }
+        // (a) We must observe at least one divergence across the seed set,
+        // otherwise the contract-under-test isn't being exercised.
+        assert!(saw_divergence, "no biome divergence observed across seeds {seeds:?}");
+        // (b) Every observed divergence must be attributable to a prec change
+        // in the edited cell or one of its land neighbors. An unattributed
+        // divergence would indicate a logic bug, not the stale-prec Tier-1
+        // approximation that Step 2.5.3 reconciles.
+        assert!(
+            !saw_unattributed,
+            "at least one biome divergence was not caused by a prec change — \
+             investigate recompute_biome_local for a formula drift"
+        );
+    }
+
+    /// The moisture mean only includes **land** neighbors' `prec` (cells with
+    /// `h >= MIN_LAND_HEIGHT`), mirroring `generate_biomes`. A water neighbor
+    /// must not contribute its `prec` to the mean. This test builds a cell with
+    /// one land and one water neighbor, sets the water neighbor's `prec` high
+    /// and the land neighbor's `prec` low, and asserts the cell's biome
+    /// matches a full-pass `generate_biomes` over the same inputs (which also
+    /// filters to land neighbors). This guards against a regression where the
+    /// local helper summed ALL neighbors' prec.
+    #[test]
+    fn recompute_biome_moisture_uses_land_neighbors_only() {
+        let (m, h, t, p) = fixture(2000, 42);
+
+        // Find a land cell with at least one land neighbor AND at least one
+        // water neighbor, so the filter actually has a choice to make.
+        let mut target = 0usize;
+        let mut found = false;
+        for cell in 0..m.points.len() {
+            if h[cell] < MIN_LAND_HEIGHT {
+                continue;
+            }
+            let lo = m.cells.i[cell] as usize;
+            let hi = m.cells.i[cell + 1] as usize;
+            let has_land_nb = (&m.cells.c[lo..hi])
+                .iter()
+                .any(|&nb| h[nb as usize] >= MIN_LAND_HEIGHT);
+            let has_water_nb = (&m.cells.c[lo..hi])
+                .iter()
+                .any(|&nb| h[nb as usize] < MIN_LAND_HEIGHT);
+            if has_land_nb && has_water_nb {
+                target = cell;
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "fixture (2000, 42) has no land cell with both a land and water neighbor");
+
+        // Construct a grid where the water neighbor's prec is high (255) and
+        // the land neighbor's prec is low (0); if the local helper wrongly
+        // included the water neighbor, the moisture mean would be inflated.
+        let mut grid = crate::grid::Grid::from_mesh(&m, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = t.clone();
+        let mut p_syn = p.clone();
+        let lo = m.cells.i[target] as usize;
+        let hi = m.cells.i[target + 1] as usize;
+        for &nb in &m.cells.c[lo..hi] {
+            let n = nb as usize;
+            if h[n] < MIN_LAND_HEIGHT {
+                p_syn[n] = 255; // water neighbor: high prec, must be IGNORED
+            } else {
+                p_syn[n] = 0; // land neighbor: low prec, must be INCLUDED
+            }
+        }
+        grid.cells.prec = p_syn.clone();
+        recompute_biome_local(&mut grid, &[target as u32]);
+
+        // Ground truth: the full pass applies the SAME land-neighbor filter.
+        let full = generate_biomes(&m, &h, &t, &p_syn);
+        assert_eq!(
+            grid.cells.biome[target], full[target],
+            "local biome {} != full-pass biome {} for target={target}: \
+             the local helper is not filtering to land neighbors only",
+            grid.cells.biome[target], full[target]
+        );
     }
 }

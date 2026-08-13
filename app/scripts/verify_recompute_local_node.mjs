@@ -5,7 +5,16 @@
 //   R3. Return arrays length matches cellIds length (texture patch contract)
 //   R4. Determinism: same grid + same cellIds → byte-identical temp/biome
 //   R5. Live recolor < 16ms for a 30-cell brush radius (design gate)
-//   R6. Local recompute matches full-pass values for each requested cell
+//   R6. Local recompute temp byte-matches a fresh generate_climate_for_grid pass
+//       for every edited cell (temp is prec-independent → always equal); biome
+//       is compared against a fresh generate_biomes_for_grid pass and the
+//       number of divergences is reported. Biome divergence after a heightmap
+//       edit is EXPECTED (the Tier-1 helper reads stale `prec` while a fresh
+//       climate pass recomputes precipitation from the edited heights); the
+//       stroke-end Tier-2 `recompute_dependents` (Step 2.5.3) reconciles it.
+//       This gate asserts temp is byte-identical and biome divergences are
+//       attributed (i.e. each diverging cell had its own or a neighbor's
+//       `prec` change), NOT that biome matches.
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -158,15 +167,18 @@ function findCenterLandCell(grid) {
 	// Warm up
 	wasm.recompute_temp_biome_local(g, cellIds, opts);
 
-	// Measure serde baseline (0 cells — pure deserialization + empty loop)
-	// Average 5 calls to reduce JIT/GC noise.
-	let serdeSum = 0;
+	// Measure serde baseline (0 cells — pure deserialization + empty loop).
+	// Median of 5 samples (matching the total's median approach) for noise
+	// immunity; a mean can be pulled above the 30-cell total by a single GC
+	// outlier and produce a non-physical negative compute value.
+	const serdeSamples = [];
 	for (let i = 0; i < 5; i++) {
 		const t = performance.now();
 		wasm.recompute_temp_biome_local(g, [], opts);
-		serdeSum += performance.now() - t;
+		serdeSamples.push(performance.now() - t);
 	}
-	const serdeBaseline = serdeSum / 5;
+	serdeSamples.sort((a, b) => a - b);
+	const serdeBaseline = serdeSamples[2]; // median of 5
 
 	// Measure 30-cell recompute — median of 9 samples (drop outliers from JIT/GC).
 	const samples = [];
@@ -177,7 +189,12 @@ function findCenterLandCell(grid) {
 	}
 	samples.sort((a, b) => a - b);
 	const totalMs = samples[4]; // median
-	const computeMs = totalMs - serdeBaseline;
+	// Compute-only = total - serde baseline. Floor at 0: with serde so dominant
+	// (>99% of total at N=10k), the true compute is <1ms and sits below the
+	// between-run noise floor, so the raw subtraction can be slightly negative.
+	// The floored value is the honest "compute is negligible" signal; the hard
+	// gate is `compute < 1ms`.
+	const computeMs = Math.max(0, totalMs - serdeBaseline);
 
 	console.log(
 		`R5 Live recolor: total=${totalMs.toFixed(2)}ms` +
@@ -199,45 +216,89 @@ function findCenterLandCell(grid) {
 	console.log("  PASS (compute < 1ms)");
 }
 
-// R6: Local recompute values match the full grid after recompute
-// (the local recompute for each cell must match what a from-scratch
-// calculate_temperatures + generate_biomes would produce for that cell)
+// R6: Local recompute vs fresh full-pass (the real contract test).
+//   - temp MUST byte-match a fresh generate_climate_for_grid pass for every
+//     edited cell (temp is a pure function of y+h, no prec dependency).
+//   - biome is compared against generate_biomes_for_grid. Divergence after a
+//     heightmap edit is EXPECTED (Tier-1 reads stale `prec`; a fresh climate
+//     pass recomputes precipitation from edited heights). The gate asserts each
+//     biome divergence is ATTRIBUTED — the cell or a land neighbor had its
+//     `prec` change — not that biome matches. The stroke-end Tier-2 pass
+//     (Step 2.5.3) reconciles it.
 {
 	const g = structuredClone(grid);
-	// Modify some cells
 	const cellIds = [100, 200, 300, 400, 500];
 	for (const id of cellIds) {
 		g.cells.h[id] = 80; // raise
 	}
 
-	// Local recompute
+	// Local recompute on grid A.
 	const localResult = wasm.recompute_temp_biome_local(g, cellIds, opts);
 
-	// Verify: the local result for each cell should match a fresh full-pass
-	// temp/biome value IF we regenerate climate+biome with the same h.
-	// We can't call generate_climate directly from here, but we can verify
-	// that the returned temp values are consistent with altitude lapse:
-	// a raised cell should have temp <= original temp.
+	// Fresh full pass on grid B (same edited heights).
+	const gB = structuredClone(grid);
+	for (const id of cellIds) gB.cells.h[id] = 80;
+	const gridFresh = wasm.generate_climate_for_grid(gB, opts);
+	const gridFull = wasm.generate_biomes_for_grid(gridFresh, opts);
+
+	let tempMismatches = 0;
+	let biomeDivergences = 0;
+	let unattributed = 0;
 	for (let i = 0; i < cellIds.length; i++) {
 		const id = cellIds[i];
-		const originalTemp = grid.cells.temp[id];
-		const newTemp = localResult.temp[i];
-		if (g.cells.h[id] > grid.cells.h[id] && newTemp > originalTemp) {
-			// Allow equal (if already very cold), but not increase
-			if (g.cells.h[id] >= 80 && grid.cells.h[id] < 80) {
-				// Raised a lot → temp must drop or stay
-				if (newTemp > originalTemp + 1)
-					throw new Error(
-						`R6 FAIL: raised cell ${id} temp increased: ${originalTemp} -> ${newTemp}`,
-					);
+		const localTemp = localResult.temp[i];
+		const fullTemp = gridFull.cells.temp[id];
+		// Temp must byte-match (prec-independent).
+		if (localTemp !== fullTemp) {
+			tempMismatches++;
+			console.log(
+				`R6 temp mismatch cell ${id}: local=${localTemp} full=${fullTemp}`,
+			);
+		}
+		const localBiome = localResult.biome[i];
+		const fullBiome = gridFull.cells.biome[id];
+		if (localBiome !== fullBiome) {
+			biomeDivergences++;
+			// Attribute: did the cell's or a land neighbor's `prec` change
+			// between the original grid and the fresh full pass?
+			const lo = grid.mesh.cells.i[id];
+			const hi = grid.mesh.cells.i[id + 1];
+			const neighbors = Array.from(grid.mesh.cells.c.slice(lo, hi));
+			const candidates = [id, ...neighbors];
+			let precMoved = false;
+			for (const nb of candidates) {
+				if (nb >= N) continue;
+				if (grid.cells.prec[nb] !== gridFull.cells.prec[nb]) {
+					precMoved = true;
+					break;
+				}
+			}
+			if (!precMoved) {
+				unattributed++;
+				console.log(
+					`R6 UNATTRIBUTED biome divergence cell ${id}: local=${localBiome} full=${fullBiome} (no prec change in cell or neighbors)`,
+				);
+			} else {
+				console.log(
+					`R6 expected biome divergence cell ${id}: local=${localBiome} full=${fullBiome} (prec moved — Tier-1 stale, reconciled by 2.5.3)`,
+				);
 			}
 		}
-		// Biome must be valid
-		const biome = localResult.biome[i];
-		if (biome < 0 || biome > 12)
-			throw new Error(`R6 FAIL: biome ${biome} out of [0,12] at cell ${id}`);
 	}
-	console.log("R6 Local recompute values consistent with altitude lapse: PASS");
+	// Temp must be byte-identical: this is the hard contract.
+	if (tempMismatches > 0)
+		throw new Error(
+			`R6 FAIL: ${tempMismatches}/${cellIds.length} temp cells did not match the fresh full pass (temp is prec-independent and must always match)`,
+		);
+	// Unattributed biome divergence would be a real logic bug, not the
+	// documented stale-prec approximation.
+	if (unattributed > 0)
+		throw new Error(
+			`R6 FAIL: ${unattributed} biome divergence(s) were not caused by a prec change — investigate the helper`,
+		);
+	console.log(
+		`R6: temp byte-identical for all ${cellIds.length} edited cells; biome divergences=${biomeDivergences} (all attributed to stale prec; reconciled by Step 2.5.3): PASS`,
+	);
 }
 
 console.log("\nAll Step 2.5.2 WASM boundary gates PASS (R1-R6)");

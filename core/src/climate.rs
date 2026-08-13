@@ -251,7 +251,9 @@ pub fn calculate_temperatures(mesh: &Mesh, h: &[u8], opts: &ClimateOpts, coords:
 /// `recompute_temp_local_with_coords` directly (to share one `MapCoords`).
 /// This convenience entry is kept as a standalone public API for callers that
 /// only need temperature.
-#[allow(dead_code)]
+#[allow(dead_code)] // TODO(2.5.4): remove if the brush editor UI keeps the Grid
+                   // in-worker and calls a single combined entry; delete the
+                   // standalone if no VertX caller materializes.
 pub fn recompute_temp_local(grid: &mut crate::grid::Grid, cell_ids: &[u32], opts: &ClimateOpts) {
     let coords = calculate_map_coordinates(opts);
     recompute_temp_local_with_coords(grid, cell_ids, opts, &coords);
@@ -1568,6 +1570,65 @@ mod tests {
 
         // Cells 0 and 5 were recomputed; no panic.
         assert!(grid.cells.temp[0] != 0 || grid.cells.temp[5] != 0, "at least one in-range cell should have nonzero temp");
+    }
+
+    /// The local recompute must derive temp from the **current** `h`, not from
+    /// a cached/stale value. Models the real brush-drag usage: build a grid,
+    /// take a full-pass temp, then MUTATE `h` (raise a cell), recompute that
+    /// one cell locally, and assert the local temp now matches a fresh
+    /// full-pass over the mutated `h` — not the original full pass. This
+    /// catches a regression where `recompute_temp_local` ignored the edited
+    /// `h` (e.g. read a precomputed temp field) and the zeroed-grid
+    /// `recompute_temp_matches_full_pass` test would still spuriously pass.
+    #[test]
+    fn recompute_temp_reflects_edited_height() {
+        let (mesh, h) = fixture(3000, 42);
+        let opts = default_opts();
+        let coords = calculate_map_coordinates(&opts);
+
+        let full_temp_original = calculate_temperatures(&mesh, &h, &opts, &coords);
+
+        // Pick a land cell near the center to raise.
+        let world_h = mesh.world_h;
+        let world_w = mesh.world_w;
+        let mut center = 0;
+        let mut best_dist = f64::MAX;
+        for i in 0..mesh.points.len() {
+            if h[i] < 20 {
+                continue;
+            }
+            let [x, y] = mesh.points[i];
+            let d = (x - world_w / 2.0).powi(2) + (y - world_h / 2.0).powi(2);
+            if d < best_dist {
+                best_dist = d;
+                center = i;
+            }
+        }
+
+        // Build the grid with the ORIGINAL h, then mutate just this cell.
+        let mut grid = crate::grid::Grid::from_mesh(&mesh, 42);
+        grid.cells.h = h.clone();
+        grid.cells.temp = full_temp_original.clone();
+        grid.cells.h[center] = 95;
+        recompute_temp_local_with_coords(&mut grid, &[center as u32], &opts, &coords);
+
+        // Fresh full pass over the MUTATED heightmap for the ground truth.
+        let mut h_edited = h.clone();
+        h_edited[center] = 95;
+        let full_temp_edited = calculate_temperatures(&mesh, &h_edited, &opts, &coords);
+
+        assert_eq!(
+            grid.cells.temp[center], full_temp_edited[center],
+            "local recompute must reflect the edited h (center={center}): \
+             local={} full_edited={} full_original={}",
+            grid.cells.temp[center], full_temp_edited[center], full_temp_original[center]
+        );
+        // And it must differ from the original full pass (sanity: the raise
+        // actually changed the temperature at this cell).
+        assert_ne!(
+            full_temp_edited[center], full_temp_original[center],
+            "test premise failed: raising h did not change the full-pass temp at center={center}"
+        );
     }
 
     /// `TempCurve::from_opts` produces the same parameters as the old inline
