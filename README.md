@@ -1,4 +1,4 @@
-# Worldgen (codename: Worldforge)
+# Worldgen
 
 A **local-first worldbuilding tool** — an FMG-style (Azgaar's Fantasy Map
 Generator) procedural map generator **geared to worldbuilding**, running
