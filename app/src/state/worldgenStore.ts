@@ -57,3 +57,12 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 export const useGrid = () => useWorldgenStore((s) => s.grid);
 export const useMesh = () => useWorldgenStore((s) => s.mesh);
 export const useClimate = () => useWorldgenStore((s) => s.climate);
+
+// Plain (non-hook) projections of the same slices. `useGrid`/`useMesh`/
+// `useClimate` wrap these so the React hook and any non-React consumer
+// (tests, workers) read the identical slice. Centralizing the projection
+// here means a rename of the underlying state field can't silently break
+// the hook without also breaking these tests.
+export const selectGrid = (s: WorldgenState): WorldgenState["grid"] => s.grid;
+export const selectMesh = (s: WorldgenState): WorldgenState["mesh"] => s.mesh;
+export const selectClimate = (s: WorldgenState): WorldgenState["climate"] => s.climate;

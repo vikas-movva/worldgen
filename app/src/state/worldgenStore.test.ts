@@ -193,27 +193,38 @@ describe("worldgenStore.clear", () => {
 
 // ---- selectors ---------------------------------------------------------
 
+// `useGrid`/`useMesh`/`useClimate` are React hooks (they call `useStore`,
+// which needs a React render context and throws when called bare). Their
+// projection logic is the body `selectGrid`/`selectMesh`/`selectClimate`,
+// which read the same slice the hook wraps. We pin those selectors directly
+// by feeding the store's `getState()` (the object the hook projects from),
+// so a regression in the named selection (e.g. a typo'd slice key) fails
+// here rather than only at runtime in a React component.
+import { selectClimate, selectGrid, selectMesh } from "./worldgenStore";
+
 describe("worldgenStore selectors", () => {
-	// `useGrid`/`useMesh`/`useClimate` are React hooks that call
-	// `useStore` (which needs a React render context); calling them bare
-	// throws `Cannot read properties of null (reading 'useCallback')`. We
-	// instead pin the selector body (the slice they project) through the
-	// store's `getState`, which is exactly what the hook reads.
-	it("useGrid projects the grid slice (matches getState().grid)", () => {
+	it("selectGrid projects the grid slice (matches getState().grid)", () => {
 		const g = fakeGrid(64, 9);
 		useWorldgenStore.getState().setGrid(g);
-		expect(useWorldgenStore.getState().grid).toBe(g);
+		expect(selectGrid(useWorldgenStore.getState())).toBe(g);
 	});
 
-	it("useMesh projects the mesh slice", () => {
+	it("selectMesh projects the mesh slice", () => {
 		const m = fakeMesh(20, 3);
 		useWorldgenStore.getState().setMesh(m);
-		expect(useWorldgenStore.getState().mesh).toBe(m);
+		expect(selectMesh(useWorldgenStore.getState())).toBe(m);
 	});
 
-	it("useClimate projects the climate slice", () => {
+	it("selectClimate projects the climate slice", () => {
 		const c = fakeClimate(15);
 		useWorldgenStore.getState().setClimate(c);
-		expect(useWorldgenStore.getState().climate).toBe(c);
+		expect(selectClimate(useWorldgenStore.getState())).toBe(c);
+	});
+
+	it("selectors are pure projections (return null before any set)", () => {
+		// Fresh getState() has null slices; selectors must reflect that.
+		expect(selectGrid(useWorldgenStore.getState())).toBeNull();
+		expect(selectMesh(useWorldgenStore.getState())).toBeNull();
+		expect(selectClimate(useWorldgenStore.getState())).toBeNull();
 	});
 });

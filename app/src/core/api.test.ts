@@ -565,6 +565,153 @@ describe("coreApi.recomputeDependents", () => {
   });
 });
 
+// ---- grid-form + climate/biome bridge methods (Step 1.2 / 1.3 / 1.4) -----
+// These four `coreApi` methods were previously untested; a drift in their
+// wire contract (key rename, dropped clamp, wrong payload) would pass CI and
+// break the app. They follow the same fake-worker pattern as above.
+
+describe("coreApi.buildGridWithHeightmap", () => {
+  it("emits the 'build_grid_with_heightmap' wire message with clamped seed", () => {
+    const mesh = {} as never;
+    coreApi.buildGridWithHeightmap(mesh, -3);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "build_grid_with_heightmap",
+      mesh,
+      seed: 0, // negative clamped
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("resolves with the worker's Grid result", async () => {
+    const mesh = {} as never;
+    const p = coreApi.buildGridWithHeightmap(mesh, 42);
+    const expected = makeFakeGrid(1000, 42);
+    fake.reply(expected);
+    const result = await p;
+    expect(result).toBe(expected);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const mesh = {} as never;
+    const p = coreApi.buildGridWithHeightmap(mesh, 1);
+    fake.replyError("wasm panic: bad mesh");
+    await expect(p).rejects.toThrow(/bad mesh/);
+  });
+});
+
+describe("coreApi.generateClimate", () => {
+  it("emits the 'generate_climate' wire message with mesh + heightmap + opts", () => {
+    const mesh = {} as never;
+    const heightmap = new Uint8Array([0, 20, 50]);
+    const opts = { temperature_equator: 30 };
+    coreApi.generateClimate(mesh, heightmap, opts);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "generate_climate",
+      mesh,
+      heightmap,
+      opts,
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("defaults opts to {} when omitted", () => {
+    const mesh = {} as never;
+    const heightmap = new Uint8Array([0, 20]);
+    coreApi.generateClimate(mesh, heightmap);
+    expect((fake.lastMessage as AnyReq).opts).toEqual({});
+  });
+
+  it("resolves with { temp, prec } from the worker", async () => {
+    const mesh = {} as never;
+    const heightmap = new Uint8Array([10, 20]);
+    const p = coreApi.generateClimate(mesh, heightmap);
+    const result = {
+      temp: new Int8Array([5, 10]),
+      prec: new Uint8Array([40, 60]),
+    };
+    fake.reply(result);
+    const res = await p;
+    expect(res.temp).toBeInstanceOf(Int8Array);
+    expect(res.prec).toBeInstanceOf(Uint8Array);
+    expect(Array.from(res.temp)).toEqual([5, 10]);
+    expect(Array.from(res.prec)).toEqual([40, 60]);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const mesh = {} as never;
+    const p = coreApi.generateClimate(mesh, new Uint8Array([0]));
+    fake.replyError("wasm panic: climate failed");
+    await expect(p).rejects.toThrow(/climate failed/);
+  });
+});
+
+describe("coreApi.generateClimateForGrid", () => {
+  it("emits the 'generate_climate_for_grid' wire message with grid + opts", () => {
+    const grid = makeFakeGrid(100, 42);
+    const opts = { height_exponent: 2.0 };
+    coreApi.generateClimateForGrid(grid, opts);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "generate_climate_for_grid",
+      grid,
+      opts,
+    });
+  });
+
+  it("defaults opts to {} when omitted", () => {
+    const grid = makeFakeGrid(100, 1);
+    coreApi.generateClimateForGrid(grid);
+    expect((fake.lastMessage as AnyReq).opts).toEqual({});
+  });
+
+  it("resolves with the updated Grid from the worker", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.generateClimateForGrid(grid);
+    const expected = makeFakeGrid(100, 42);
+    expected.cells.temp[0] = 11; // pretend climate wrote temp
+    fake.reply(expected);
+    expect(await p).toBe(expected);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.generateClimateForGrid(grid);
+    fake.replyError("wasm panic: grid climate failed");
+    await expect(p).rejects.toThrow(/grid climate failed/);
+  });
+});
+
+describe("coreApi.generateBiomesForGrid", () => {
+  it("emits the 'generate_biomes_for_grid' wire message with the grid", () => {
+    const grid = makeFakeGrid(100, 42);
+    coreApi.generateBiomesForGrid(grid);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "generate_biomes_for_grid",
+      grid,
+    });
+    // No opts in this signature — must NOT carry an `opts` key that the
+    // worker doesn't expect (would deserialize as `undefined` and break).
+    expect((fake.lastMessage as AnyReq).opts).toBeUndefined();
+  });
+
+  it("resolves with the updated Grid from the worker", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.generateBiomesForGrid(grid);
+    const expected = makeFakeGrid(100, 42);
+    expected.cells.biome[0] = 7; // pretend biome wrote
+    fake.reply(expected);
+    expect(await p).toBe(expected);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.generateBiomesForGrid(grid);
+    fake.replyError("wasm panic: grid biome failed");
+    await expect(p).rejects.toThrow(/grid biome failed/);
+  });
+});
+
 // ---- helpers -------------------------------------------------------------
 
 function makeFakeGrid(n: number, seed: number): Grid {

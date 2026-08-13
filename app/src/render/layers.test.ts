@@ -22,6 +22,7 @@
 // happens on render, which these tests never trigger).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Container } from "pixi.js";
 import type { Grid } from "../core/api";
 import { attachCamera, WorldMap } from "./layers";
 
@@ -281,12 +282,18 @@ describe("WorldMap.resetView", () => {
 
 describe("WorldMap.destroy", () => {
 	it("detaches the view from its parent on destroy", () => {
-		// Add the view to a parent, then destroy - it should be removed.
-		const { Container } = require("pixi.js") as typeof import("pixi.js");
+		// Add the view to a real parent Container, then destroy — the view
+		// must be removed from that parent's child list.
 		const parent = new Container();
 		parent.addChild(wm.view);
+		expect(wm.view.parent).toBe(parent);
 		expect(parent.children.length).toBe(1);
+
 		wm.destroy();
+
+		// PixiJS v8 defers GPU/display-list sync, but the display tree link is
+		// severed synchronously: `removeFromParent` clears `view.parent`.
+		expect(wm.view.parent).toBeNull();
 		expect(parent.children.length).toBe(0);
 	});
 
