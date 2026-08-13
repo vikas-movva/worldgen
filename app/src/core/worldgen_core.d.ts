@@ -105,6 +105,27 @@ export function generate_world(seed: number, cell_count: number, opts_js: any): 
 export function init(): void;
 
 /**
+ * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
+ *
+ * Runs the complete drainage → climate → biome → entity-repair cascade on an
+ * edited `Grid` and returns a [`grid::DependentResult`] carrying the freshly
+ * recomputed `temp`/`prec`/`biome` arrays plus the new river + lake geometry.
+ * The renderer swaps data textures from this; the entity repair cascade fills
+ * `removed_burgs`/`dissolved_states` for the warning toast (Phase 3 — arrays
+ * are empty for now since no Burgs/States have been generated yet).
+ *
+ * This is the debounced counterpart to `recompute_temp_biome_local`: the local
+ * patch runs on every pointermove (instant feedback), this runs once after the
+ * stroke ends (or after a ≥300ms idle window) to reconcile the diverged
+ * precipitation, biomes, and drainage that the local patch cannot reach.
+ *
+ * Determinism: a pure function of `(grid, opts)` — byte-identical across runs.
+ *
+ * Exposed as `recompute_dependents(grid, opts)` to JS.
+ */
+export function recompute_dependents(grid_js: any, opts_js: any): any;
+
+/**
  * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
  * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
  * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
@@ -132,6 +153,7 @@ export interface InitOutput {
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly init: () => void;
+    readonly recompute_dependents: (a: any, b: any) => any;
     readonly recompute_temp_biome_local: (a: any, b: any, c: any) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

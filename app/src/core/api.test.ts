@@ -483,6 +483,88 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
   });
 });
 
+// ---- recomputeDependents (Step 2.5.3) -------------------------------------
+
+describe("coreApi.recomputeDependents", () => {
+  it("sends the exact { kind, reqId, grid, opts } wire message", () => {
+    const grid = makeFakeGrid(1000, 42);
+    coreApi.recomputeDependents(grid);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "recompute_dependents",
+      grid,
+      opts: {},
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("defaults opts to {} when not provided", () => {
+    const grid = makeFakeGrid(100, 1);
+    coreApi.recomputeDependents(grid);
+    expect(fake.lastMessage).toMatchObject({ opts: {} });
+  });
+
+  it("forwards custom opts on the wire", () => {
+    const grid = makeFakeGrid(100, 1);
+    const opts = { temperature_equator: 30, height_exponent: 2.5 };
+    coreApi.recomputeDependents(grid, opts);
+    expect(fake.lastMessage).toMatchObject({ opts });
+  });
+
+  it("resolves with a DependentResult from the worker", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const result = {
+      temp: new Int8Array(100),
+      prec: new Uint8Array(100),
+      biome: new Uint8Array(100),
+      removed_burgs: [],
+      dissolved_states: [],
+      rivers: [{ id: 1, source: 5, mouth: 10, discharge: 42, cells: [5, 6, 7, 8, 9, 10], points: [[0, 0], [1, 1]] }],
+      lakes: [],
+    };
+    const p = coreApi.recomputeDependents(grid);
+    fake.reply(result);
+    const res = await p;
+    expect(res.temp.length).toBe(100);
+    expect(res.prec.length).toBe(100);
+    expect(res.biome.length).toBe(100);
+    expect(res.rivers.length).toBe(1);
+    expect(res.rivers[0].id).toBe(1);
+    expect(res.rivers[0].discharge).toBe(42);
+    expect(res.lakes.length).toBe(0);
+    expect(res.removed_burgs).toEqual([]);
+    expect(res.dissolved_states).toEqual([]);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.recomputeDependents(grid);
+    fake.replyError("wasm panic: bad grid");
+    await expect(p).rejects.toThrow(/bad grid/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const g1 = makeFakeGrid(100, 1);
+    const g2 = makeFakeGrid(100, 2);
+    const p1 = coreApi.recomputeDependents(g1);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.recomputeDependents(g2);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), removed_burgs: [], dissolved_states: [], rivers: [], lakes: [] });
+    fake.lastMessage = firstMsg;
+    fake.reply({ temp: new Int8Array(100), prec: new Uint8Array(100), biome: new Uint8Array(100), removed_burgs: [3], dissolved_states: [], rivers: [], lakes: [] });
+
+    const r2 = await p2;
+    const r1 = await p1;
+    // First reply (reqId=2, to p2): removed_burgs = []
+    // Second reply (reqId=1, to p1): removed_burgs = [3]
+    expect(r2.removed_burgs).toEqual([]);
+    expect(r1.removed_burgs).toEqual([3]);
+  });
+});
+
 // ---- helpers -------------------------------------------------------------
 
 function makeFakeGrid(n: number, seed: number): Grid {

@@ -14,6 +14,7 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_world,
+	recompute_dependents,
 	recompute_temp_biome_local,
 } from "../core/worldgen_core.js";
 
@@ -80,6 +81,12 @@ type WorkerRequest =
 			grid: unknown;
 			cellIds: number[];
 			opts?: unknown;
+	  }
+	| {
+			kind: "recompute_dependents";
+			reqId: number;
+			grid: unknown;
+			opts?: unknown;
 	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
@@ -143,6 +150,12 @@ type WorkerResponse =
 			reqId: number;
 			ok: true;
 			result: { temp: Int8Array; biome: Uint8Array };
+	  }
+	| {
+			kind: "recompute_dependents";
+			reqId: number;
+			ok: true;
+			result: unknown;
 	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
@@ -225,6 +238,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				req.opts ?? {},
 			);
 			send({ kind: "recompute_temp_biome_local", reqId, ok: true, result });
+		} else if (req.kind === "recompute_dependents") {
+			// Step 2.5.3: full debounced dependent recompute — drainage
+			// (rivers + lakes + flux), climate (temp + prec), biome full-pass,
+			// and entity-repair stub. Returns a DependentResult.
+			const result = recompute_dependents(req.grid, req.opts ?? {});
+			send({ kind: "recompute_dependents", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

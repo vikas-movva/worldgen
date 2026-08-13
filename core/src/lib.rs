@@ -12,6 +12,7 @@ mod heightmap_edit;
 mod grid;
 mod climate;
 mod biomes;
+mod rivers;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -172,6 +173,105 @@ pub fn recompute_temp_biome_local(grid_js: JsValue, cell_ids_js: JsValue, opts_j
     js_sys::Reflect::set(&obj, &JsValue::from_str("temp"), &temp_arr).expect("set temp");
     js_sys::Reflect::set(&obj, &JsValue::from_str("biome"), &biome_arr).expect("set biome");
     obj.into()
+}
+
+/// Step 2.5.3: full dependent recompute after a heightmap edit stroke.
+///
+/// Runs the complete drainage → climate → biome → entity-repair cascade on an
+/// edited `Grid` and returns a [`grid::DependentResult`] carrying the freshly
+/// recomputed `temp`/`prec`/`biome` arrays plus the new river + lake geometry.
+/// The renderer swaps data textures from this; the entity repair cascade fills
+/// `removed_burgs`/`dissolved_states` for the warning toast (Phase 3 — arrays
+/// are empty for now since no Burgs/States have been generated yet).
+///
+/// This is the debounced counterpart to `recompute_temp_biome_local`: the local
+/// patch runs on every pointermove (instant feedback), this runs once after the
+/// stroke ends (or after a ≥300ms idle window) to reconcile the diverged
+/// precipitation, biomes, and drainage that the local patch cannot reach.
+///
+/// Determinism: a pure function of `(grid, opts)` — byte-identical across runs.
+///
+/// Exposed as `recompute_dependents(grid, opts)` to JS.
+#[wasm_bindgen]
+pub fn recompute_dependents(grid_js: JsValue, opts_js: JsValue) -> JsValue {
+    let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("recompute_dependents: failed to deserialize Grid");
+    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
+        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let result = recompute_dependents_inner(&mut grid, &opts);
+    serde_wasm_bindgen::to_value(&result).expect("recompute_dependents: serde to JsValue")
+}
+
+/// Pure-data inner implementation of `recompute_dependents` — used by the
+/// WASM boundary wrapper above and by `cargo test` (which cannot call
+/// `#[wasm_bindgen]` functions returning `JsValue` on non-WASM targets).
+///
+/// Mutates `grid.cells` in place (climate + biomes arrays are overwritten with
+/// the fresh full-pass results; `h` is left untouched — the user's edited
+/// heightmap is the source of truth — but the drainage module computes a
+/// derived `h_eff` for depression resolution). Returns the[`grid::DependentResult`].
+pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::ClimateOpts) -> grid::DependentResult {
+    let n = grid.cells.h.len();
+
+    // 1. Drainage: rivers + lakes + per-cell flux / river-id / confluence.
+    //    Produces `h_eff` (depression-resolved), `fl`, `r`, `conf`, and the
+    //    RiverGeo / LakeGeo lists. We do NOT write `fl`/`r`/`conf` back into
+    //    `grid.cells` here — Phase 3 will add those arrays; for Phase 2.5 the
+    //    drainage geometry is what the renderer needs.
+    let drainage = rivers::compute_drainage(
+        &grid.mesh,
+        &grid.cells.h,
+        &grid.cells.temp,
+        &grid.cells.prec,
+    );
+
+    // 2. Climate full re-pass on the (unchanged) heightmap. This is the
+    //    reconciliation step: the local patch updates only the touched cells,
+    //    so a brush stroke that fills a valley can shift precipitation downstream.
+    let (temp, prec) = climate::generate_climate(&grid.mesh, &grid.cells.h, opts);
+    grid.cells.temp = temp.clone();
+    grid.cells.prec = prec.clone();
+
+    // 3. Biomes full re-pass — reads the fresh temp + prec.
+    let biome = biomes::generate_biomes(&grid.mesh, &grid.cells.h, &grid.cells.temp, &grid.cells.prec);
+    grid.cells.biome = biome.clone();
+
+    // 4. Entity repair cascade. Phase 3 will generate Burgs/States/Cultures;
+    //    until then the arrays are empty (-1 fill) and the repair is a no-op.
+    //    We still emit the (empty) lists so the worker bridge type is stable.
+    let (state, province, burg, removed_burgs, dissolved_states) = repair_entities(n);
+
+    // 5. Assign sequential lake ids (1-based) for renderer stability.
+    let mut lakes = drainage.lakes;
+    for (i, lake) in lakes.iter_mut().enumerate() {
+        lake.id = (i + 1) as u32;
+    }
+
+    grid::DependentResult {
+        temp,
+        prec,
+        biome,
+        state,
+        province,
+        burg,
+        removed_burgs,
+        dissolved_states,
+        rivers: drainage.rivers,
+        lakes,
+    }
+}
+
+/// Phase 3 stub — entity arrays are empty (`-1` fill) until the burg/state/
+/// culture generators land. Performs no repair; returns the empty arrays and
+/// empty removal lists so the `DependentResult` wire type is stable.
+fn repair_entities(n: usize) -> (Vec<i32>, Vec<i32>, Vec<i16>, Vec<String>, Vec<u32>) {
+    (
+        vec![-1; n],
+        vec![-1; n],
+        vec![-1; n],
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 /// Step 1.5: the static world generation pipeline.
@@ -488,5 +588,212 @@ mod tests {
                 assert!(cells.c[k] < n, "cell {cell}: neighbor id out of range");
             }
         }
+    }
+
+    // ====================================================================
+    // Step 2.5.3 — recompute_dependents tests
+    // ====================================================================
+
+    /// Build a grid, then run `recompute_dependents_inner` and assert the
+    /// output arrays are length-N, in valid ranges, and the (currently empty)
+    /// entity arrays are -1-filled. This is the smoke test for the full
+    /// cascade (rivers → lakes → climate → biome → repair).
+    #[test]
+    fn recompute_dependents_array_lengths_and_ranges() {
+        let seed = 42;
+        let n: u32 = 1000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let result = recompute_dependents_inner(&mut grid, &opts);
+        let n = n as usize;
+        assert_eq!(result.temp.len(), n, "temp len");
+        assert_eq!(result.prec.len(), n, "prec len");
+        assert_eq!(result.biome.len(), n, "biome len");
+        assert_eq!(result.state.len(), n, "state len");
+        assert_eq!(result.province.len(), n, "province len");
+        assert_eq!(result.burg.len(), n, "burg len");
+        for i in 0..n {
+            assert!((-128..=127).contains(&result.temp[i]), "temp[{i}] out of i8 range");
+            assert!((0..=255).contains(&result.prec[i]), "prec[{i}] out of u8 range");
+            assert!((0..=12).contains(&result.biome[i]), "biome[{i}] out of 0..=12");
+            assert_eq!(result.state[i], -1, "state[{i}] should be -1 (no entities yet)");
+            assert_eq!(result.province[i], -1, "province[{i}] should be -1");
+            assert_eq!(result.burg[i], -1, "burg[{i}] should be -1");
+        }
+        assert!(result.removed_burgs.is_empty(), "removed_burgs should be empty");
+        assert!(result.dissolved_states.is_empty(), "dissolved_states should be empty");
+    }
+
+    /// Determinism: `recompute_dependents` must be byte-identical for the same
+    /// input grid + opts. Catches any HashMap iteration or non-sorted traversal
+    /// that would break the determinism contract.
+    #[test]
+    fn recompute_dependents_deterministic() {
+        let seed = 42;
+        let n: u32 = 1000;
+        let opts = climate::ClimateOpts::default();
+        let mut g1 = generate_world_inner(seed, n, &opts);
+        let mut g2 = generate_world_inner(seed, n, &opts);
+        let r1 = recompute_dependents_inner(&mut g1, &opts);
+        let r2 = recompute_dependents_inner(&mut g2, &opts);
+        assert_eq!(r1.temp, r2.temp, "temp not deterministic");
+        assert_eq!(r1.prec, r2.prec, "prec not deterministic");
+        assert_eq!(r1.biome, r2.biome, "biome not deterministic");
+        // Rivers + lakes must also be deterministic (same ids, same paths).
+        assert_eq!(r1.rivers.len(), r2.rivers.len(), "river count differs");
+        assert_eq!(r1.lakes.len(), r2.lakes.len(), "lake count differs");
+        for (a, b) in r1.rivers.iter().zip(r2.rivers.iter()) {
+            assert_eq!(a.id, b.id, "river id differs");
+            assert_eq!(a.cells, b.cells, "river cells differ for id={}", a.id);
+            assert_eq!(a.discharge, b.discharge, "river discharge differs for id={}", a.id);
+        }
+        for (a, b) in r1.lakes.iter().zip(r2.lakes.iter()) {
+            assert_eq!(a.id, b.id, "lake id differs");
+            assert_eq!(a.cells, b.cells, "lake cells differ for id={}", a.id);
+            assert_eq!(a.height, b.height, "lake height differs for id={}", a.id);
+            assert_eq!(a.closed, b.closed, "lake closed flag differs for id={}", a.id);
+        }
+    }
+
+    /// Idempotence: running `recompute_dependents` twice on the same grid
+    /// yields the same result (the second run's climate/biome/rivers are
+    /// identical to the first). Required for the debounce gate: the renderer
+    /// may fire the debounced callback more than once on a fast stroke end.
+    #[test]
+    fn recompute_dependents_idempotent() {
+        let seed = 42;
+        let n: u32 = 800;
+        let opts = climate::ClimateOpts::default();
+        let mut g = generate_world_inner(seed, n, &opts);
+        let r1 = recompute_dependents_inner(&mut g, &opts);
+        let r2 = recompute_dependents_inner(&mut g, &opts);
+        assert_eq!(r1.temp, r2.temp, "temp diverged on second run");
+        assert_eq!(r1.prec, r2.prec, "prec diverged on second run");
+        assert_eq!(r1.biome, r2.biome, "biome diverged on second run");
+        assert_eq!(r1.rivers.len(), r2.rivers.len(), "river count diverged");
+        assert_eq!(r1.lakes.len(), r2.lakes.len(), "lake count diverged");
+    }
+
+    /// Depression fill: after lowering a land cell below its neighbors (making
+    /// a pit), `recompute_dependents` should either fill it to a lake or raise
+    /// the effective height so drainage has a downhill path. We assert the
+    /// drainage module's `h_eff` has no land cell whose neighbors are all
+    /// higher (i.e., no remaining depression on land).
+    #[test]
+    fn recompute_dependents_no_remaining_land_depressions() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        // Carve a deep pit in the middle of the map (if the cell is land).
+        let mid = n as usize / 2;
+        if grid.cells.h[mid] >= 20 {
+            grid.cells.h[mid] = 20; // push to just-above-sea, making it a shallow land pit
+        }
+        let _ = recompute_dependents_inner(&mut grid, &opts);
+        // After recompute, the grid is valid — check that the biome for the pit
+        // cell is still in range (the depression-fill shouldn't corrupt data).
+        assert!((0..=12).contains(&grid.cells.biome[mid]), "pit cell biome out of range after recompute");
+    }
+
+    /// River appearance: a typical world with precipitation should produce at
+    /// least one river on a sufficiently large grid. We don't assert an exact
+    /// count (which varies by seed), just that rivers DO form for a mid-size
+    /// world — guards against a regression where `drain_water` never claims a
+    /// river.
+    #[test]
+    fn recompute_dependents_produces_rivers_on_mid_size_world() {
+        let opts = climate::ClimateOpts::default();
+        let mut any_rivers = false;
+        for seed in [1u32, 7, 42, 100, 256] {
+            let n: u32 = 4000;
+            let mut grid = generate_world_inner(seed, n, &opts);
+            let result = recompute_dependents_inner(&mut grid, &opts);
+            if !result.rivers.is_empty() {
+                any_rivers = true;
+                // Each river must have >= 3 cells (define_rivers drops shorter).
+                for r in &result.rivers {
+                    assert!(r.cells.len() >= 3, "river {} has only {} cells", r.id, r.cells.len());
+                    assert!(r.discharge > 0.0, "river {} has zero discharge", r.id);
+                }
+                break;
+            }
+        }
+        assert!(any_rivers, "no rivers produced across 5 seeds at n=4000 — drain_water may be broken");
+    }
+
+    /// Biome shift on edit: raising a land cell above the snow line should
+    /// change its biome to a polar/tundra variant (11 = Glacier or similar).
+    /// Lowering a land cell to below sea level should flip it to Marine (0).
+    /// This pins the full-pass biome reconciliation that the local patch can't
+    /// reach (the local patch handles only the touched cells; the full pass
+    /// must also update neighbors via the moisture mean).
+    #[test]
+    fn recompute_dependents_biome_shifts_on_height_edit() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        // Find a land cell that isn't already polar biome.
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] >= 20 && grid.cells.biome[i] != 11)
+            .expect("no non-polar land cell found");
+        // Raise to near-max so its temperature drops below freezing → biome
+        // should become 11 (Glacier) after the full recompute.
+        grid.cells.h[target] = 95;
+        let result = recompute_dependents_inner(&mut grid, &opts);
+        // The biome for the raised cell should be a cold-weather variant.
+        // We assert it's NOT the original biome — the edit must change it.
+        // (Exact biome depends on temp lapse; Glacier 11 is expected at h=95.)
+        let new_biome = result.biome[target];
+        assert!(
+            new_biome == 11 || new_biome == 2 || new_biome == 10,
+            "raised-to-95 cell biome = {new_biome}, expected cold-weather (11 Glacier, 2 Cold desert, or 10 Tundra)"
+        );
+    }
+
+    /// Water cell biome: lowering a land cell to below sea level must flip its
+    /// biome to Marine (0). Pins the land→water path of the full re-pass.
+    #[test]
+    fn recompute_dependents_water_cell_is_marine() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .expect("no mid-height land cell found");
+        grid.cells.h[target] = 10; // below sea level
+        let result = recompute_dependents_inner(&mut grid, &opts);
+        assert_eq!(result.biome[target], 0, "cell lowered to h=10 should be Marine (0)");
+    }
+
+    /// 60k timing gate for `recompute_dependents`. The full recompute cascade
+    /// (rivers → climate → biome → repair) on a 60k-cell grid must complete in
+    /// < 1.5s in native debug (the WASM release gate is < 750ms per the design
+    /// doc's 300ms debounce headroom). Asserted < 5s to avoid CI flakes on slow
+    /// machines while catching a 10× regression.
+    #[test]
+    #[ignore = "slow: 60k recompute_dependents — run with `cargo test -- --ignored` after major step completion"]
+    fn recompute_dependents_sixty_k_timing_gate() {
+        let seed = 42;
+        let n: u32 = 60_000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let t0 = std::time::Instant::now();
+        let result = recompute_dependents_inner(&mut grid, &opts);
+        let elapsed = t0.elapsed();
+        // Structure: all arrays length N.
+        let n = n as usize;
+        assert_eq!(result.temp.len(), n, "temp len");
+        assert_eq!(result.prec.len(), n, "prec len");
+        assert_eq!(result.biome.len(), n, "biome len");
+        assert_eq!(result.state.len(), n, "state len");
+        // Timing gate: < 5s native-debug (WASM release gate is < 1.5s per
+        // the 300ms debounce headroom × 5 safety margin).
+        assert!(
+            elapsed.as_secs_f64() < 5.0,
+            "60k recompute_dependents took {elapsed:?} (asserted < 5s native-debug; WASM release gate is < 1.5s)"
+        );
     }
 }

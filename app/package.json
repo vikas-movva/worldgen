@@ -13,6 +13,7 @@
 		"verify:step23": "node scripts/verify_step23.mjs",
 		"verify:edit-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_heightmap_edit_node.mjs",
 		"verify:recompute-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_recompute_local_node.mjs",
+		"verify:recompute-deps-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_recompute_dependents_node.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:core": "cargo test --manifest-path ../core/Cargo.toml",

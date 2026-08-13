@@ -71,6 +71,37 @@ export type Grid = {
 	};
 };
 
+/** Step 2.5.3: river geometry (FMG `pack.rivers` entry, compute-core subset). */
+export type RiverGeo = {
+	id: number;
+	source: number;
+	mouth: number;
+	discharge: number;
+	cells: number[];
+	points: [number, number][];
+};
+
+/** Step 2.5.3: lake geometry (FMG `pack.features` lake entry, compute-core subset). */
+export type LakeGeo = {
+	id: number;
+	height: number;
+	cells: number[];
+	shoreline: number[];
+	closed: boolean;
+};
+
+/** Step 2.5.3: full dependent recompute result. `removed_burgs` /
+ * `dissolved_states` are empty until Phase 3 entities are generated. */
+export type DependentResult = {
+	temp: Int8Array | number[];
+	prec: Uint8Array | number[];
+	biome: Uint8Array | number[];
+	removed_burgs: number[];
+	dissolved_states: number[];
+	rivers: RiverGeo[];
+	lakes: LakeGeo[];
+};
+
 let nextReqId = 1;
 function nextId(): number {
 	return nextReqId++;
@@ -233,9 +264,31 @@ export const coreApi = {
     }) as Promise<{ temp: Int8Array; biome: Uint8Array }>;
   },
 
+  /**
+   * Step 2.5.3: full debounced dependent recompute after a heightmap edit
+   * stroke. Runs drainage (rivers + lakes + flux), climate (temp + prec), and
+   * biome full-pass on the edited grid, returning a `DependentResult` with the
+   * fresh `temp`/`prec`/`biome` arrays plus `rivers` + `lakes` geometry. The
+   * renderer swaps data textures from this; entity repair fills
+   * `removed_burgs`/`dissolved_states` (empty for now — no Burgs/States yet).
+   *
+   * This is the debounced counterpart to `recomputeTempBiomeLocal`: the local
+   * patch runs on every pointermove; this runs once after the stroke ends (or
+   * after a >=300ms idle window) to reconcile precipitation, biomes, and
+   * drainage that the local patch can't reach.
+   */
+  recomputeDependents(
+    grid: Grid,
+    opts?: unknown,
+  ): Promise<DependentResult> {
+    return call("recompute_dependents", {
+      grid,
+      opts: opts ?? {},
+    }) as Promise<DependentResult>;
+  },
+
   // Placeholders for future phases:
   // projectWorld(pack, timeline, year): Promise<WorldAt>;
-  // recomputeDependents(grid, opts): Promise<DependentResult>;
   // generateTimeline(pack, seed, params): Promise<Event[]>;
 };
 

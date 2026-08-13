@@ -168,6 +168,33 @@ export function init() {
 }
 
 /**
+ * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
+ *
+ * Runs the complete drainage → climate → biome → entity-repair cascade on an
+ * edited `Grid` and returns a [`grid::DependentResult`] carrying the freshly
+ * recomputed `temp`/`prec`/`biome` arrays plus the new river + lake geometry.
+ * The renderer swaps data textures from this; the entity repair cascade fills
+ * `removed_burgs`/`dissolved_states` for the warning toast (Phase 3 — arrays
+ * are empty for now since no Burgs/States have been generated yet).
+ *
+ * This is the debounced counterpart to `recompute_temp_biome_local`: the local
+ * patch runs on every pointermove (instant feedback), this runs once after the
+ * stroke ends (or after a ≥300ms idle window) to reconcile the diverged
+ * precipitation, biomes, and drainage that the local patch cannot reach.
+ *
+ * Determinism: a pure function of `(grid, opts)` — byte-identical across runs.
+ *
+ * Exposed as `recompute_dependents(grid, opts)` to JS.
+ * @param {any} grid_js
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function recompute_dependents(grid_js, opts_js) {
+    const ret = wasm.recompute_dependents(grid_js, opts_js);
+    return ret;
+}
+
+/**
  * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
  * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
  * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
