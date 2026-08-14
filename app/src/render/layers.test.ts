@@ -21,8 +21,8 @@
 // package)` warning but the WorldMap object is constructed (the GPU upload only
 // happens on render, which these tests never trigger).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Container } from "pixi.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Grid } from "../core/api";
 import { attachCamera, WorldMap } from "./layers";
 
@@ -341,6 +341,10 @@ describe("attachCamera", () => {
 		return ev;
 	}
 
+	function keyEvent(type: string, code: string): KeyboardEvent {
+		return new KeyboardEvent(type, { code, bubbles: true });
+	}
+
 	it("registers wheel + pointer listeners on the target", () => {
 		const spy = vi.spyOn(target, "addEventListener");
 		attachCamera(target, {
@@ -436,7 +440,7 @@ describe("attachCamera", () => {
 		rectSpy.mockRestore();
 	});
 
-	it("pointer drag pans the view (pointerdown + pointermove + pointerup)", () => {
+	it("pointer drag pans the view (Spacebar + pointerdown + pointermove + pointerup)", () => {
 		wm.fitToScreen(1280, 720);
 		attachCamera(target, {
 			worldMap: wm,
@@ -444,6 +448,8 @@ describe("attachCamera", () => {
 		});
 		const startX = wm.view.x;
 		const startY2 = wm.view.y;
+		// Hold Space to engage pan mode.
+		window.dispatchEvent(keyEvent("keydown", "Space"));
 		// Pointer down at (100, 100).
 		target.dispatchEvent(
 			pointerEvent("pointerdown", { clientX: 100, clientY: 100 }),
@@ -455,8 +461,31 @@ describe("attachCamera", () => {
 		target.dispatchEvent(
 			pointerEvent("pointerup", { clientX: 140, clientY: 110 }),
 		);
+		window.dispatchEvent(keyEvent("keyup", "Space"));
 		expect(wm.view.x).toBeCloseTo(startX + 40, 2);
 		expect(wm.view.y).toBeCloseTo(startY2 + 10, 2);
+	});
+
+	it("pointer drag without Space does NOT pan (editor owns the pointer)", () => {
+		wm.fitToScreen(1280, 720);
+		attachCamera(target, {
+			worldMap: wm,
+			screenSize: () => ({ w: 1280, h: 720 }),
+		});
+		const startX = wm.view.x;
+		const startY2 = wm.view.y;
+		// No Space keydown — plain click should not pan.
+		target.dispatchEvent(
+			pointerEvent("pointerdown", { clientX: 100, clientY: 100 }),
+		);
+		target.dispatchEvent(
+			pointerEvent("pointermove", { clientX: 140, clientY: 110 }),
+		);
+		target.dispatchEvent(
+			pointerEvent("pointerup", { clientX: 140, clientY: 110 }),
+		);
+		expect(wm.view.x).toBe(startX);
+		expect(wm.view.y).toBe(startY2);
 	});
 
 	it("pointermove without a prior pointerdown does NOT pan", () => {
