@@ -132,7 +132,20 @@ function triangleGrid(worldW = 1000, worldH = 1000): Grid {
 	return {
 		seed: 1,
 		mesh,
-		cells: { h: [50], temp: [10], prec: [50], biome: [0], state: [0], province: [0], culture: [0], religion: [0], burg: [0], fl: [0], r: [0], conf: [0] },
+		cells: {
+			h: [50],
+			temp: [10],
+			prec: [50],
+			biome: [0],
+			state: [0],
+			province: [0],
+			culture: [0],
+			religion: [0],
+			burg: [0],
+			fl: [0],
+			r: [0],
+			conf: [0],
+		},
 	};
 }
 

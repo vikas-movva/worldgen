@@ -17,7 +17,7 @@
 // Drives Brave via puppeteer-core (no bundled Chromium download). Run from app/.
 
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { inflateSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
@@ -50,35 +50,6 @@ const fail = (m) => {
 	process.exitCode = 1;
 };
 const pass = (m) => console.log("  PASS:", m);
-
-// Pixel-level content analysis via a 2D canvas copy. A terrain render should
-// have many distinct colors AND a large fraction of non-background pixels.
-async function analyzePixels(page) {
-	return page.evaluate(() => {
-		const canvas = document.querySelector("canvas");
-		const tmp = document.createElement("canvas");
-		tmp.width = canvas.width;
-		tmp.height = canvas.height;
-		const ctx = tmp.getContext("2d", { willReadFrequently: true });
-		ctx.drawImage(canvas, 0, 0);
-		const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-		const colors = new Set();
-		const colorCounts = {};
-		for (let i = 0; i < imgData.data.length; i += 4) {
-			const r = imgData.data[i],
-				g = imgData.data[i + 1],
-				b = imgData.data[i + 2];
-			// Skip pure background (#0d1117 = 13,17,23) and pure black (#000000)
-			// We count all colors including background for the diversity check
-			colors.add(`${r},${g},${b}`);
-		}
-		return {
-			totalColors: colors.size,
-			canvasW: canvas.width,
-			canvasH: canvas.height,
-		};
-	});
-}
 
 // Paeth filter predictor (PNG spec).
 function paeth(a, b, c) {

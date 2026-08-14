@@ -240,7 +240,7 @@ export function HeightmapEditor({
 			}
 			editedCellIds.current = new Set();
 		},
-		[scheduleDependentRecompute],
+		[scheduleDependentRecompute, canvasEl],
 	);
 
 	// Attach pointer listeners to the canvas element.

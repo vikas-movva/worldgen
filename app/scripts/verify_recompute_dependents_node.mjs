@@ -62,7 +62,9 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 			violations++;
 		}
 		if (grid.cells.h[i] < 20 && biome !== 0) {
-			console.log(`  D2 FAIL: water cell ${i} should be Marine(0), got ${biome}`);
+			console.log(
+				`  D2 FAIL: water cell ${i} should be Marine(0), got ${biome}`,
+			);
 			violations++;
 		}
 	}
@@ -80,11 +82,15 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 		throw new Error("D3 FAIL: no rivers produced for a 10k-cell world");
 	for (const r of rivers) {
 		if (r.cells.length < 3)
-			throw new Error(`D3 FAIL: river ${r.id} has only ${r.cells.length} cells (< 3)`);
+			throw new Error(
+				`D3 FAIL: river ${r.id} has only ${r.cells.length} cells (< 3)`,
+			);
 		if (r.discharge <= 0)
 			throw new Error(`D3 FAIL: river ${r.id} has zero discharge`);
 	}
-	console.log(`  all ${rivers.length} rivers have >= 3 cells and discharge > 0: PASS`);
+	console.log(
+		`  all ${rivers.length} rivers have >= 3 cells and discharge > 0: PASS`,
+	);
 }
 
 // D4: Determinism
@@ -110,8 +116,15 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 		);
 	const lakeMatch =
 		r1.lakes.length === r2.lakes.length &&
-		r1.lakes.every((l, i) => l.id === r2.lakes[i].id && l.height === r2.lakes[i].height && l.closed === r2.lakes[i].closed);
-	console.log(`D4 Determinism: arrays=${arrayMatch ? "identical" : "MISMATCH"} rivers=${riverMatch ? "identical" : "MISMATCH"} lakes=${lakeMatch ? "identical" : "MISMATCH"}`);
+		r1.lakes.every(
+			(l, i) =>
+				l.id === r2.lakes[i].id &&
+				l.height === r2.lakes[i].height &&
+				l.closed === r2.lakes[i].closed,
+		);
+	console.log(
+		`D4 Determinism: arrays=${arrayMatch ? "identical" : "MISMATCH"} rivers=${riverMatch ? "identical" : "MISMATCH"} lakes=${lakeMatch ? "identical" : "MISMATCH"}`,
+	);
 	if (!arrayMatch) throw new Error("D4 FAIL: arrays not deterministic");
 	if (!riverMatch) throw new Error("D4 FAIL: rivers not deterministic");
 	if (!lakeMatch) throw new Error("D4 FAIL: lakes not deterministic");
@@ -148,9 +161,13 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	// Raise it above the snow line.
 	g.cells.h[target] = 95;
 	const result = wasm.recompute_dependents(g, opts);
-	console.log(`D6 Raise cell ${target}: biome ${grid.cells.biome[target]} -> ${result.biome[target]}`);
+	console.log(
+		`D6 Raise cell ${target}: biome ${grid.cells.biome[target]} -> ${result.biome[target]}`,
+	);
 	if (result.biome[target] === grid.cells.biome[target])
-		console.log("  NOTE: biome unchanged after raising (may be already cold/hot — not a hard failure)");
+		console.log(
+			"  NOTE: biome unchanged after raising (may be already cold/hot — not a hard failure)",
+		);
 
 	// Lower a land cell to water.
 	const g2 = structuredClone(grid);
@@ -165,7 +182,9 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	g2.cells.h[target2] = 5;
 	const result2 = wasm.recompute_dependents(g2, opts);
 	if (result2.biome[target2] !== 0)
-		throw new Error(`D6 FAIL: lowered cell ${target2} should be Marine(0), got ${result2.biome[target2]}`);
+		throw new Error(
+			`D6 FAIL: lowered cell ${target2} should be Marine(0), got ${result2.biome[target2]}`,
+		);
 	console.log(`D6 Lower cell ${target2}: biome -> Marine (0): PASS`);
 }
 
@@ -173,10 +192,19 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 {
 	const result = wasm.recompute_dependents(grid, opts);
 	if (!Array.isArray(result.removed_burgs) || result.removed_burgs.length !== 0)
-		throw new Error(`D7 FAIL: removed_burgs should be empty array, got ${JSON.stringify(result.removed_burgs)}`);
-	if (!Array.isArray(result.dissolved_states) || result.dissolved_states.length !== 0)
-		throw new Error(`D7 FAIL: dissolved_states should be empty array, got ${JSON.stringify(result.dissolved_states)}`);
-	console.log("D7 Entity-repair stubs (removed_burgs, dissolved_states) empty: PASS");
+		throw new Error(
+			`D7 FAIL: removed_burgs should be empty array, got ${JSON.stringify(result.removed_burgs)}`,
+		);
+	if (
+		!Array.isArray(result.dissolved_states) ||
+		result.dissolved_states.length !== 0
+	)
+		throw new Error(
+			`D7 FAIL: dissolved_states should be empty array, got ${JSON.stringify(result.dissolved_states)}`,
+		);
+	console.log(
+		"D7 Entity-repair stubs (removed_burgs, dissolved_states) empty: PASS",
+	);
 }
 
 // D7b: Entity-repair cascade end-to-end across the WASM serde boundary.
@@ -219,7 +247,10 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	const result7 = wasm.recompute_dependents(g7, opts);
 
 	// 1. removed_burgs should list all 3 cells.
-	if (!Array.isArray(result7.removed_burgs) || result7.removed_burgs.length !== 3)
+	if (
+		!Array.isArray(result7.removed_burgs) ||
+		result7.removed_burgs.length !== 3
+	)
 		throw new Error(
 			`D7b FAIL: removed_burgs should have 3 entries, got ${JSON.stringify(result7.removed_burgs)}`,
 		);
@@ -230,22 +261,36 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 				`D7b FAIL: removed_burgs should mention cell${i}, got ${JSON.stringify(result7.removed_burgs)}`,
 			);
 	}
-	console.log(`D7b removed_burgs lists ${result7.removed_burgs.length} cells: PASS`);
+	console.log(
+		`D7b removed_burgs lists ${result7.removed_burgs.length} cells: PASS`,
+	);
 
 	// 2. Entity indices should be -1 on the now-water cells.
 	for (const i of landCells) {
 		if (result7.state[i] !== -1)
-			throw new Error(`D7b FAIL: state[${i}] should be -1, got ${result7.state[i]}`);
+			throw new Error(
+				`D7b FAIL: state[${i}] should be -1, got ${result7.state[i]}`,
+			);
 		if (result7.province[i] !== -1)
-			throw new Error(`D7b FAIL: province[${i}] should be -1, got ${result7.province[i]}`);
+			throw new Error(
+				`D7b FAIL: province[${i}] should be -1, got ${result7.province[i]}`,
+			);
 		if (result7.culture[i] !== -1)
-			throw new Error(`D7b FAIL: culture[${i}] should be -1, got ${result7.culture[i]}`);
+			throw new Error(
+				`D7b FAIL: culture[${i}] should be -1, got ${result7.culture[i]}`,
+			);
 		if (result7.religion[i] !== -1)
-			throw new Error(`D7b FAIL: religion[${i}] should be -1, got ${result7.religion[i]}`);
+			throw new Error(
+				`D7b FAIL: religion[${i}] should be -1, got ${result7.religion[i]}`,
+			);
 		if (result7.burg[i] !== 0)
-			throw new Error(`D7b FAIL: burg[${i}] should be 0, got ${result7.burg[i]}`);
+			throw new Error(
+				`D7b FAIL: burg[${i}] should be 0, got ${result7.burg[i]}`,
+			);
 	}
-	console.log("D7b entity indices cleared (state/province/culture/religion/burg): PASS");
+	console.log(
+		"D7b entity indices cleared (state/province/culture/religion/burg): PASS",
+	);
 }
 
 // D8: Timing gate @ 60k (compute < 300ms, total < 600ms)
@@ -289,7 +334,9 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	// which is ~0. Then the total is serde(grid) + compute + serde(result).
 	// Since serde(grid) dominates, and we can't isolate it without a no-op
 	// WASM entry, we use the total as the regression gate.
-	console.log(`D8 60k timing: median total = ${totalMs.toFixed(2)}ms (9 samples, min=${samples[0].toFixed(2)}, max=${samples[8].toFixed(2)})`);
+	console.log(
+		`D8 60k timing: median total = ${totalMs.toFixed(2)}ms (9 samples, min=${samples[0].toFixed(2)}, max=${samples[8].toFixed(2)})`,
+	);
 
 	// The authoritative COMPUTE gate is the Rust native test
 	// `recompute_dependents_sixty_k_timing_gate` (native release, no serde).
@@ -302,9 +349,13 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	// entity-repair cascade gate — 2 extra 60k-element arrays, ~2× the entity
 	// serde overhead) on top of the ~110ms compute.
 	if (totalMs >= 1100) {
-		throw new Error(`D8 FAIL: 60k recompute_dependents total took ${totalMs.toFixed(2)}ms (>= 1100ms gate — serde + compute regression). Samples: ${JSON.stringify(samples.map(s => s.toFixed(2)))}`);
+		throw new Error(
+			`D8 FAIL: 60k recompute_dependents total took ${totalMs.toFixed(2)}ms (>= 1100ms gate — serde + compute regression). Samples: ${JSON.stringify(samples.map((s) => s.toFixed(2)))}`,
+		);
 	}
-	console.log(`  60k recompute_dependents total < 1100ms: PASS (${totalMs.toFixed(2)}ms)`);
+	console.log(
+		`  60k recompute_dependents total < 1100ms: PASS (${totalMs.toFixed(2)}ms)`,
+	);
 
 	// NOTE: the native release compute time is ~110ms (drainage ~110ms,
 	// coastline ~0.4ms, climate ~2.4ms, biome ~0.7ms). The serde boundary
@@ -313,7 +364,9 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	// To reduce total time, optimize serde (e.g., transfer TypedArrays
 	// instead of JSON, or add a mutable-grid-in-place WASM API that avoids
 	// re-deserializing on each call).
-	console.log(`  Compute-only gate: see cargo test --release -- --ignored recompute_dependents_sixty_k_timing_gate (native ~110ms < 300ms)`);
+	console.log(
+		`  Compute-only gate: see cargo test --release -- --ignored recompute_dependents_sixty_k_timing_gate (native ~110ms < 300ms)`,
+	);
 }
 
 console.log("\nAll Step 2.5.4 WASM boundary gates PASS (D1-D8 + D7b)");
