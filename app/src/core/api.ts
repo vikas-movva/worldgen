@@ -84,6 +84,16 @@ export type Grid = {
 	};
 };
 
+/** Serde fix: thin patch returned by `editHeightmap` / `resetHeightmap` when
+ * no explicit Grid is passed. The Rust side operates on its held Grid (no
+ * JsValue round-trip) and returns only the mutated `h` array as a zero-copy
+ * `Uint8Array`. The caller splices this into its local `cells.h` reference
+ * instead of receiving the full 13.5MB Grid back. */
+export type HeightmapPatch = {
+	/** Full `cells.h` array (length N, 0-100, <20 = water) after the edit. */
+	h: Uint8Array;
+};
+
 /** Step 2.5.3: river geometry (FMG `pack.rivers` entry, compute-core subset). */
 export type RiverGeo = {
 	id: number;
@@ -124,7 +134,7 @@ export type DependentResult = {
 	conf: Uint16Array | number[];
 	coastline: Uint8Array | number[];
 	removed_burgs: string[];
-	dissolved_states: number[];
+	dissolved_states: Uint32Array | number[];
 	rivers: RiverGeo[];
 	lakes: LakeGeo[];
 };
@@ -264,14 +274,18 @@ export const coreApi = {
   /**
    * Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
    * `grid.cells.h` in place (in the worker). Deterministic: same grid + same
-   * ops yields byte-identical `h`. Returns the updated Grid.
+   * ops yields byte-identical `h`.
    *
-   * Step 2.5.4: if `grid` is omitted, the worker uses its held grid handle
-   * (set by `generateWorld` / `storeGrid`), avoiding the serde round-trip.
-   * The returned Grid replaces the held handle.
+   * Step 2.5.4 + serde fix: if `grid` is omitted, the worker uses its held
+   * grid handle (set by `generateWorld` / `storeGrid`). In this case the Rust
+   * side operates on a Rust-held Grid (no JsValue round-trip at all) and
+   * returns only the mutated `h` array as a `Uint8Array` patch — the caller
+   * can splice it into its local mesh/`cells.h` reference without receiving
+   * the full 13.5MB Grid back. If `grid` IS passed (backward compat / loaded
+   * grid), the full Grid is returned as before.
    */
-  editHeightmap(ops: EditOp[], grid?: Grid): Promise<Grid> {
-    return call("edit_heightmap", grid ? { grid, ops } : { ops }) as Promise<Grid>;
+  editHeightmap(ops: EditOp[], grid?: Grid): Promise<Grid | HeightmapPatch> {
+    return call("edit_heightmap", grid ? { grid, ops } : { ops }) as Promise<Grid | HeightmapPatch>;
   },
 
   /**
@@ -330,12 +344,14 @@ export const coreApi = {
   /**
    * Step 2.5.4: reset `grid.cells.h` to the original seeded heightmap,
    * discarding all edits. Also reinitializes entity index arrays to
-   * "unassigned". Returns the updated Grid (and updates the worker handle).
+   * "unassigned".
    *
-   * If `grid` is omitted, the worker uses its held grid handle.
+   * Serde fix: if `grid` is omitted, the worker uses its held grid handle
+   * and returns only the reset `h` array as a `HeightmapPatch` (zero-copy
+   * `Uint8Array`). If passed, returns the full updated Grid.
    */
-  resetHeightmap(grid?: Grid): Promise<Grid> {
-    return call("reset_heightmap", grid ? { grid } : {}) as Promise<Grid>;
+  resetHeightmap(grid?: Grid): Promise<Grid | HeightmapPatch> {
+    return call("reset_heightmap", grid ? { grid } : {}) as Promise<Grid | HeightmapPatch>;
   },
 
   /**

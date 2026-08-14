@@ -188,7 +188,7 @@ fn alter_heights(mesh: &Mesh, h: &[u8], temp: &[i8]) -> Vec<f64> {
 /// Lakes are detected implicitly: a cell that was water (h < SEA_LEVEL) and
 /// got *raised* by the fill is a lake cell. We collect those as [`LakeGeo`]
 /// entries with their shoreline.
-fn resolve_depressions(mesh: &Mesh, h_eff: &mut Vec<f64>) -> Vec<LakeGeo> {
+fn resolve_depressions(mesh: &Mesh, h_eff: &mut [f64]) -> Vec<LakeGeo> {
     let n = mesh.points.len();
     let i = &mesh.cells.i;
     let c = &mesh.cells.c;

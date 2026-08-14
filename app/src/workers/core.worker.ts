@@ -15,6 +15,7 @@ import init, {
 	add,
 	build_grid_with_heightmap,
 	edit_heightmap,
+	edit_heightmap_h,
 	generate_biomes,
 	generate_biomes_for_grid,
 	generate_climate,
@@ -22,10 +23,15 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_world,
+	has_grid_h,
 	pick_cell,
+	pick_cell_h,
 	recompute_dependents,
+	recompute_dependents_h2,
 	recompute_temp_biome_local,
+	recompute_temp_biome_local_h,
 	reset_heightmap,
+	reset_heightmap_h,
 } from "../core/worldgen_core.js";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
@@ -40,11 +46,9 @@ function ensureWasm(): Promise<void> {
 // Step 2.5.4 grid handle. Held across calls so the editor hot path doesn't
 // serialize the full Grid (13.5MB @ 60k) across the JsValue boundary every
 // pointermove. Updated by `generate_world`, `store_grid`, `edit_heightmap`,
-// and `reset_heightmap`. `getGrid(reqGrid)` resolves: wire payload → held.
-function getGrid(reqGrid: unknown): Grid | null {
-	if (reqGrid) return reqGrid as Grid;
-	return heldGrid;
-}
+// and `reset_heightmap`. The `_h` WASM variants operate on the Rust-side
+// held grid (no JsValue at all); this JS-side copy is kept in sync for
+// backward-compat reads (e.g. cell info display).
 let heldGrid: Grid | null = null;
 
 type WorkerRequest =
@@ -192,7 +196,12 @@ type WorkerResponse =
 			result: Grid;
 	  }
 	| { kind: "generate_world"; reqId: number; ok: true; result: Grid }
-	| { kind: "edit_heightmap"; reqId: number; ok: true; result: Grid }
+	| {
+			kind: "edit_heightmap";
+			reqId: number;
+			ok: true;
+			result: Grid | { h: Uint8Array };
+	  }
 	| {
 			kind: "recompute_temp_biome_local";
 			reqId: number;
@@ -215,7 +224,7 @@ type WorkerResponse =
 			kind: "reset_heightmap";
 			reqId: number;
 			ok: true;
-			result: Grid;
+			result: Grid | { h: Uint8Array };
 	  }
 	| { kind: "store_grid"; reqId: number; ok: true; result: null }
 	| { kind: "error"; reqId: number; ok: false; message: string };
@@ -294,85 +303,138 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			send({ kind: "store_grid", reqId, ok: true, result: null });
 		} else if (req.kind === "edit_heightmap") {
 			// Step 2.5.1: apply a batch of heightmap edit ops to grid.cells.h.
-			// Step 2.5.4: use the held grid handle when no grid is in the
-			// payload (the editor hot path), avoiding the serde round-trip.
-			const g = getGrid(req.grid);
-			if (!g) {
+			// Serde fix: when no grid is in the payload (the editor hot path),
+			// call `edit_heightmap_h` which operates on the Rust-held Grid.
+			// No JsValue round-trip at all — returns only the mutated `h` array
+			// as a zero-copy Uint8Array patch.
+			if (req.grid === undefined) {
+				if (!has_grid_h()) {
+					send({
+						kind: "error",
+						reqId,
+						ok: false,
+						message:
+							"edit_heightmap: no held grid (call generate_world or store_grid first)",
+					});
+					return;
+				}
+				const hPatch = edit_heightmap_h(req.ops) as Uint8Array;
+				// Keep JS-side heldGrid in sync (for backward compat reads).
+				if (heldGrid) heldGrid.cells.h = Array.from(hPatch);
 				send({
-					kind: "error",
+					kind: "edit_heightmap",
 					reqId,
-					ok: false,
-					message: "edit_heightmap: no grid (held or wire)",
+					ok: true,
+					result: { h: hPatch },
 				});
-				return;
+			} else {
+				const result = edit_heightmap(req.grid, req.ops) as Grid;
+				heldGrid = result; // keep handle in sync with the mutated grid
+				send({ kind: "edit_heightmap", reqId, ok: true, result });
 			}
-			const result = edit_heightmap(g, req.ops) as Grid;
-			heldGrid = result; // keep handle in sync with the mutated grid
-			send({ kind: "edit_heightmap", reqId, ok: true, result });
 		} else if (req.kind === "recompute_temp_biome_local") {
 			// Step 2.5.2: Tier-1 local recompute of temp + biome for the
 			// brush-radius cell set. Returns { temp: Int8Array, biome: Uint8Array }
 			// holding only the affected cells' values (in cellIds order) for a
 			// texture patch.
-			const g = getGrid(req.grid);
-			if (!g) {
-				send({
-					kind: "error",
-					reqId,
-					ok: false,
-					message: "recompute_temp_biome_local: no grid (held or wire)",
-				});
-				return;
+			if (req.grid === undefined) {
+				if (!has_grid_h()) {
+					send({
+						kind: "error",
+						reqId,
+						ok: false,
+						message: "recompute_temp_biome_local: no held grid",
+					});
+					return;
+				}
+				const result = recompute_temp_biome_local_h(
+					req.cellIds,
+					req.opts ?? {},
+				);
+				send({ kind: "recompute_temp_biome_local", reqId, ok: true, result });
+			} else {
+				const result = recompute_temp_biome_local(
+					req.grid,
+					req.cellIds,
+					req.opts ?? {},
+				);
+				send({ kind: "recompute_temp_biome_local", reqId, ok: true, result });
 			}
-			const result = recompute_temp_biome_local(g, req.cellIds, req.opts ?? {});
-			send({ kind: "recompute_temp_biome_local", reqId, ok: true, result });
 		} else if (req.kind === "recompute_dependents") {
 			// Step 2.5.3: full debounced dependent recompute — drainage
 			// (rivers + lakes + flux), climate (temp + prec), biome full-pass,
 			// and entity-repair cascade. Returns a DependentResult.
-			const g = getGrid(req.grid);
-			if (!g) {
-				send({
-					kind: "error",
-					reqId,
-					ok: false,
-					message: "recompute_dependents: no grid (held or wire)",
-				});
-				return;
+			if (req.grid === undefined) {
+				if (!has_grid_h()) {
+					send({
+						kind: "error",
+						reqId,
+						ok: false,
+						message: "recompute_dependents: no held grid",
+					});
+					return;
+				}
+				// Track B: _h2 returns TypedArrays (zero-copy) instead of serde.
+				const result = recompute_dependents_h2(req.opts ?? {});
+				send({ kind: "recompute_dependents", reqId, ok: true, result });
+			} else {
+				const result = recompute_dependents(req.grid, req.opts ?? {});
+				send({ kind: "recompute_dependents", reqId, ok: true, result });
 			}
-			const result = recompute_dependents(g, req.opts ?? {});
-			send({ kind: "recompute_dependents", reqId, ok: true, result });
 		} else if (req.kind === "pick_cell") {
 			// Step 2.5.4: pick the nearest cell to world-space (x, y).
 			// Returns a cell id (u32) or -1 if no cells.
-			const g = getGrid(req.grid);
-			if (!g) {
-				send({
-					kind: "error",
-					reqId,
-					ok: false,
-					message: "pick_cell: no grid (held or wire)",
-				});
-				return;
+			if (req.grid === undefined) {
+				if (!has_grid_h()) {
+					send({
+						kind: "error",
+						reqId,
+						ok: false,
+						message: "pick_cell: no held grid",
+					});
+					return;
+				}
+				const result = pick_cell_h(req.x, req.y);
+				send({ kind: "pick_cell", reqId, ok: true, result });
+			} else {
+				const result = pick_cell(req.grid, req.x, req.y);
+				send({ kind: "pick_cell", reqId, ok: true, result });
 			}
-			const result = pick_cell(g, req.x, req.y);
-			send({ kind: "pick_cell", reqId, ok: true, result });
 		} else if (req.kind === "reset_heightmap") {
 			// Step 2.5.4: reset grid.cells.h to the original seeded heightmap.
 			// Also reinitializes entity index arrays to "unassigned".
-			const g = getGrid(req.grid);
-			if (!g) {
+			if (req.grid === undefined) {
+				if (!has_grid_h()) {
+					send({
+						kind: "error",
+						reqId,
+						ok: false,
+						message: "reset_heightmap: no held grid",
+					});
+					return;
+				}
+				const hPatch = reset_heightmap_h() as Uint8Array;
+				// Keep JS-side heldGrid in sync.
+				if (heldGrid) {
+					heldGrid.cells.h = Array.from(hPatch);
+					// Reset entity arrays to unassigned.
+					heldGrid.cells.state = heldGrid.cells.state.map(() => -1);
+					heldGrid.cells.province = heldGrid.cells.province.map(() => -1);
+					heldGrid.cells.culture = heldGrid.cells.culture.map(() => -1);
+					heldGrid.cells.religion = heldGrid.cells.religion.map(() => -1);
+					heldGrid.cells.burg = heldGrid.cells.burg.map(() => 0);
+				}
 				send({
-					kind: "error",
+					kind: "reset_heightmap",
 					reqId,
-					ok: false,
-					message: "reset_heightmap: no grid (held or wire)",
+					ok: true,
+					result: { h: hPatch },
 				});
-				return;
+			} else {
+				const result = reset_heightmap(req.grid) as Grid;
+				heldGrid = result; // keep handle in sync with the reset grid
+				send({ kind: "reset_heightmap", reqId, ok: true, result });
 			}
-			const result = reset_heightmap(g) as Grid;
-			heldGrid = result; // keep handle in sync with the reset grid
-			send({ kind: "reset_heightmap", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

@@ -27,6 +27,17 @@ export function build_grid_with_heightmap(mesh_js: any, seed: number): any;
 export function edit_heightmap(grid_js: any, ops_js: any): any;
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde
+ * round-trip. Returns only the updated `cells.h` as a `Uint8Array` (zero-copy
+ * view into WASM memory). The held grid is mutated in place; JS should update
+ * its `heldGrid.cells.h` from the returned array (or just use the array
+ * directly for the texture upload).
+ *
+ * Exposed as `edit_heightmap_h(ops)` to JS.
+ */
+export function edit_heightmap_h(ops_js: any): Uint8Array;
+
+/**
  * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
  * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
  * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
@@ -86,7 +97,6 @@ export function generate_heightmap(mesh_js: any, seed: number): Uint8Array;
 export function generate_mesh(cell_count: number, seed: number): any;
 
 /**
- * Step 1.5: the static world generation pipeline.
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.
@@ -95,8 +105,16 @@ export function generate_mesh(cell_count: number, seed: number): any;
  * - `cell_count`: u32, target cell count for the Voronoi mesh.
  * - `opts_js`: optional `ClimateOpts` object (all fields optional, defaults mirror FMG).
  * Returns the `Grid` serialized as `JsValue` via `serde_wasm_bindgen`.
+ *
+ * Also stores the grid into the Rust-side handle (`HELD_GRID`) so
+ * subsequent `_h` calls can operate without serde round-trips.
  */
 export function generate_world(seed: number, cell_count: number, opts_js: any): any;
+
+/**
+ * Check whether the Rust side is currently holding a grid.
+ */
+export function has_grid_h(): boolean;
 
 /**
  * Initialize the panic hook so Rust panics surface in the browser console
@@ -112,6 +130,13 @@ export function init(): void;
  * Exposed as `pick_cell(grid, x, y)` to JS.
  */
 export function pick_cell(grid_js: any, x: number, y: number): number;
+
+/**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ *
+ * Exposed as `pick_cell_h(x, y)` to JS.
+ */
+export function pick_cell_h(x: number, y: number): number;
 
 /**
  * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
@@ -135,6 +160,40 @@ export function pick_cell(grid_js: any, x: number, y: number): number;
 export function recompute_dependents(grid_js: any, opts_js: any): any;
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No inbound Grid
+ * serde. The outbound `DependentResult` is still serialized (it carries the
+ * recomputed arrays + river/lake geometry the renderer needs) — will
+ * replace this with TypedArray encoding.
+ *
+ * Exposed as `recompute_dependents_h(opts)` to JS.
+ */
+export function recompute_dependents_h(opts_js: any): any;
+
+/**
+ * Track B: zero-copy DependentResult return. Same as `recompute_dependents_h`
+ * but returns the 12 numeric arrays as TypedArrays (zero-copy views into WASM
+ * linear memory via `js_sys::*Array::from(&slice)`) instead of serde-encoding
+ * them as JS Arrays of boxed Numbers. The 4 small collections (`removed_burgs`,
+ * `dissolved_states`, `rivers`, `lakes`) are still serde-encoded (they are
+ * tiny relative to the 60k-element numeric arrays). This eliminates ~385ms of
+ * serde overhead at 60k cells.
+ *
+ * Returns a JS object:
+ * ```text
+ * { temp: Int8Array, prec: Uint8Array, biome: Uint8Array,
+ *   state: Int32Array, province: Int32Array, culture: Int32Array,
+ *   religion: Int32Array, burg: Int16Array,
+ *   fl: Uint16Array, r: Uint16Array, conf: Uint16Array,
+ *   coastline: Uint8Array,
+ *   removed_burgs: string[], dissolved_states: Uint32Array,
+ *   rivers: RiverGeo[], lakes: LakeGeo[] }
+ * ```
+ *
+ * Exposed as `recompute_dependents_h2(opts)` to JS.
+ */
+export function recompute_dependents_h2(opts_js: any): any;
+
+/**
  * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
  * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
  * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
@@ -148,6 +207,20 @@ export function recompute_dependents(grid_js: any, opts_js: any): any;
 export function recompute_temp_biome_local(grid_js: any, cell_ids_js: any, opts_js: any): any;
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ * Returns only the affected cells' temp (Int8Array) + biome (Uint8Array).
+ *
+ * Exposed as `recompute_temp_biome_local_h(cellIds, opts)` to JS.
+ */
+export function recompute_temp_biome_local_h(cell_ids_js: any, opts_js: any): any;
+
+/**
+ * Release the held grid (drops it). Called when the worker is done with a
+ * world or before loading a new one.
+ */
+export function release_grid_h(): void;
+
+/**
  * Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
  * Regenerates `h` from `grid.seed` + `grid.mesh` using the same
  * `heightmap::generate` used by `generate_world`. Also reinitializes the
@@ -159,6 +232,21 @@ export function recompute_temp_biome_local(grid_js: any, cell_ids_js: any, opts_
  */
 export function reset_heightmap(grid_js: any): any;
 
+/**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ * Returns only the new `cells.h` as a `Uint8Array`.
+ *
+ * Exposed as `reset_heightmap_h()` to JS.
+ */
+export function reset_heightmap_h(): Uint8Array;
+
+/**
+ * Store a Grid (deserialized from JS) into the Rust-side handle slot.
+ * Replaces any previously held grid. The held grid is owned by Rust after
+ * this call — JS should not mutate its copy.
+ */
+export function store_grid_h(grid_js: any): void;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -166,6 +254,7 @@ export interface InitOutput {
     readonly add: (a: number, b: number) => number;
     readonly build_grid_with_heightmap: (a: any, b: number) => any;
     readonly edit_heightmap: (a: any, b: any) => any;
+    readonly edit_heightmap_h: (a: any) => any;
     readonly generate_biomes: (a: any, b: any, c: any) => any;
     readonly generate_biomes_for_grid: (a: any) => any;
     readonly generate_climate: (a: any, b: any, c: any) => any;
@@ -173,11 +262,19 @@ export interface InitOutput {
     readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
+    readonly has_grid_h: () => number;
     readonly init: () => void;
     readonly pick_cell: (a: any, b: number, c: number) => number;
+    readonly pick_cell_h: (a: number, b: number) => number;
     readonly recompute_dependents: (a: any, b: any) => any;
+    readonly recompute_dependents_h: (a: any) => any;
+    readonly recompute_dependents_h2: (a: any) => any;
     readonly recompute_temp_biome_local: (a: any, b: any, c: any) => any;
+    readonly recompute_temp_biome_local_h: (a: any, b: any) => any;
+    readonly release_grid_h: () => void;
     readonly reset_heightmap: (a: any) => any;
+    readonly reset_heightmap_h: () => any;
+    readonly store_grid_h: (a: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

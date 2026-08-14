@@ -41,9 +41,13 @@ export type HeightmapEditorActions = {
 	 * Returns a promise that resolves with the `DependentResult` (or rejects
 	 * on worker error). The promise from a superseded call (same timer slot)
 	 * never resolves — the latest caller's promise wins.
+	 *
+	 * Serde fix: pass null for grid to use the Rust-held grid handle (no Grid
+	 * on the wire, avoiding the 13.5MB serde round-trip). Pass a Grid only for
+	 * backward compat or an explicitly-loaded grid.
 	 */
 	scheduleDependentRecompute: (
-		grid: Grid,
+		grid: Grid | null,
 		opts?: unknown,
 	) => Promise<DependentResult>;
 	/** Clear the pending timer and reset error (called on unmount / world regen). */
@@ -69,7 +73,7 @@ export const useHeightmapEditor = create<
 	lastDependentResult: null,
 	lastError: null,
 
-	scheduleDependentRecompute: (grid, opts) => {
+	scheduleDependentRecompute: (grid: Grid | null, opts?) => {
 		// Clear any pending timer + reject the previous caller's promise.
 		if (internal.debounceTimer !== null) {
 			clearTimeout(internal.debounceTimer);
@@ -98,7 +102,12 @@ export const useHeightmapEditor = create<
 				internal.resolveCurrent = null;
 				internal.rejectCurrent = null;
 				try {
-					const result = await coreApi.recomputeDependents(opts, grid);
+					// Serde fix: when grid is null, use the Rust-held grid
+					// handle (no Grid on the wire). When grid is provided,
+					// pass it explicitly (backward compat).
+					const result = grid
+						? await coreApi.recomputeDependents(opts, grid)
+						: await coreApi.recomputeDependents(opts);
 					set({
 						recomputePending: false,
 						lastDependentResult: result,

@@ -4,6 +4,8 @@
 //! Real generation modules (mesh, heightmap, climate, biomes, ...) land in
 //! later phases.
 
+use std::cell::RefCell;
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 mod mesh;
@@ -19,6 +21,46 @@ mod rivers;
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
+}
+
+// ---------------------------------------------------------------------------
+// Rust-side grid handle.
+//
+// The JS-side grid handle (worker `heldGrid`) still had to pass the full 13.5MB
+// Grid through `serde_wasm_bindgen::from_value` / `to_value` on every call. By
+// holding the Grid in WASM linear memory (Rust `static`), the `_h` variants
+// skip the serde boundary entirely: they read/mutate the held Grid in place
+// and return only the changed arrays as zero-copy TypedArray views.
+//
+// `generate_world` auto-stores its result; `store_grid_h` lets JS push a grid;
+// `release_grid_h` frees the slot. The `*_h` exports operate on the held grid.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static HELD_GRID: RefCell<Option<grid::Grid>> = const { RefCell::new(None) };
+}
+
+/// Store a Grid (deserialized from JS) into the Rust-side handle slot.
+/// Replaces any previously held grid. The held grid is owned by Rust after
+/// this call — JS should not mutate its copy.
+#[wasm_bindgen]
+pub fn store_grid_h(grid_js: JsValue) {
+    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("store_grid_h: failed to deserialize Grid");
+    HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
+}
+
+/// Release the held grid (drops it). Called when the worker is done with a
+/// world or before loading a new one.
+#[wasm_bindgen]
+pub fn release_grid_h() {
+    HELD_GRID.with(|g| *g.borrow_mut() = None);
+}
+
+/// Check whether the Rust side is currently holding a grid.
+#[wasm_bindgen]
+pub fn has_grid_h() -> bool {
+    HELD_GRID.with(|g| g.borrow().is_some())
 }
 
 /// Trivial export to verify the WASM ↔ JS bridge works end-to-end.
@@ -132,6 +174,29 @@ pub fn edit_heightmap(grid_js: JsValue, ops_js: JsValue) -> JsValue {
     heightmap_edit::edit_heightmap_js(grid_js, ops_js)
 }
 
+/// Edit the heightmap on the Rust-side held grid. No Grid serde
+/// round-trip. Returns only the updated `cells.h` as a `Uint8Array` (zero-copy
+/// view into WASM memory). The held grid is mutated in place; JS should update
+/// its `heldGrid.cells.h` from the returned array (or just use the array
+/// directly for the texture upload).
+///
+/// Exposed as `edit_heightmap_h(ops)` to JS.
+#[wasm_bindgen]
+pub fn edit_heightmap_h(ops_js: JsValue) -> js_sys::Uint8Array {
+    let ops: Vec<heightmap_edit::EditOp> = serde_wasm_bindgen::from_value(ops_js)
+        .expect("edit_heightmap_h: failed to deserialize EditOp[]");
+    HELD_GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let grid = guard.as_mut().expect("edit_heightmap_h: no held grid");
+        heightmap_edit::edit_heightmap(grid, &ops);
+        // Zero-copy view into the grid's h vector in WASM linear memory.
+        // SAFETY: the Uint8Array view is valid as long as the backing memory
+        // isn't freed or reallocated. The grid is held alive for the JS
+        // object's lifetime. The JS side must copy or use immediately.
+        js_sys::Uint8Array::from(grid.cells.h.as_slice())
+    })
+}
+
 /// Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
 /// `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
 /// as a `u32`, or `-1` if the grid has no cells. O(1)-ish, deterministic.
@@ -145,6 +210,21 @@ pub fn pick_cell(grid_js: JsValue, x: f64, y: f64) -> i32 {
         Some(id) => id as i32,
         None => -1,
     }
+}
+
+/// Edit the heightmap on the Rust-side held grid. No Grid serde.
+///
+/// Exposed as `pick_cell_h(x, y)` to JS.
+#[wasm_bindgen]
+pub fn pick_cell_h(x: f64, y: f64) -> i32 {
+    HELD_GRID.with(|g| {
+        let guard = g.borrow();
+        let grid = guard.as_ref().expect("pick_cell_h: no held grid");
+        match heightmap::pick_cell(&grid.mesh, x, y) {
+            Some(id) => id as i32,
+            None => -1,
+        }
+    })
 }
 
 /// Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
@@ -168,6 +248,26 @@ pub fn reset_heightmap(grid_js: JsValue) -> JsValue {
     grid.cells.religion = vec![-1i32; n];
     grid.cells.burg = vec![0i16; n];
     serde_wasm_bindgen::to_value(&grid).expect("reset_heightmap: grid serde to JsValue")
+}
+
+/// Edit the heightmap on the Rust-side held grid. No Grid serde.
+/// Returns only the new `cells.h` as a `Uint8Array`.
+///
+/// Exposed as `reset_heightmap_h()` to JS.
+#[wasm_bindgen]
+pub fn reset_heightmap_h() -> js_sys::Uint8Array {
+    HELD_GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let grid = guard.as_mut().expect("reset_heightmap_h: no held grid");
+        grid.cells.h = heightmap::generate(&grid.mesh, grid.seed);
+        let n = grid.cells.h.len();
+        grid.cells.state = vec![-1i32; n];
+        grid.cells.province = vec![-1i32; n];
+        grid.cells.culture = vec![-1i32; n];
+        grid.cells.religion = vec![-1i32; n];
+        grid.cells.burg = vec![0i16; n];
+        js_sys::Uint8Array::from(grid.cells.h.as_slice())
+    })
 }
 
 /// Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
@@ -212,6 +312,45 @@ pub fn recompute_temp_biome_local(grid_js: JsValue, cell_ids_js: JsValue, opts_j
     js_sys::Reflect::set(&obj, &JsValue::from_str("biome"), &biome_arr).expect("set biome");
     obj.into()
 }
+/// Edit the heightmap on the Rust-side held grid. No Grid serde.
+/// Returns only the affected cells' temp (Int8Array) + biome (Uint8Array).
+///
+/// Exposed as `recompute_temp_biome_local_h(cellIds, opts)` to JS.
+#[wasm_bindgen]
+pub fn recompute_temp_biome_local_h(cell_ids_js: JsValue, opts_js: JsValue) -> JsValue {
+    let cell_ids: Vec<u32> = serde_wasm_bindgen::from_value(cell_ids_js)
+        .expect("recompute_temp_biome_local_h: failed to deserialize cellIds");
+    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
+        .unwrap_or_else(|_| climate::ClimateOpts::default());
+
+    HELD_GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let grid = guard.as_mut().expect("recompute_temp_biome_local_h: no held grid");
+
+        // Temp first (biome depends on temp).
+        let coords = climate::calculate_map_coordinates(&opts);
+        climate::recompute_temp_local_with_coords(grid, &cell_ids, &opts, &coords);
+        // Biome next (reads updated temp).
+        biomes::recompute_biome_local(grid, &cell_ids);
+
+        // Return only the affected cells' temp + biome (in cellIds order).
+        let n = cell_ids.len();
+        let temp_arr = js_sys::Int8Array::new_with_length(n as u32);
+        let biome_arr = js_sys::Uint8Array::new_with_length(n as u32);
+        let grid_n = grid.cells.temp.len();
+        for (i, &id) in cell_ids.iter().enumerate() {
+            let cell = id as usize;
+            if cell < grid_n {
+                temp_arr.set_index(i as u32, grid.cells.temp[cell]);
+                biome_arr.set_index(i as u32, grid.cells.biome[cell]);
+            }
+        }
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &JsValue::from_str("temp"), &temp_arr).expect("set temp");
+        js_sys::Reflect::set(&obj, &JsValue::from_str("biome"), &biome_arr).expect("set biome");
+        obj.into()
+    })
+}
 
 /// Step 2.5.3: full dependent recompute after a heightmap edit stroke.
 ///
@@ -238,6 +377,99 @@ pub fn recompute_dependents(grid_js: JsValue, opts_js: JsValue) -> JsValue {
         .unwrap_or_else(|_| climate::ClimateOpts::default());
     let result = recompute_dependents_inner(&mut grid, &opts);
     serde_wasm_bindgen::to_value(&result).expect("recompute_dependents: serde to JsValue")
+}
+
+/// Edit the heightmap on the Rust-side held grid. No inbound Grid
+/// serde. The outbound `DependentResult` is still serialized (it carries the
+/// recomputed arrays + river/lake geometry the renderer needs) — will
+/// replace this with TypedArray encoding.
+///
+/// Exposed as `recompute_dependents_h(opts)` to JS.
+#[wasm_bindgen]
+pub fn recompute_dependents_h(opts_js: JsValue) -> JsValue {
+    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
+        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    HELD_GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let grid = guard.as_mut().expect("recompute_dependents_h: no held grid");
+        let result = recompute_dependents_inner(grid, &opts);
+        serde_wasm_bindgen::to_value(&result).expect("recompute_dependents_h: serde to JsValue")
+    })
+}
+
+/// Track B: zero-copy DependentResult return. Same as `recompute_dependents_h`
+/// but returns the 12 numeric arrays as TypedArrays (zero-copy views into WASM
+/// linear memory via `js_sys::*Array::from(&slice)`) instead of serde-encoding
+/// them as JS Arrays of boxed Numbers. The 4 small collections (`removed_burgs`,
+/// `dissolved_states`, `rivers`, `lakes`) are still serde-encoded (they are
+/// tiny relative to the 60k-element numeric arrays). This eliminates ~385ms of
+/// serde overhead at 60k cells.
+///
+/// Returns a JS object:
+/// ```text
+/// { temp: Int8Array, prec: Uint8Array, biome: Uint8Array,
+///   state: Int32Array, province: Int32Array, culture: Int32Array,
+///   religion: Int32Array, burg: Int16Array,
+///   fl: Uint16Array, r: Uint16Array, conf: Uint16Array,
+///   coastline: Uint8Array,
+///   removed_burgs: string[], dissolved_states: Uint32Array,
+///   rivers: RiverGeo[], lakes: LakeGeo[] }
+/// ```
+///
+/// Exposed as `recompute_dependents_h2(opts)` to JS.
+#[wasm_bindgen]
+pub fn recompute_dependents_h2(opts_js: JsValue) -> JsValue {
+    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
+        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    HELD_GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let grid = guard.as_mut().expect("recompute_dependents_h2: no held grid");
+        let result = recompute_dependents_inner(grid, &opts);
+
+    let obj = js_sys::Object::new();
+
+    // 12 numeric arrays as zero-copy TypedArrays (~385ms serde eliminated).
+    js_sys::Reflect::set(&obj, &"temp".into(), &js_sys::Int8Array::from(result.temp.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"prec".into(), &js_sys::Uint8Array::from(result.prec.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"biome".into(), &js_sys::Uint8Array::from(result.biome.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"state".into(), &js_sys::Int32Array::from(result.state.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"province".into(), &js_sys::Int32Array::from(result.province.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"culture".into(), &js_sys::Int32Array::from(result.culture.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"religion".into(), &js_sys::Int32Array::from(result.religion.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"burg".into(), &js_sys::Int16Array::from(result.burg.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"fl".into(), &js_sys::Uint16Array::from(result.fl.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"r".into(), &js_sys::Uint16Array::from(result.r.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"conf".into(), &js_sys::Uint16Array::from(result.conf.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"coastline".into(), &js_sys::Uint8Array::from(result.coastline.as_slice())).unwrap();
+
+    // 4 small collections via serde (tiny relative to 60k-element arrays).
+    // dissolved_states is a Vec<u32> but typically very small (< 10 entries),
+    // so serde-encoded JS array is fine.
+    let small = DependentResultSmall {
+        removed_burgs: result.removed_burgs,
+        dissolved_states: result.dissolved_states.clone(),
+        rivers: result.rivers,
+        lakes: result.lakes,
+    };
+    let small_js = serde_wasm_bindgen::to_value(&small).expect("recompute_dependents_h2: serde small collections");
+    js_sys::Reflect::set(&obj, &"removed_burgs".into(), &js_sys::Reflect::get(&small_js, &"removed_burgs".into()).unwrap()).unwrap();
+    js_sys::Reflect::set(&obj, &"dissolved_states".into(), &js_sys::Uint32Array::from(result.dissolved_states.as_slice())).unwrap();
+    js_sys::Reflect::set(&obj, &"rivers".into(), &js_sys::Reflect::get(&small_js, &"rivers".into()).unwrap()).unwrap();
+    js_sys::Reflect::set(&obj, &"lakes".into(), &js_sys::Reflect::get(&small_js, &"lakes".into()).unwrap()).unwrap();
+
+    obj.into()
+    })
+}
+
+/// Serde helper: only the small (non-numeric-array) fields of `DependentResult`,
+/// used by `recompute_dependents_h2` to serde-encode the tiny collections while
+/// the large numeric arrays go through zero-copy TypedArrays.
+#[derive(Serialize)]
+struct DependentResultSmall {
+    removed_burgs: Vec<String>,
+    dissolved_states: Vec<u32>,
+    rivers: Vec<grid::RiverGeo>,
+    lakes: Vec<grid::LakeGeo>,
 }
 
 /// Pure-data inner implementation of `recompute_dependents` — used by the WASM
@@ -390,7 +622,6 @@ fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
     (removed_burgs, dissolved_states)
 }
 
-/// Step 1.5: the static world generation pipeline.
 /// Runs mesh → heightmap → climate → biomes in sequence and returns a fully
 /// populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
 /// This is the single entry point the browser/worker calls for a complete world.
@@ -399,12 +630,18 @@ fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
 /// - `cell_count`: u32, target cell count for the Voronoi mesh.
 /// - `opts_js`: optional `ClimateOpts` object (all fields optional, defaults mirror FMG).
 /// Returns the `Grid` serialized as `JsValue` via `serde_wasm_bindgen`.
+///
+/// Also stores the grid into the Rust-side handle (`HELD_GRID`) so
+/// subsequent `_h` calls can operate without serde round-trips.
 #[wasm_bindgen]
 pub fn generate_world(seed: u32, cell_count: u32, opts_js: JsValue) -> JsValue {
     let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
         .unwrap_or_else(|_| climate::ClimateOpts::default());
     let grid = generate_world_inner(seed, cell_count, &opts);
-    serde_wasm_bindgen::to_value(&grid).expect("generate_world: grid serde to JsValue")
+    let js = serde_wasm_bindgen::to_value(&grid).expect("generate_world: grid serde to JsValue");
+    // Store the grid in Rust-side handle for zero-serde subsequent calls.
+    HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
+    js
 }
 
 /// Pure-data inner implementation of `generate_world` — used by the WASM
@@ -756,6 +993,35 @@ mod tests {
         }
         assert!(result.removed_burgs.is_empty(), "removed_burgs should be empty");
         assert!(result.dissolved_states.is_empty(), "dissolved_states should be empty");
+    }
+
+    /// Timing test: measure pure Rust `recompute_dependents_inner` compute time
+    /// at 60k cells (no WASM/serde boundary). Runs with `--ignored`.
+    #[test]
+    #[ignore = "slow: timing profile — run with `cargo test -- --ignored`"]
+    fn recompute_dependents_timing_60k() {
+        let seed = 42;
+        let n: u32 = 60000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+
+        // Warm up.
+        let _ = recompute_dependents_inner(&mut grid, &opts);
+
+        let times: Vec<u128> = (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                let _ = recompute_dependents_inner(&mut grid, &opts);
+                start.elapsed().as_millis()
+            })
+            .collect();
+        let median = {
+            let mut sorted = times.clone();
+            sorted.sort();
+            sorted[sorted.len() / 2]
+        };
+        println!("Pure Rust recompute_dependents_inner @ 60k: {median}ms median");
+        assert!(median < 1000, "compute should be under 1000ms at 60k (debug), got {median}ms");
     }
 
     /// Fresh worlds must have drainage: `generate_world_inner` now calls

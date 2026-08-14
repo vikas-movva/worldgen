@@ -66,23 +66,23 @@ function makeFakeGrid(n = 100): Grid {
 
 function fakeDependentResult(n: number): DependentResult {
 	return {
-	temp: new Int8Array(n),
-	prec: new Uint8Array(n),
-	biome: new Uint8Array(n),
-	state: new Int32Array(n),
-	province: new Int32Array(n),
-	burg: new Int16Array(n),
-	fl: new Uint16Array(n),
-	r: new Uint16Array(n),
-	conf: new Uint16Array(n),
-	coastline: new Uint8Array(n),
-	removed_burgs: [],
-	dissolved_states: [],
-	rivers: [],
-	lakes: [],
-	culture: [],
-	religion: [],
-};
+		temp: new Int8Array(n),
+		prec: new Uint8Array(n),
+		biome: new Uint8Array(n),
+		state: new Int32Array(n),
+		province: new Int32Array(n),
+		burg: new Int16Array(n),
+		fl: new Uint16Array(n),
+		r: new Uint16Array(n),
+		conf: new Uint16Array(n),
+		coastline: new Uint8Array(n),
+		removed_burgs: [],
+		dissolved_states: [],
+		rivers: [],
+		lakes: [],
+		culture: [],
+		religion: [],
+	};
 }
 
 beforeEach(() => {

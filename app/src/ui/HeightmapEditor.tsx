@@ -25,6 +25,7 @@ import {
 	type DependentResult,
 	type EditMode,
 	type Grid,
+	type HeightmapPatch,
 } from "../core/api";
 import type { WorldMap } from "../render/layers";
 import { useHeightmapEditor } from "../state/heightmapEditorStore";
@@ -125,8 +126,9 @@ export function HeightmapEditor({
 			const strength = BRUSH_TOOLS.has(tool) ? brushStrength : 0.5;
 
 			try {
-				// No grid arg → worker uses its held grid handle (F3 fix).
-				const newGrid = await coreApi.editHeightmap([
+				// No grid arg → worker uses Rust-held grid (serde fix).
+				// Returns a thin { h: Uint8Array } patch, not a full Grid.
+				const result = await coreApi.editHeightmap([
 					{
 						mode,
 						center_cell: centerCell,
@@ -137,6 +139,28 @@ export function HeightmapEditor({
 					},
 				]);
 
+				// Splice the h patch into the local grid reference. The mesh +
+				// other cell arrays are unchanged by a heightmap edit.
+				let updatedGrid: Grid;
+				if (
+					result &&
+					typeof result === "object" &&
+					"h" in result &&
+					result.h instanceof Uint8Array
+				) {
+					const patch = result as HeightmapPatch;
+					// Use the lastEditGrid (or the prop grid for the first edit
+					// in a stroke) as the base; only cells.h changed.
+					const base = lastEditGrid.current ?? _g;
+					base.cells.h = Array.from(patch.h);
+					updatedGrid = base;
+				} else {
+					// Full Grid return (backward compat / explicit grid arg).
+					updatedGrid = result as Grid;
+				}
+
+				lastEditGrid.current = updatedGrid;
+
 				// Track edited cells for the local temp/biome patch.
 				editedCellIds.current.add(centerCell);
 
@@ -146,8 +170,7 @@ export function HeightmapEditor({
 					await coreApi.recomputeTempBiomeLocal(cellIds, {});
 				}
 
-				lastEditGrid.current = newGrid;
-				return newGrid;
+				return updatedGrid;
 			} catch (err) {
 				setStatusMsg(
 					`Edit error: ${err instanceof Error ? err.message : String(err)}`,
@@ -227,17 +250,14 @@ export function HeightmapEditor({
 			isPainting.current = false;
 			canvasEl?.releasePointerCapture(e.pointerId);
 
-			// Flush the debounced recompute with the latest grid.
-			if (lastEditGrid.current) {
-				void scheduleDependentRecompute(lastEditGrid.current).then(
-					(result: DependentResult) => {
-						setStatusMsg(
-							`Recompute done: ${result.rivers?.length ?? 0} rivers, ` +
-								`${result.lakes?.length ?? 0} lakes`,
-						);
-					},
+			// Flush the debounced recompute. Pass null for grid to use the
+			// Rust-held grid handle (serde fix — no 13.5MB Grid on the wire).
+			void scheduleDependentRecompute(null).then((result: DependentResult) => {
+				setStatusMsg(
+					`Recompute done: ${result.rivers?.length ?? 0} rivers, ` +
+						`${result.lakes?.length ?? 0} lakes`,
 				);
-			}
+			});
 			editedCellIds.current = new Set();
 		},
 		[scheduleDependentRecompute, canvasEl],
@@ -262,11 +282,35 @@ export function HeightmapEditor({
 		setIsResetting(true);
 		setStatusMsg("Resetting heightmap...");
 		try {
-			const newGrid = await coreApi.resetHeightmap();
-			setGrid(newGrid);
-			lastEditGrid.current = newGrid;
+			const result = await coreApi.resetHeightmap();
+			let resetGrid: Grid;
+			if (
+				result &&
+				typeof result === "object" &&
+				"h" in result &&
+				result.h instanceof Uint8Array
+			) {
+				const patch = result as HeightmapPatch;
+				const base = lastEditGrid.current ?? grid;
+				if (base) {
+					base.cells.h = Array.from(patch.h);
+					base.cells.state = base.cells.state.map(() => -1);
+					base.cells.province = base.cells.province.map(() => -1);
+					base.cells.culture = base.cells.culture.map(() => -1);
+					base.cells.religion = base.cells.religion.map(() => -1);
+					base.cells.burg = base.cells.burg.map(() => 0);
+					resetGrid = base;
+				} else {
+					// No base grid (shouldn't happen — editor requires grid).
+					return;
+				}
+			} else {
+				resetGrid = result as Grid;
+			}
+			setGrid(resetGrid);
+			lastEditGrid.current = resetGrid;
 			setSelectedCellId(-1);
-			worldMap?.setSelected(newGrid, -1);
+			worldMap?.setSelected(resetGrid, -1);
 			setStatusMsg("Heightmap reset to seeded state.");
 		} catch (err) {
 			setStatusMsg(
@@ -275,7 +319,7 @@ export function HeightmapEditor({
 		} finally {
 			setIsResetting(false);
 		}
-	}, [isResetting, setGrid, setSelectedCellId, worldMap]);
+	}, [isResetting, setGrid, setSelectedCellId, worldMap, grid]);
 
 	// Don't render the editor if no grid is loaded.
 	if (!grid) return null;

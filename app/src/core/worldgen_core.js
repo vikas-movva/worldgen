@@ -44,6 +44,22 @@ export function edit_heightmap(grid_js, ops_js) {
 }
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde
+ * round-trip. Returns only the updated `cells.h` as a `Uint8Array` (zero-copy
+ * view into WASM memory). The held grid is mutated in place; JS should update
+ * its `heldGrid.cells.h` from the returned array (or just use the array
+ * directly for the texture upload).
+ *
+ * Exposed as `edit_heightmap_h(ops)` to JS.
+ * @param {any} ops_js
+ * @returns {Uint8Array}
+ */
+export function edit_heightmap_h(ops_js) {
+    const ret = wasm.edit_heightmap_h(ops_js);
+    return ret;
+}
+
+/**
  * Step 1.4: produce `cells.biome` (Uint8Array, `0..=12`, `0` = Marine/water)
  * from a deserialized `Mesh` + the climate `{ temp, prec }` + the heightmap
  * `cells.h` (Uint8Array, 0..=100, `< 20` == water). Port of FMG
@@ -140,7 +156,6 @@ export function generate_mesh(cell_count, seed) {
 }
 
 /**
- * Step 1.5: the static world generation pipeline.
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.
@@ -149,6 +164,9 @@ export function generate_mesh(cell_count, seed) {
  * - `cell_count`: u32, target cell count for the Voronoi mesh.
  * - `opts_js`: optional `ClimateOpts` object (all fields optional, defaults mirror FMG).
  * Returns the `Grid` serialized as `JsValue` via `serde_wasm_bindgen`.
+ *
+ * Also stores the grid into the Rust-side handle (`HELD_GRID`) so
+ * subsequent `_h` calls can operate without serde round-trips.
  * @param {number} seed
  * @param {number} cell_count
  * @param {any} opts_js
@@ -157,6 +175,15 @@ export function generate_mesh(cell_count, seed) {
 export function generate_world(seed, cell_count, opts_js) {
     const ret = wasm.generate_world(seed, cell_count, opts_js);
     return ret;
+}
+
+/**
+ * Check whether the Rust side is currently holding a grid.
+ * @returns {boolean}
+ */
+export function has_grid_h() {
+    const ret = wasm.has_grid_h();
+    return ret !== 0;
 }
 
 /**
@@ -180,6 +207,19 @@ export function init() {
  */
 export function pick_cell(grid_js, x, y) {
     const ret = wasm.pick_cell(grid_js, x, y);
+    return ret;
+}
+
+/**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ *
+ * Exposed as `pick_cell_h(x, y)` to JS.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function pick_cell_h(x, y) {
+    const ret = wasm.pick_cell_h(x, y);
     return ret;
 }
 
@@ -211,6 +251,50 @@ export function recompute_dependents(grid_js, opts_js) {
 }
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No inbound Grid
+ * serde. The outbound `DependentResult` is still serialized (it carries the
+ * recomputed arrays + river/lake geometry the renderer needs) — will
+ * replace this with TypedArray encoding.
+ *
+ * Exposed as `recompute_dependents_h(opts)` to JS.
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function recompute_dependents_h(opts_js) {
+    const ret = wasm.recompute_dependents_h(opts_js);
+    return ret;
+}
+
+/**
+ * Track B: zero-copy DependentResult return. Same as `recompute_dependents_h`
+ * but returns the 12 numeric arrays as TypedArrays (zero-copy views into WASM
+ * linear memory via `js_sys::*Array::from(&slice)`) instead of serde-encoding
+ * them as JS Arrays of boxed Numbers. The 4 small collections (`removed_burgs`,
+ * `dissolved_states`, `rivers`, `lakes`) are still serde-encoded (they are
+ * tiny relative to the 60k-element numeric arrays). This eliminates ~385ms of
+ * serde overhead at 60k cells.
+ *
+ * Returns a JS object:
+ * ```text
+ * { temp: Int8Array, prec: Uint8Array, biome: Uint8Array,
+ *   state: Int32Array, province: Int32Array, culture: Int32Array,
+ *   religion: Int32Array, burg: Int16Array,
+ *   fl: Uint16Array, r: Uint16Array, conf: Uint16Array,
+ *   coastline: Uint8Array,
+ *   removed_burgs: string[], dissolved_states: Uint32Array,
+ *   rivers: RiverGeo[], lakes: LakeGeo[] }
+ * ```
+ *
+ * Exposed as `recompute_dependents_h2(opts)` to JS.
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function recompute_dependents_h2(opts_js) {
+    const ret = wasm.recompute_dependents_h2(opts_js);
+    return ret;
+}
+
+/**
  * Step 2.5.2: Tier-1 local recompute of temp + biome for an affected cell
  * set. Runs `recompute_temp_local` then `recompute_biome_local` in place on
  * `grid.cells`, and returns `{ temp: Int8Array, biome: Uint8Array }` holding
@@ -231,6 +315,28 @@ export function recompute_temp_biome_local(grid_js, cell_ids_js, opts_js) {
 }
 
 /**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ * Returns only the affected cells' temp (Int8Array) + biome (Uint8Array).
+ *
+ * Exposed as `recompute_temp_biome_local_h(cellIds, opts)` to JS.
+ * @param {any} cell_ids_js
+ * @param {any} opts_js
+ * @returns {any}
+ */
+export function recompute_temp_biome_local_h(cell_ids_js, opts_js) {
+    const ret = wasm.recompute_temp_biome_local_h(cell_ids_js, opts_js);
+    return ret;
+}
+
+/**
+ * Release the held grid (drops it). Called when the worker is done with a
+ * world or before loading a new one.
+ */
+export function release_grid_h() {
+    wasm.release_grid_h();
+}
+
+/**
  * Step 2.5.4: reset `grid.cells.h` back to the original seeded heightmap.
  * Regenerates `h` from `grid.seed` + `grid.mesh` using the same
  * `heightmap::generate` used by `generate_world`. Also reinitializes the
@@ -245,6 +351,28 @@ export function recompute_temp_biome_local(grid_js, cell_ids_js, opts_js) {
 export function reset_heightmap(grid_js) {
     const ret = wasm.reset_heightmap(grid_js);
     return ret;
+}
+
+/**
+ * Edit the heightmap on the Rust-side held grid. No Grid serde.
+ * Returns only the new `cells.h` as a `Uint8Array`.
+ *
+ * Exposed as `reset_heightmap_h()` to JS.
+ * @returns {Uint8Array}
+ */
+export function reset_heightmap_h() {
+    const ret = wasm.reset_heightmap_h();
+    return ret;
+}
+
+/**
+ * Store a Grid (deserialized from JS) into the Rust-side handle slot.
+ * Replaces any previously held grid. The held grid is owned by Rust after
+ * this call — JS should not mutate its copy.
+ * @param {any} grid_js
+ */
+export function store_grid_h(grid_js) {
+    wasm.store_grid_h(grid_js);
 }
 function __wbg_get_imports() {
     const import0 = {
@@ -348,6 +476,10 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_get_971a0c45d172643f: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_get_c0c8f8d7da0c03dd: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
             return ret;
@@ -418,6 +550,30 @@ function __wbg_get_imports() {
         },
         __wbg_new_ebe3e0f6837f0879: function() {
             const ret = new Object();
+            return ret;
+        },
+        __wbg_new_from_slice_1f7a0d975f26baea: function(arg0, arg1) {
+            const ret = new Int32Array(getArrayI32FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_from_slice_3eea173078478cfe: function(arg0, arg1) {
+            const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_from_slice_55708a5ac09940c8: function(arg0, arg1) {
+            const ret = new Int8Array(getArrayI8FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_from_slice_6fd7e6a4e2c9de83: function(arg0, arg1) {
+            const ret = new Int16Array(getArrayI16FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_from_slice_8aed4f0384605526: function(arg0, arg1) {
+            const ret = new Uint32Array(getArrayU32FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_from_slice_af1eb765183f5cf0: function(arg0, arg1) {
+            const ret = new Uint16Array(getArrayU16FromWasm0(arg0, arg1));
             return ret;
         },
         __wbg_new_with_length_3ffc1c56427c525c: function(arg0) {
@@ -568,6 +724,31 @@ function debugString(val) {
     return className;
 }
 
+function getArrayI16FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
+}
+
+function getArrayI32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayI8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+function getArrayU16FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
@@ -581,8 +762,48 @@ function getDataViewMemory0() {
     return cachedDataViewMemory0;
 }
 
+let cachedInt16ArrayMemory0 = null;
+function getInt16ArrayMemory0() {
+    if (cachedInt16ArrayMemory0 === null || cachedInt16ArrayMemory0.byteLength === 0) {
+        cachedInt16ArrayMemory0 = new Int16Array(wasm.memory.buffer);
+    }
+    return cachedInt16ArrayMemory0;
+}
+
+let cachedInt32ArrayMemory0 = null;
+function getInt32ArrayMemory0() {
+    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
+        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32ArrayMemory0;
+}
+
+let cachedInt8ArrayMemory0 = null;
+function getInt8ArrayMemory0() {
+    if (cachedInt8ArrayMemory0 === null || cachedInt8ArrayMemory0.byteLength === 0) {
+        cachedInt8ArrayMemory0 = new Int8Array(wasm.memory.buffer);
+    }
+    return cachedInt8ArrayMemory0;
+}
+
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
+}
+
+let cachedUint16ArrayMemory0 = null;
+function getUint16ArrayMemory0() {
+    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
+        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
+    }
+    return cachedUint16ArrayMemory0;
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
@@ -678,6 +899,11 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedInt16ArrayMemory0 = null;
+    cachedInt32ArrayMemory0 = null;
+    cachedInt8ArrayMemory0 = null;
+    cachedUint16ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;
