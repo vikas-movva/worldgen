@@ -202,8 +202,20 @@ export function MapCanvas({
 			buildMap(useWorldgenStore.getState().grid);
 
 			// One subscription covers grid regeneration + layer toggles.
+			// Height edits (same mesh, only cells.h changed) use the fast
+			// `updateHeight` texture-update path — no geometry/mesh rebuild.
+			// Only a full world regeneration (new mesh reference) triggers
+			// the expensive `rebuildMap` (destroy + recreate WorldMap).
 			const unsub = useWorldgenStore.subscribe((state, prev) => {
-				if (state.grid !== prev.grid) rebuildMap(state.grid);
+				if (state.grid !== prev.grid) {
+					if (prev.grid && state.grid && state.grid.mesh === prev.grid.mesh) {
+						// Same mesh → height/temp/biome edit. Update textures in place.
+						worldMap?.updateHeight(state.grid);
+						worldMap?.updateBiome(state.grid);
+					} else {
+						rebuildMap(state.grid);
+					}
+				}
 				if (state.layerEnabled !== prev.layerEnabled)
 					worldMap?.setLayers(state.layerEnabled);
 			});

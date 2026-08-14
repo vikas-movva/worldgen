@@ -88,8 +88,47 @@ export function HeightmapEditor({
 	const isPainting = useRef(false);
 	const lastEditGrid = useRef<Grid | null>(null);
 	const editedCellIds = useRef<Set<number>>(new Set());
+	// Spacebar-to-pan: when Space is held, the camera pans and the editor
+	// must NOT paint. Tracked independently of attachCamera's own spaceDown
+	// (both listen to the same window keydown/keyup events).
+	const spaceDown = useRef(false);
 	const [statusMsg, setStatusMsg] = useState<string>("");
 	const [isResetting, setIsResetting] = useState(false);
+
+	// Track Space (the pan modifier) so the editor can suppress painting
+	// during a pan — prevents the heightmap from being edited while panning.
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.code === "Space" && !spaceDown.current) {
+				spaceDown.current = true;
+				e.preventDefault();
+			}
+		};
+		const onKeyUp = (e: KeyboardEvent) => {
+			if (e.code === "Space") {
+				spaceDown.current = false;
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		window.addEventListener("keyup", onKeyUp);
+		return () => {
+			window.removeEventListener("keydown", onKeyDown);
+			window.removeEventListener("keyup", onKeyUp);
+		};
+	}, []);
+
+	// Clear stroke state when a new world (different mesh) is generated.
+	// Prevents stale lastEditGrid from spreading an old mesh into a new grid.
+	useEffect(() => {
+		if (
+			grid &&
+			lastEditGrid.current &&
+			grid.mesh !== lastEditGrid.current.mesh
+		) {
+			lastEditGrid.current = null;
+			editedCellIds.current.clear();
+		}
+	}, [grid]);
 
 	// Convert a pointer event to world coordinates via the WorldMap's
 	// screenToWorld, then call pickCell to find the nearest cell. Uses the
@@ -139,8 +178,10 @@ export function HeightmapEditor({
 					},
 				]);
 
-				// Splice the h patch into the local grid reference. The mesh +
-				// other cell arrays are unchanged by a heightmap edit.
+				// Splice the h patch into a NEW grid object so React/zustand
+				// subscribers detect the change via reference inequality. The
+				// mesh + other cell arrays are unchanged by a heightmap edit,
+				// so we shallow-copy `cells` and swap only `h`.
 				let updatedGrid: Grid;
 				if (
 					result &&
@@ -149,11 +190,14 @@ export function HeightmapEditor({
 					result.h instanceof Uint8Array
 				) {
 					const patch = result as HeightmapPatch;
-					// Use the lastEditGrid (or the prop grid for the first edit
-					// in a stroke) as the base; only cells.h changed.
 					const base = lastEditGrid.current ?? _g;
-					base.cells.h = Array.from(patch.h);
-					updatedGrid = base;
+					updatedGrid = {
+						...base,
+						cells: {
+							...base.cells,
+							h: Array.from(patch.h),
+						},
+					};
 				} else {
 					// Full Grid return (backward compat / explicit grid arg).
 					updatedGrid = result as Grid;
@@ -185,6 +229,8 @@ export function HeightmapEditor({
 	const onPointerDown = useCallback(
 		(e: PointerEvent) => {
 			if (!grid || !worldMap || !canvasEl) return;
+			// Suppress painting while Space is held (pan mode).
+			if (spaceDown.current) return;
 			if (editorTool === "select") {
 				// Select mode: pick cell and draw selection outline.
 				void (async () => {
@@ -229,6 +275,8 @@ export function HeightmapEditor({
 	const onPointerMove = useCallback(
 		(e: PointerEvent) => {
 			if (!isPainting.current || !lastEditGrid.current) return;
+			// Suppress painting while Space is held (pan mode).
+			if (spaceDown.current) return;
 			if (!BRUSH_TOOLS.has(editorTool)) return;
 
 			const g = lastEditGrid.current;
@@ -253,6 +301,30 @@ export function HeightmapEditor({
 			// Flush the debounced recompute. Pass null for grid to use the
 			// Rust-held grid handle (serde fix — no 13.5MB Grid on the wire).
 			void scheduleDependentRecompute(null).then((result: DependentResult) => {
+				// Splice the recompute result into the store grid so the
+				// canvas subscription fires `updateBiome` with fresh data.
+				const cur = useWorldgenStore.getState().grid;
+				if (cur) {
+					const next: Grid = {
+						...cur,
+						cells: {
+							...cur.cells,
+							temp: Array.from(result.temp ?? cur.cells.temp),
+							prec: Array.from(result.prec ?? cur.cells.prec),
+							biome: Array.from(result.biome ?? cur.cells.biome),
+							state: Array.from(result.state ?? cur.cells.state),
+							province: Array.from(result.province ?? cur.cells.province),
+							culture: Array.from(result.culture ?? cur.cells.culture),
+							religion: Array.from(result.religion ?? cur.cells.religion),
+							burg: Array.from(result.burg ?? cur.cells.burg),
+							fl: Array.from(result.fl ?? cur.cells.fl),
+							r: Array.from(result.r ?? cur.cells.r),
+							conf: Array.from(result.conf ?? cur.cells.conf),
+						},
+					};
+					setGrid(next);
+					lastEditGrid.current = next;
+				}
 				setStatusMsg(
 					`Recompute done: ${result.rivers?.length ?? 0} rivers, ` +
 						`${result.lakes?.length ?? 0} lakes`,
@@ -260,7 +332,7 @@ export function HeightmapEditor({
 			});
 			editedCellIds.current = new Set();
 		},
-		[scheduleDependentRecompute, canvasEl],
+		[scheduleDependentRecompute, canvasEl, setGrid],
 	);
 
 	// Attach pointer listeners to the canvas element.
@@ -293,13 +365,18 @@ export function HeightmapEditor({
 				const patch = result as HeightmapPatch;
 				const base = lastEditGrid.current ?? grid;
 				if (base) {
-					base.cells.h = Array.from(patch.h);
-					base.cells.state = base.cells.state.map(() => -1);
-					base.cells.province = base.cells.province.map(() => -1);
-					base.cells.culture = base.cells.culture.map(() => -1);
-					base.cells.religion = base.cells.religion.map(() => -1);
-					base.cells.burg = base.cells.burg.map(() => 0);
-					resetGrid = base;
+					resetGrid = {
+						...base,
+						cells: {
+							...base.cells,
+							h: Array.from(patch.h),
+							state: base.cells.state.map(() => -1),
+							province: base.cells.province.map(() => -1),
+							culture: base.cells.culture.map(() => -1),
+							religion: base.cells.religion.map(() => -1),
+							burg: base.cells.burg.map(() => 0),
+						},
+					};
 				} else {
 					// No base grid (shouldn't happen — editor requires grid).
 					return;

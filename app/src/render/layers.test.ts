@@ -313,6 +313,43 @@ describe("WorldMap.destroy", () => {
 	});
 });
 
+// ---- updateHeight / updateBiome --------------------------------------
+
+describe("WorldMap.updateHeight", () => {
+	it("does not throw and preserves view reference", () => {
+		const g = quadGrid(4, 1000, 1000);
+		// Change h values — the method should update the height texture
+		// data in place without rebuilding geometry.
+		g.cells.h = [10, 80, 20, 90];
+		expect(() => wm.updateHeight(g)).not.toThrow();
+		// View container is unchanged (no rebuild).
+		expect(wm.view.children.length).toBeGreaterThan(0);
+	});
+
+	it("is safe before any data was built (no-op when buffer is null)", () => {
+		// Destroy clears internal buffers; calling updateHeight after
+		// destroy should not throw (guard against NPE).
+		wm.destroy();
+		const g = quadGrid(1);
+		expect(() => wm.updateHeight(g)).not.toThrow();
+	});
+});
+
+describe("WorldMap.updateBiome", () => {
+	it("does not throw and preserves view reference", () => {
+		const g = quadGrid(4, 1000, 1000);
+		g.cells.biome = [1, 2, 3, 4];
+		expect(() => wm.updateBiome(g)).not.toThrow();
+		expect(wm.view.children.length).toBeGreaterThan(0);
+	});
+
+	it("is safe after destroy (no-op when buffer is null)", () => {
+		wm.destroy();
+		const g = quadGrid(1);
+		expect(() => wm.updateBiome(g)).not.toThrow();
+	});
+});
+
 // ---- attachCamera ----------------------------------------------------
 
 describe("attachCamera", () => {

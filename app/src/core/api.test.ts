@@ -300,7 +300,7 @@ describe("coreApi.editHeightmap", () => {
     expected.cells.h[100] = 75; // simulate raise
     const p = coreApi.editHeightmap(ops, grid);
     fake.reply(expected);
-    const result = await p;
+    const result = (await p) as Grid;
     expect(result).toBe(expected);
     // Verify the returned grid has the modified height
     expect(result.cells.h[100]).toBe(75);

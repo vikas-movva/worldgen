@@ -19,7 +19,13 @@
 import { Container, Graphics, Mesh, Texture, TextureStyle } from "pixi.js";
 import type { Grid } from "../core/api";
 import { buildWorldGeometry, type MeshGeometryData } from "./buildGeometry";
-import { buildBiomeTextureData, buildHeightTextureData } from "./palette";
+import {
+	BIOME_COLORS,
+	buildBiomeTextureData,
+	buildHeightTextureData,
+	heightColor,
+	rgb,
+} from "./palette";
 
 export type LayerName = "terrain" | "biome";
 export type LayerState = Record<LayerName, boolean>;
@@ -57,6 +63,10 @@ export class WorldMap {
 	private layers: LayerState = { terrain: true, biome: false };
 	private worldW: number;
 	private worldH: number;
+	/** The height texture data buffer — updated in place by `updateHeight`. */
+	private heightData: Uint8Array | null = null;
+	/** The biome texture data buffer — updated in place by `updateBiome`. */
+	private biomeData: Uint8Array | null = null;
 
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
@@ -65,14 +75,12 @@ export class WorldMap {
 		this.worldW = geoData.worldW;
 		this.worldH = geoData.worldH;
 		const texDim = geoData.texDim;
-		const heightTex = dataTexture(
-			buildHeightTextureData(grid.cells.h, texDim),
-			texDim,
-		);
-		const biomeTex = dataTexture(
-			buildBiomeTextureData(grid.cells.biome, texDim),
-			texDim,
-		);
+		const heightData = buildHeightTextureData(grid.cells.h, texDim);
+		this.heightData = heightData;
+		const biomeData = buildBiomeTextureData(grid.cells.biome, texDim);
+		this.biomeData = biomeData;
+		const heightTex = dataTexture(heightData, texDim);
+		const biomeTex = dataTexture(biomeData, texDim);
 		this.textures = [heightTex, biomeTex];
 
 		this.terrainMesh = new Mesh({
@@ -281,6 +289,52 @@ export class WorldMap {
 		this.applyLayers();
 	}
 
+	/**
+	 * Update the height texture from the grid's current `cells.h` without
+	 * rebuilding geometry or meshes. Rebuilds the RGBA height color data in
+	 * the existing buffer and triggers a GPU re-upload via `source.update()`.
+	 * This is the live-painting fast path: ~O(N) CPU color fill + one texture
+	 * upload, no tessellation.
+	 */
+	updateHeight(grid: Grid): void {
+		if (!this.heightData || !this.textures[0]) return;
+		const h = grid.cells.h;
+		const n = h.length;
+		// Rebuild the height color data in place — same buffer reference the
+		// GPU texture was created from, so `source.update()` re-uploads it.
+		const data = this.heightData;
+		for (let i = 0; i < n; i++) {
+			const [r, g, b] = heightColor(h[i]);
+			data[i * 4 + 0] = r;
+			data[i * 4 + 1] = g;
+			data[i * 4 + 2] = b;
+			// alpha stays 255 (set at construction, never changes)
+		}
+		this.textures[0].source.update();
+	}
+
+	/**
+	 * Update the biome texture from the grid's current `cells.biome` without
+	 * rebuilding geometry or meshes. Same in-place buffer + `source.update()`
+	 * pattern as `updateHeight`.
+	 */
+	updateBiome(grid: Grid): void {
+		if (!this.biomeData || !this.textures[1]) return;
+		const biome = grid.cells.biome;
+		if (!biome) return;
+		const n = biome.length;
+		const data = this.biomeData;
+		for (let i = 0; i < n; i++) {
+			const idx = Math.max(0, Math.min(biome[i] ?? 0, BIOME_COLORS.length - 1));
+			const [r, g, b] = rgb(BIOME_COLORS[idx]);
+			data[i * 4 + 0] = r;
+			data[i * 4 + 1] = g;
+			data[i * 4 + 2] = b;
+			// alpha stays 255
+		}
+		this.textures[1].source.update();
+	}
+
 	/** Current layer visibility snapshot. */
 	getLayers(): LayerState {
 		return { ...this.layers };
@@ -306,6 +360,8 @@ export class WorldMap {
 			t.destroy(false);
 		});
 		this.textures = [];
+		this.heightData = null;
+		this.biomeData = null;
 	}
 }
 
