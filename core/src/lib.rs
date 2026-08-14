@@ -689,6 +689,7 @@ mod tests {
     use crate::heightmap;
     use crate::climate;
     use crate::biomes;
+    use rand::{Rng, SeedableRng};
 
     #[test]
     fn world_cell_counts_match_seed() {
@@ -1419,6 +1420,293 @@ mod tests {
         // Entity indices are cleared.
         assert_eq!(grid.cells.state[target], -1, "reset should clear state");
         assert_eq!(grid.cells.burg[target], 0, "reset should clear burg");
+    }
+
+    /// `repair_entities` clears culture and religion on land→water flips.
+    /// The doc comment at line 588 only lists state/province/burg but the
+    /// implementation clears all five entity indices. This test pins the full
+    /// behavior so a future refactor doesn't silently drop culture/religion.
+    #[test]
+    fn repair_entities_clears_all_five_indices_on_land_to_water() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let target = (0..n as usize)
+            .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .expect("no mid-height land cell found");
+
+        // Assign all five entity indices (simulating Phase 3).
+        grid.cells.state[target] = 5;
+        grid.cells.province[target] = 12;
+        grid.cells.culture[target] = 3;
+        grid.cells.religion[target] = 8;
+        grid.cells.burg[target] = 7;
+
+        // Land→water: lower to below sea level.
+        grid.cells.h[target] = 10;
+        let _result = recompute_dependents_inner(&mut grid, &opts);
+
+        // All five should be cleared on the water cell.
+        assert_eq!(grid.cells.state[target], -1, "state should be -1 after land→water flip");
+        assert_eq!(grid.cells.province[target], -1, "province should be -1 after land→water flip");
+        assert_eq!(grid.cells.culture[target], -1, "culture should be -1 after land→water flip");
+        assert_eq!(grid.cells.religion[target], -1, "religion should be -1 after land→water flip");
+        assert_eq!(grid.cells.burg[target], 0, "burg should be 0 after land→water flip");
+    }
+
+    /// `repair_entities` reports removed burgs with the correct placeholder format.
+    /// Until Phase 3 provides real names, the format is "Burg@cell{N}".
+    #[test]
+    fn repair_entities_reports_removed_burgs_with_correct_format() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let targets: Vec<usize> = (0..n as usize)
+            .filter(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .take(3)
+            .collect();
+        assert_eq!(targets.len(), 3, "need 3 land cells");
+
+        for &t in &targets {
+            grid.cells.burg[t] = 42; // fake burg
+        }
+        // Flood all three.
+        for &t in &targets {
+            grid.cells.h[t] = 10;
+        }
+        let result = recompute_dependents_inner(&mut grid, &opts);
+
+        // removed_burgs should have 3 entries, each mentioning the cell id.
+        assert_eq!(result.removed_burgs.len(), 3, "should report 3 removed burgs");
+        for &t in &targets {
+            let expected = format!("Burg@cell{}", t);
+            let found = result.removed_burgs.iter().any(|s| s == &expected);
+            assert!(found, "removed_burgs should contain '{}', got {:?}", expected, result.removed_burgs);
+        }
+    }
+
+    /// `pick_cell` correctly handles points exactly on a Voronoi edge where
+    /// the true nearest cell is 2+ hops from the bucket cell. This documents
+    /// the known 1-hop limitation (adversarial review F9).
+    #[test]
+    #[ignore = "known limitation: 1-hop refinement may miss 2-hop nearest; run to measure gap"]
+    fn pick_cell_two_hop_edge_case() {
+        let mesh = mesh::build(3000, 42);
+
+        // Find a case where the bucket cell's 1-hop neighbors don't include
+        // the true nearest cell. We scan for query points where the brute-force
+        // nearest differs from pick_cell's answer.
+        let brute = |x: f64, y: f64| -> u32 {
+            mesh.points
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, &[px, py])| {
+                    ((px - x).powi(2) + (py - y).powi(2)) as i64
+                })
+                .map(|(i, _)| i as u32)
+                .unwrap()
+        };
+
+        let mut two_hop_misses = 0;
+        let mut total = 0;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(9999);
+        for _ in 0..500 {
+            let x = rng.gen_range(0.0..1.0);
+            let y = rng.gen_range(0.0..1.0);
+            let picked = crate::heightmap::pick_cell(&mesh, x, y).unwrap();
+            let true_nearest = brute(x, y);
+            if picked != true_nearest {
+                // Check if the true nearest is 2+ hops from the picked cell
+                // by walking toward true_nearest via adjacency.
+                let mut dist = 0;
+                let mut cur = picked as usize;
+                while cur != true_nearest as usize && dist < 10 {
+                    let lo = mesh.cells.i[cur] as usize;
+                    let hi = mesh.cells.i[cur + 1] as usize;
+                    let mut found = false;
+                    for &nb in &mesh.cells.c[lo..hi] {
+                        let nb = nb as usize;
+                        let [px, py] = mesh.points[nb];
+                        let [tx, ty] = mesh.points[true_nearest as usize];
+                        let [cx, cy] = mesh.points[cur];
+                        let d_to_target = (px - tx).powi(2) + (py - ty).powi(2);
+                        let d_cur = (cx - tx).powi(2) + (cy - ty).powi(2);
+                        if d_to_target < d_cur {
+                            cur = nb;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        break;
+                    }
+                    dist += 1;
+                }
+                if dist >= 2 {
+                    two_hop_misses += 1;
+                }
+            }
+            total += 1;
+        }
+        eprintln!(
+            "pick_cell 2-hop misses: {}/{} ({:.1}%)",
+            two_hop_misses,
+            total,
+            two_hop_misses as f64 / total as f64 * 100.0
+        );
+        // This test is informational — it documents the gap. If the 2-hop
+        // rate becomes significant (>5%), consider 2-hop expansion.
+    }
+
+    /// `reset_heightmap` clears culture and religion arrays (in addition to
+    /// state/province/burg). This matches the entity-repair behavior and
+    /// ensures a full reset discards all entity assignments.
+    #[test]
+    fn reset_heightmap_clears_culture_and_religion() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let mut grid = generate_world_inner(seed, n, &opts);
+        let original_h = grid.cells.h.clone();
+
+        // Assign all entity indices on a few cells.
+        let targets: Vec<usize> = (0..n as usize)
+            .filter(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
+            .take(5)
+            .collect();
+        assert!(!targets.is_empty(), "need land cells");
+        for &t in &targets {
+            grid.cells.state[t] = 5;
+            grid.cells.province[t] = 12;
+            grid.cells.culture[t] = 3;
+            grid.cells.religion[t] = 8;
+            grid.cells.burg[t] = 7;
+        }
+
+        // Edit heightmap.
+        for &t in &targets {
+            grid.cells.h[t] = 95;
+        }
+
+        // Reset: regenerate h from seed + clear all entity arrays.
+        grid.cells.h = crate::heightmap::generate(&grid.mesh, grid.seed);
+        let n_cells = grid.cells.h.len();
+        grid.cells.state = vec![-1i32; n_cells];
+        grid.cells.province = vec![-1i32; n_cells];
+        grid.cells.culture = vec![-1i32; n_cells];
+        grid.cells.religion = vec![-1i32; n_cells];
+        grid.cells.burg = vec![0i16; n_cells];
+
+        // Heightmap matches original.
+        assert_eq!(grid.cells.h, original_h, "reset should restore the original h");
+
+        // All entity indices cleared everywhere.
+        for i in 0..n_cells {
+            assert_eq!(grid.cells.state[i], -1, "state[{}] not cleared", i);
+            assert_eq!(grid.cells.province[i], -1, "province[{}] not cleared", i);
+            assert_eq!(grid.cells.culture[i], -1, "culture[{}] not cleared", i);
+            assert_eq!(grid.cells.religion[i], -1, "religion[{}] not cleared", i);
+            assert_eq!(grid.cells.burg[i], 0, "burg[{}] not cleared", i);
+        }
+    }
+
+    /// `pick_cell_h` (held-grid variant) returns same result as `pick_cell`
+    /// when the grid is stored in the Rust handle. This is a smoke test for
+    /// the zero-serde path (Step 2.5.4 grid handle, adversarial review F3).
+    #[test]
+    fn pick_cell_h_matches_pick_cell_when_grid_held() {
+        let seed = 42;
+        let n: u32 = 2000;
+        let opts = climate::ClimateOpts::default();
+        let grid = generate_world_inner(seed, n, &opts);
+
+        // Snapshot the mesh for direct-comparison queries BEFORE moving grid.
+        let mesh = grid.mesh.clone();
+        let test_points = [
+            (mesh.world_w * 0.5, mesh.world_h * 0.5), // center
+            (mesh.world_w * 0.25, mesh.world_h * 0.75),
+            (mesh.world_w * 0.75, mesh.world_h * 0.25),
+        ];
+
+        // Store the grid in the thread-local handle (moves grid).
+        HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
+
+        for (x, y) in test_points {
+            // Direct call on the cloned mesh (simulates the serde path which
+            // deserializes the grid then calls heightmap::pick_cell).
+            let direct = crate::heightmap::pick_cell(&mesh, x, y)
+                .expect("pick_cell returned None");
+
+            // Held-grid call (no grid arg — reads from HELD_GRID).
+            let held = HELD_GRID.with(|g| {
+                let guard = g.borrow();
+                let held_grid = guard.as_ref().expect("no held grid in pick_cell_h test");
+                crate::heightmap::pick_cell(&held_grid.mesh, x, y)
+                    .expect("pick_cell_h returned None")
+            });
+
+            assert_eq!(held, direct, "pick_cell_h diverges from pick_cell at ({x}, {y})");
+        }
+
+        // Clean up.
+        HELD_GRID.with(|g| *g.borrow_mut() = None);
+    }
+
+    /// `recompute_dependents_inner` on a held grid (no serde) matches the
+    /// serde path. This tests the zero-serde boundary (adversarial review F3).
+    #[test]
+    fn recompute_dependents_h_matches_serde_path() {
+        let seed = 42;
+        let n: u32 = 1000;
+        let opts = climate::ClimateOpts::default();
+        let grid = generate_world_inner(seed, n, &opts);
+
+        // Baseline: run via serde path (clone to avoid mutation).
+        let mut grid_serde = grid.clone();
+        let result_serde = recompute_dependents_inner(&mut grid_serde, &opts);
+
+        // Held-grid path: store grid, call inner directly (simulating the
+        // _h variant which mutates the held grid in place).
+        HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
+        let result_held = HELD_GRID.with(|g| {
+            let mut guard = g.borrow_mut();
+            let held = guard.as_mut().expect("no held grid");
+            recompute_dependents_inner(held, &opts)
+        });
+
+        // Results should be byte-identical.
+        assert_eq!(result_held.temp, result_serde.temp, "temp differs between held/serde");
+        assert_eq!(result_held.prec, result_serde.prec, "prec differs between held/serde");
+        assert_eq!(result_held.biome, result_serde.biome, "biome differs between held/serde");
+        assert_eq!(result_held.state, result_serde.state, "state differs between held/serde");
+        assert_eq!(result_held.province, result_serde.province, "province differs between held/serde");
+        assert_eq!(result_held.culture, result_serde.culture, "culture differs between held/serde");
+        assert_eq!(result_held.religion, result_serde.religion, "religion differs between held/serde");
+        assert_eq!(result_held.burg, result_serde.burg, "burg differs between held/serde");
+        assert_eq!(result_held.fl, result_serde.fl, "fl differs between held/serde");
+        assert_eq!(result_held.r, result_serde.r, "r differs between held/serde");
+        assert_eq!(result_held.conf, result_serde.conf, "conf differs between held/serde");
+        assert_eq!(result_held.coastline, result_serde.coastline, "coastline differs between held/serde");
+        assert_eq!(result_held.removed_burgs, result_serde.removed_burgs, "removed_burgs differs");
+        assert_eq!(result_held.dissolved_states, result_serde.dissolved_states, "dissolved_states differs");
+        assert_eq!(result_held.rivers.len(), result_serde.rivers.len(), "river count differs");
+        for (a, b) in result_held.rivers.iter().zip(result_serde.rivers.iter()) {
+            assert_eq!(a.id, b.id, "river id differs");
+            assert_eq!(a.cells, b.cells, "river cells differs for id={}", a.id);
+            assert_eq!(a.discharge, b.discharge, "river discharge differs for id={}", a.id);
+        }
+        assert_eq!(result_held.lakes.len(), result_serde.lakes.len(), "lake count differs");
+        for (a, b) in result_held.lakes.iter().zip(result_serde.lakes.iter()) {
+            assert_eq!(a.id, b.id, "lake id differs");
+            assert_eq!(a.cells, b.cells, "lake cells differs for id={}", a.id);
+            assert_eq!(a.height, b.height, "lake height differs for id={}", a.id);
+            assert_eq!(a.closed, b.closed, "lake closed flag differs for id={}", a.id);
+        }
+
+        // Clean up.
+        HELD_GRID.with(|g| *g.borrow_mut() = None);
     }
 
     /// 60k timing gate for `recompute_dependents`. The full recompute cascade

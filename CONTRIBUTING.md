@@ -24,17 +24,6 @@ Output must be **byte-identical** for a given seed. Rules:
   `Date.now`, or any other non-deterministic source in generation paths.
 - Don't reorder parallel passes in a way that changes results.
 
-## Commits
-
-Follow the existing convention used throughout the history:
-
-```
-step N.M: <short summary in present tense>
-```
-
-e.g. `step 2.5.2: Tier-1 local temperature + biome recompute`. Reference the
-implementation plan step when applicable.
-
 ## Before you open a PR
 
 ```bash
