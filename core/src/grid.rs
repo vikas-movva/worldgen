@@ -177,6 +177,8 @@ pub struct DependentResult {
     pub biome: Vec<u8>,
     pub state: Vec<i32>,
     pub province: Vec<i32>,
+    pub culture: Vec<i32>,
+    pub religion: Vec<i32>,
     pub burg: Vec<i16>,
     /// Per-cell water flux (discharge), from `rivers::compute_drainage`.
     pub fl: Vec<u16>,

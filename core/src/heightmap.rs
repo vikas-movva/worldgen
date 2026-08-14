@@ -1259,7 +1259,7 @@ mod tests {
         assert_eq!(picked, nearest_nb as u32, "query 70% toward nearest neighbor should pick the neighbor");
     }
 
-    /// Step 2.5.4: `pick_cell` handles OOB coordinates gracefully (returns a
+    /// `pick_cell` handles OOB coordinates gracefully (returns a
     /// valid cell id, not a panic).
     #[test]
     fn pick_cell_handles_out_of_bounds() {
@@ -1270,6 +1270,53 @@ mod tests {
         // Zero-cell mesh edge case.
         // (We can't easily create a zero-cell mesh via mesh::build, so we
         // rely on the `n == 0` guard inside pick_cell.)
+    }
+
+    /// Step 2.5.4 review (F9): `pick_cell` only checks the bucket cell + its
+    /// 1-hop CSR neighbors. This test compares pick_cell's answer against a
+    /// brute-force O(n) nearest-cell scan over ALL cells for random query
+    /// points. If 1-hop misses, this test documents the gap.
+    #[test]
+    fn pick_cell_vs_brute_force_nearest() {
+        let mesh = mesh::build(3000, 42);
+        // Brute-force nearest cell for a query point.
+        let brute = |x: f64, y: f64| -> u32 {
+            mesh.points
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, &[px, py])| {
+                    ((px - x).powi(2) + (py - y).powi(2)) as i64
+                })
+                .map(|(i, _)| i as u32)
+                .unwrap()
+        };
+        // Test N random query points across the map.
+        let mut rng = StdRng::seed_from_u64(999);
+        let mut mismatches = 0;
+        let n_tests = 200u32;
+        for _ in 0..n_tests {
+            let x = rng.gen_range(0.0..1.0);
+            let y = rng.gen_range(0.0..1.0);
+            let picked = pick_cell(&mesh, x, y).unwrap();
+            let true_nearest = brute(x, y);
+            if picked != true_nearest {
+                mismatches += 1;
+            }
+        }
+        // 1-hop should be correct for the vast majority of points. A small
+        // number of mismatches near Voronoi boundaries (where the true nearest
+        // is 2+ hops from the bucket cell) is the known limitation.
+        let mismatch_rate = mismatches as f64 / n_tests as f64;
+        eprintln!(
+            "pick_cell 1-hop vs brute-force: {mismatches}/{n_tests} mismatches ({:.1}%)",
+            mismatch_rate * 100.0
+        );
+        // Threshold: 1-hop should get >= 90% correct. If this fails, the
+        // bucket grid is too coarse or 2-hop expansion is needed.
+        assert!(
+            mismatch_rate < 0.10,
+            "1-hop pick_cell mismatch rate {mismatch_rate:.1}% exceeds 10% — 2-hop expansion may be needed"
+        );
     }
 
     /// `build_range` constructs a ridge path from `start` to `end` by greedy

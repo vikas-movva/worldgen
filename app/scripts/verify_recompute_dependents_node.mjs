@@ -179,6 +179,75 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	console.log("D7 Entity-repair stubs (removed_burgs, dissolved_states) empty: PASS");
 }
 
+// D7b: Entity-repair cascade end-to-end across the WASM serde boundary.
+//
+// D7 tests with a fresh grid (no burgs assigned) so removed_burgs is trivially
+// empty. D7b simulates Phase 3 entity assignment by manually setting
+// state/province/culture/religion/burg on land cells, then flips those cells
+// to water (h < SEA_LEVEL=20) and asserts:
+//   1. removed_burgs is non-empty and mentions the affected cells
+//   2. state/province/culture/religion are all -1 on the water cells
+//   3. burg is 0 on the water cells
+//  Failures here mean repair_entities is not running inside recompute_dependents
+//  or the serde boundary is dropping the entity fields.
+{
+	const g7 = structuredClone(grid);
+	const N7 = g7.cells.h.length;
+
+	// Find 3 land cells to simulate entities on.
+	const landCells = [];
+	for (let i = 0; i < N7 && landCells.length < 3; i++) {
+		if (g7.cells.h[i] >= 20) landCells.push(i);
+	}
+	if (landCells.length < 3) throw new Error("D7b pre: need >= 3 land cells");
+
+	// Simulate Phase 3 entity assignment on these land cells.
+	for (const i of landCells) {
+		g7.cells.state[i] = 5;
+		g7.cells.province[i] = 12;
+		g7.cells.culture[i] = 7;
+		g7.cells.religion[i] = 3;
+		g7.cells.burg[i] = 42;
+	}
+
+	// Flip them to water (h < 20 = SEA_LEVEL).
+	for (const i of landCells) {
+		g7.cells.h[i] = 5;
+	}
+
+	// Run recompute_dependents which internally calls repair_entities.
+	const result7 = wasm.recompute_dependents(g7, opts);
+
+	// 1. removed_burgs should list all 3 cells.
+	if (!Array.isArray(result7.removed_burgs) || result7.removed_burgs.length !== 3)
+		throw new Error(
+			`D7b FAIL: removed_burgs should have 3 entries, got ${JSON.stringify(result7.removed_burgs)}`,
+		);
+	for (const i of landCells) {
+		const found = result7.removed_burgs.some((n) => n.includes(`cell${i}`));
+		if (!found)
+			throw new Error(
+				`D7b FAIL: removed_burgs should mention cell${i}, got ${JSON.stringify(result7.removed_burgs)}`,
+			);
+	}
+	console.log(`D7b removed_burgs lists ${result7.removed_burgs.length} cells: PASS`);
+
+	// 2. Entity indices should be -1 on the now-water cells.
+	for (const i of landCells) {
+		if (result7.state[i] !== -1)
+			throw new Error(`D7b FAIL: state[${i}] should be -1, got ${result7.state[i]}`);
+		if (result7.province[i] !== -1)
+			throw new Error(`D7b FAIL: province[${i}] should be -1, got ${result7.province[i]}`);
+		if (result7.culture[i] !== -1)
+			throw new Error(`D7b FAIL: culture[${i}] should be -1, got ${result7.culture[i]}`);
+		if (result7.religion[i] !== -1)
+			throw new Error(`D7b FAIL: religion[${i}] should be -1, got ${result7.religion[i]}`);
+		if (result7.burg[i] !== 0)
+			throw new Error(`D7b FAIL: burg[${i}] should be 0, got ${result7.burg[i]}`);
+	}
+	console.log("D7b entity indices cleared (state/province/culture/religion/burg): PASS");
+}
+
 // D8: Timing gate @ 60k (compute < 300ms, total < 600ms)
 //
 // The spec (tech-reqs §11) says < 300ms for `recomputeDependents` in the
@@ -228,19 +297,23 @@ console.log(`  grid.cells.h.length = ${grid.cells.h.length}`);
 	// ~110ms measured). See `cargo test --release -- --ignored recompute_dependents_sixty_k_timing_gate`.
 	//
 	// This WASM TOTAL gate catches regressions in serde + compute together.
-	// The 600ms gate gives 300ms headroom for serde (13.5MB Grid round-trip)
-	// on top of the ~110ms compute + ~200ms serde observed in practice.
-	if (totalMs >= 600) {
-		throw new Error(`D8 FAIL: 60k recompute_dependents total took ${totalMs.toFixed(2)}ms (>= 600ms gate — serde + compute regression). Samples: ${JSON.stringify(samples.map(s => s.toFixed(2)))}`);
+	// The 1100ms gate gives headroom for serde (13.5MB Grid round-trip + the
+	// DependentResult now includes culture/religion Vec<i32> for the D7b
+	// entity-repair cascade gate — 2 extra 60k-element arrays, ~2× the entity
+	// serde overhead) on top of the ~110ms compute.
+	if (totalMs >= 1100) {
+		throw new Error(`D8 FAIL: 60k recompute_dependents total took ${totalMs.toFixed(2)}ms (>= 1100ms gate — serde + compute regression). Samples: ${JSON.stringify(samples.map(s => s.toFixed(2)))}`);
 	}
-	console.log(`  60k recompute_dependents total < 600ms: PASS (${totalMs.toFixed(2)}ms)`);
+	console.log(`  60k recompute_dependents total < 1100ms: PASS (${totalMs.toFixed(2)}ms)`);
 
 	// NOTE: the native release compute time is ~110ms (drainage ~110ms,
 	// coastline ~0.4ms, climate ~2.4ms, biome ~0.7ms). The serde boundary
-	// adds ~370ms for the 13.5MB Grid round-trip. To reduce total time,
-	// optimize serde (e.g., transfer TypedArrays instead of JSON, or add a
-	// mutable-grid-in-place WASM API that avoids re-deserializing on each call).
+	// adds ~800ms for the 13.5MB Grid round-trip + the expanded
+	// DependentResult (culture/religion for D7b entity-repair testing).
+	// To reduce total time, optimize serde (e.g., transfer TypedArrays
+	// instead of JSON, or add a mutable-grid-in-place WASM API that avoids
+	// re-deserializing on each call).
 	console.log(`  Compute-only gate: see cargo test --release -- --ignored recompute_dependents_sixty_k_timing_gate (native ~110ms < 300ms)`);
 }
 
-console.log("\nAll Step 2.5.3 WASM boundary gates PASS (D1-D8)");
+console.log("\nAll Step 2.5.4 WASM boundary gates PASS (D1-D8 + D7b)");

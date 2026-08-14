@@ -32,8 +32,17 @@ export type WorldgenState = {
 };
 
 export type EditorTool =
-	| "raise" | "lower" | "flatten" | "smooth"
-	| "range" | "trough" | "strait" | "mask" | "invert" | "add" | "multiply"
+	| "raise"
+	| "lower"
+	| "flatten"
+	| "smooth"
+	| "range"
+	| "trough"
+	| "strait"
+	| "mask"
+	| "invert"
+	| "add"
+	| "multiply"
 	| "select";
 
 export type WorldgenActions = {
@@ -73,12 +82,25 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			set((s) => ({
 				layerEnabled: { ...s.layerEnabled, [layer]: !s.layerEnabled[layer] },
 			})),
-		setEditorTool: (editorTool) => set({ editorTool, selectedCellId: editorTool === "select" ? -1 : -1 }),
+		// Switching away from select clears the selection; switching to
+		// select preserves any existing selection (the user may have a cell
+		// picked from a previous interaction).
+		setEditorTool: (editorTool) =>
+			set((s) => ({
+				editorTool,
+				selectedCellId: editorTool === "select" ? s.selectedCellId : -1,
+			})),
 		setBrushRadius: (brushRadius) => set({ brushRadius }),
 		setBrushStrength: (brushStrength) => set({ brushStrength }),
 		setSelectedCellId: (selectedCellId) => set({ selectedCellId }),
 		clear: () =>
-			set({ grid: null, mesh: null, climate: null, generation: null, selectedCellId: -1 }),
+			set({
+				grid: null,
+				mesh: null,
+				climate: null,
+				generation: null,
+				selectedCellId: -1,
+			}),
 	}),
 );
 
@@ -94,4 +116,5 @@ export const useClimate = () => useWorldgenStore((s) => s.climate);
 // the hook without also breaking these tests.
 export const selectGrid = (s: WorldgenState): WorldgenState["grid"] => s.grid;
 export const selectMesh = (s: WorldgenState): WorldgenState["mesh"] => s.mesh;
-export const selectClimate = (s: WorldgenState): WorldgenState["climate"] => s.climate;
+export const selectClimate = (s: WorldgenState): WorldgenState["climate"] =>
+	s.climate;

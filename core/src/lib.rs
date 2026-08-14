@@ -301,6 +301,8 @@ pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::Climate
         biome,
         state: grid.cells.state.clone(),
         province: grid.cells.province.clone(),
+        culture: grid.cells.culture.clone(),
+        religion: grid.cells.religion.clone(),
         burg: grid.cells.burg.clone(),
         fl: drainage.fl,
         r: drainage.r,
@@ -342,7 +344,8 @@ fn compute_coastline(mesh: &crate::mesh::Mesh, h: &[u8]) -> Vec<u8> {
 /// heightmap edit. Land→water removes entities on those cells; water→land
 /// takes no auto-action.
 ///
-/// - `state`/`province`: set to -1 for cells that are now water (h < SEA_LEVEL)
+/// - `state`/`province`/`culture`/`religion`: set to -1 for cells that are now
+///   water (h < SEA_LEVEL)
 /// - `burg`: set to 0 for cells that are now water
 /// - `removed_burgs`: list of burg names removed (placeholder format until
 ///   Phase 3 wires in real burg names from `pack.burgs`)
@@ -350,10 +353,11 @@ fn compute_coastline(mesh: &crate::mesh::Mesh, h: &[u8]) -> Vec<u8> {
 ///   Phase 3 adds the Pack with state records; detection needs pre-edit state)
 ///
 /// This is a pure function of `(grid.cells)` — no RNG, deterministic.
-/// Mutates `cells.state`, `cells.province`, `cells.burg` in place.
+/// Mutates `cells.state`, `cells.province`, `cells.culture`, `cells.religion`,
+/// `cells.burg` in place.
 fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
     let n = cells.h.len();
-    let sea = crate::heightmap::SEA_LEVEL as u8;
+    let sea = crate::heightmap::SEA_LEVEL;
 
     // Collect burgs on cells that flip land→water. Until Phase 3 generates
     // real burg names, we emit a placeholder "Burg@cellN" format so the UI
@@ -365,9 +369,11 @@ fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
     // (Phase 3 generators will overwrite with fresh ids anyway).
     for i in 0..n {
         if cells.h[i] < sea {
-            // Water cell: unassign entities.
+            // Water cell: unassign all entity indices.
             cells.state[i] = -1;
             cells.province[i] = -1;
+            cells.culture[i] = -1;
+            cells.religion[i] = -1;
             if cells.burg[i] != 0 {
                 removed_burgs.push(format!("Burg@cell{}", i));
                 cells.burg[i] = 0;
@@ -1050,18 +1056,23 @@ mod tests {
             .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
             .expect("no mid-height land cell found");
 
-        // Simulate Phase 3 entity assignment: give the cell a fake state/province/burg.
+        // Simulate Phase 3 entity assignment: give the cell a fake
+        // state/province/culture/religion/burg.
         grid.cells.state[target] = 5;
         grid.cells.province[target] = 12;
+        grid.cells.culture[target] = 3;
+        grid.cells.religion[target] = 8;
         grid.cells.burg[target] = 7;
 
         // Land→water: lower to below sea level.
         grid.cells.h[target] = 10;
         let result = recompute_dependents_inner(&mut grid, &opts);
 
-        // Entity indices should be cleared on the water cell.
+        // All entity indices should be cleared on the water cell.
         assert_eq!(grid.cells.state[target], -1, "state should be -1 after land→water flip");
         assert_eq!(grid.cells.province[target], -1, "province should be -1 after land→water flip");
+        assert_eq!(grid.cells.culture[target], -1, "culture should be -1 after land→water flip");
+        assert_eq!(grid.cells.religion[target], -1, "religion should be -1 after land→water flip");
         assert_eq!(grid.cells.burg[target], 0, "burg should be 0 after land→water flip");
 
         // The result mirrors the grid state.

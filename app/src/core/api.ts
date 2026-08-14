@@ -116,6 +116,8 @@ export type DependentResult = {
 	biome: Uint8Array | number[];
 	state: Int32Array | number[];
 	province: Int32Array | number[];
+	culture: Int32Array | number[];
+	religion: Int32Array | number[];
 	burg: Int16Array | number[];
 	fl: Uint16Array | number[];
 	r: Uint16Array | number[];
@@ -263,9 +265,13 @@ export const coreApi = {
    * Step 2.5.1: apply a batch of heightmap edit ops (brush + macro tools) to
    * `grid.cells.h` in place (in the worker). Deterministic: same grid + same
    * ops yields byte-identical `h`. Returns the updated Grid.
+   *
+   * Step 2.5.4: if `grid` is omitted, the worker uses its held grid handle
+   * (set by `generateWorld` / `storeGrid`), avoiding the serde round-trip.
+   * The returned Grid replaces the held handle.
    */
-  editHeightmap(grid: Grid, ops: EditOp[]): Promise<Grid> {
-    return call("edit_heightmap", { grid, ops }) as Promise<Grid>;
+  editHeightmap(ops: EditOp[], grid?: Grid): Promise<Grid> {
+    return call("edit_heightmap", grid ? { grid, ops } : { ops }) as Promise<Grid>;
   },
 
   /**
@@ -276,17 +282,16 @@ export const coreApi = {
    * requested cells' values (in cellIds order) so the renderer can patch just
    * those texels during a brush drag without a full texture re-upload. Both
    * are pure functions → deterministic.
+   *
+   * Step 2.5.4: if `grid` is omitted, the worker uses its held grid handle,
+   * avoiding the serde round-trip on the hot drag path.
    */
   recomputeTempBiomeLocal(
-    grid: Grid,
     cellIds: number[],
     opts?: unknown,
+    grid?: Grid,
   ): Promise<{ temp: Int8Array; biome: Uint8Array }> {
-    return call("recompute_temp_biome_local", {
-      grid,
-      cellIds,
-      opts: opts ?? {},
-    }) as Promise<{ temp: Int8Array; biome: Uint8Array }>;
+    return call("recompute_temp_biome_local", grid ? { grid, cellIds, opts: opts ?? {} } : { cellIds, opts: opts ?? {} }) as Promise<{ temp: Int8Array; biome: Uint8Array }>;
   },
 
   /**
@@ -301,33 +306,48 @@ export const coreApi = {
    * patch runs on every pointermove; this runs once after the stroke ends (or
    * after a >=300ms idle window) to reconcile precipitation, biomes, and
    * drainage that the local patch can't reach.
+   *
+   * Step 2.5.4: if `grid` is omitted, the worker uses its held grid handle.
    */
   recomputeDependents(
-    grid: Grid,
     opts?: unknown,
+    grid?: Grid,
   ): Promise<DependentResult> {
-    return call("recompute_dependents", {
-      grid,
-      opts: opts ?? {},
-    }) as Promise<DependentResult>;
+    return call("recompute_dependents", grid ? { grid, opts: opts ?? {} } : { opts: opts ?? {} }) as Promise<DependentResult>;
   },
 
   /**
    * Step 2.5.4: pick the nearest cell to world-space `(x, y)`. Uses the
    * `cells.spacing` spatial grid + neighbor refinement. Returns the cell id
    * (number >= 0) or -1 if the grid has no cells. O(1)-ish, deterministic.
+   *
+   * If `grid` is omitted, the worker uses its held grid handle.
    */
-  pickCell(grid: Grid, x: number, y: number): Promise<number> {
-    return call("pick_cell", { grid, x, y }) as Promise<number>;
+  pickCell(x: number, y: number, grid?: Grid): Promise<number> {
+    return call("pick_cell", grid ? { grid, x, y } : { x, y }) as Promise<number>;
   },
 
   /**
    * Step 2.5.4: reset `grid.cells.h` to the original seeded heightmap,
    * discarding all edits. Also reinitializes entity index arrays to
-   * "unassigned". Returns the updated Grid.
+   * "unassigned". Returns the updated Grid (and updates the worker handle).
+   *
+   * If `grid` is omitted, the worker uses its held grid handle.
    */
-  resetHeightmap(grid: Grid): Promise<Grid> {
-    return call("reset_heightmap", { grid }) as Promise<Grid>;
+  resetHeightmap(grid?: Grid): Promise<Grid> {
+    return call("reset_heightmap", grid ? { grid } : {}) as Promise<Grid>;
+  },
+
+  /**
+   * Step 2.5.4: push a Grid into the worker's held grid handle. The editor
+   * hot path (`editHeightmap`/`recomputeTempBiomeLocal`/`pickCell`/...) then
+   * omits the Grid from the wire payload and the worker uses this held copy,
+   * avoiding the ~28ms serde round-trip per pointermove. `generateWorld`
+   * auto-stores its result; call this only to sync a grid the main thread
+   * holds independently (e.g. after a load).
+   */
+  storeGrid(grid: Grid): Promise<null> {
+    return call("store_grid", { grid }) as Promise<null>;
   },
 
   // Placeholders for future phases:

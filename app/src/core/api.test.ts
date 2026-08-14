@@ -250,7 +250,7 @@ describe("coreApi.editHeightmap", () => {
         cells: [],
       },
     ];
-    const p = coreApi.editHeightmap(grid, ops);
+    const p = coreApi.editHeightmap(ops, grid);
     expect(p).toBeInstanceOf(Promise);
   });
 
@@ -274,7 +274,7 @@ describe("coreApi.editHeightmap", () => {
         cells: [200, 201, 202],
       },
     ];
-    coreApi.editHeightmap(grid, ops);
+    coreApi.editHeightmap(ops, grid);
     expect(fake.lastMessage).toMatchObject({
       kind: "edit_heightmap",
       grid,
@@ -298,7 +298,7 @@ describe("coreApi.editHeightmap", () => {
     ];
     const expected = makeFakeGrid(1000, 42);
     expected.cells.h[100] = 75; // simulate raise
-    const p = coreApi.editHeightmap(grid, ops);
+    const p = coreApi.editHeightmap(ops, grid);
     fake.reply(expected);
     const result = await p;
     expect(result).toBe(expected);
@@ -318,7 +318,7 @@ describe("coreApi.editHeightmap", () => {
         cells: [],
       },
     ];
-    const p = coreApi.editHeightmap(grid, ops);
+    const p = coreApi.editHeightmap(ops, grid);
     fake.replyError("wasm panicked: edit_heightmap failed");
     await expect(p).rejects.toThrow(/edit_heightmap failed/);
   });
@@ -346,9 +346,9 @@ describe("coreApi.editHeightmap", () => {
         cells: [],
       },
     ];
-    const p1 = coreApi.editHeightmap(grid1, ops1);
+    const p1 = coreApi.editHeightmap(ops1, grid1);
     const firstMsg = fake.lastMessage!;
-    const p2 = coreApi.editHeightmap(grid2, ops2);
+    const p2 = coreApi.editHeightmap(ops2, grid2);
     const secondMsg = fake.lastMessage!;
     expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
 
@@ -390,7 +390,7 @@ describe("coreApi.editHeightmap", () => {
           cells: [10, 11, 12],
         },
       ];
-      coreApi.editHeightmap(grid, ops);
+      coreApi.editHeightmap(ops, grid);
       expect(fake.lastMessage).toMatchObject({
         kind: "edit_heightmap",
         ops: [
@@ -414,7 +414,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
   it("sends the exact { kind, reqId, grid, cellIds, opts } wire message", () => {
     const grid = makeFakeGrid(1000, 42);
     const cellIds = [10, 20, 30];
-    coreApi.recomputeTempBiomeLocal(grid, cellIds);
+    coreApi.recomputeTempBiomeLocal(cellIds, undefined, grid);
     expect(fake.lastMessage).toMatchObject({
       kind: "recompute_temp_biome_local",
       grid,
@@ -427,7 +427,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
 
   it("defaults opts to {} when not provided", () => {
     const grid = makeFakeGrid(100, 1);
-    coreApi.recomputeTempBiomeLocal(grid, [0, 1]);
+    coreApi.recomputeTempBiomeLocal([0, 1], undefined, grid);
     expect(fake.lastMessage).toMatchObject({
       opts: {},
     });
@@ -436,7 +436,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
   it("forwards custom opts on the wire", () => {
     const grid = makeFakeGrid(100, 1);
     const opts = { temperature_equator: 30, height_exponent: 2.5 };
-    coreApi.recomputeTempBiomeLocal(grid, [5, 6], opts);
+    coreApi.recomputeTempBiomeLocal([5, 6], opts, grid);
     expect(fake.lastMessage).toMatchObject({ opts });
   });
 
@@ -446,7 +446,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
       temp: new Int8Array([10, 15, 20]),
       biome: new Uint8Array([3, 6, 9]),
     };
-    const p = coreApi.recomputeTempBiomeLocal(grid, [0, 1, 2]);
+    const p = coreApi.recomputeTempBiomeLocal([0, 1, 2], undefined, grid);
     fake.reply(result);
     const res = await p;
     expect(res.temp).toBeInstanceOf(Int8Array);
@@ -457,7 +457,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
 
   it("rejects with an Error when the worker reports failure", async () => {
     const grid = makeFakeGrid(100, 42);
-    const p = coreApi.recomputeTempBiomeLocal(grid, [0]);
+    const p = coreApi.recomputeTempBiomeLocal([0], undefined, grid);
     fake.replyError("wasm panic: bad grid");
     await expect(p).rejects.toThrow(/bad grid/);
   });
@@ -465,9 +465,9 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
   it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
     const g1 = makeFakeGrid(100, 1);
     const g2 = makeFakeGrid(100, 2);
-    const p1 = coreApi.recomputeTempBiomeLocal(g1, [1, 2]);
+    const p1 = coreApi.recomputeTempBiomeLocal([1, 2], undefined, g1);
     const firstMsg = fake.lastMessage!;
-    const p2 = coreApi.recomputeTempBiomeLocal(g2, [3, 4]);
+    const p2 = coreApi.recomputeTempBiomeLocal([3, 4], undefined, g2);
     const secondMsg = fake.lastMessage!;
     expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
 
@@ -488,7 +488,7 @@ describe("coreApi.recomputeTempBiomeLocal", () => {
 describe("coreApi.recomputeDependents", () => {
   it("sends the exact { kind, reqId, grid, opts } wire message", () => {
     const grid = makeFakeGrid(1000, 42);
-    coreApi.recomputeDependents(grid);
+    coreApi.recomputeDependents(undefined, grid);
     expect(fake.lastMessage).toMatchObject({
       kind: "recompute_dependents",
       grid,
@@ -500,14 +500,14 @@ describe("coreApi.recomputeDependents", () => {
 
   it("defaults opts to {} when not provided", () => {
     const grid = makeFakeGrid(100, 1);
-    coreApi.recomputeDependents(grid);
+    coreApi.recomputeDependents(undefined, grid);
     expect(fake.lastMessage).toMatchObject({ opts: {} });
   });
 
   it("forwards custom opts on the wire", () => {
     const grid = makeFakeGrid(100, 1);
     const opts = { temperature_equator: 30, height_exponent: 2.5 };
-    coreApi.recomputeDependents(grid, opts);
+    coreApi.recomputeDependents(opts, grid);
     expect(fake.lastMessage).toMatchObject({ opts });
   });
 
@@ -522,7 +522,7 @@ describe("coreApi.recomputeDependents", () => {
       rivers: [{ id: 1, source: 5, mouth: 10, discharge: 42, cells: [5, 6, 7, 8, 9, 10], points: [[0, 0], [1, 1]] }],
       lakes: [],
     };
-    const p = coreApi.recomputeDependents(grid);
+    const p = coreApi.recomputeDependents(undefined, grid);
     fake.reply(result);
     const res = await p;
     expect(res.temp.length).toBe(100);
@@ -538,7 +538,7 @@ describe("coreApi.recomputeDependents", () => {
 
   it("rejects with an Error when the worker reports failure", async () => {
     const grid = makeFakeGrid(100, 42);
-    const p = coreApi.recomputeDependents(grid);
+    const p = coreApi.recomputeDependents(undefined, grid);
     fake.replyError("wasm panic: bad grid");
     await expect(p).rejects.toThrow(/bad grid/);
   });
@@ -546,9 +546,9 @@ describe("coreApi.recomputeDependents", () => {
   it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
     const g1 = makeFakeGrid(100, 1);
     const g2 = makeFakeGrid(100, 2);
-    const p1 = coreApi.recomputeDependents(g1);
+    const p1 = coreApi.recomputeDependents(undefined, g1);
     const firstMsg = fake.lastMessage!;
-    const p2 = coreApi.recomputeDependents(g2);
+    const p2 = coreApi.recomputeDependents(undefined, g2);
     const secondMsg = fake.lastMessage!;
     expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
 

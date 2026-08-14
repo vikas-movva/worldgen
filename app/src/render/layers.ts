@@ -258,7 +258,10 @@ export class WorldMap {
 
 		const gfx = this.selectionGfx;
 		gfx.clear();
-		gfx.moveTo(nx(vpts[cellV[lo] as number][0]), ny(vpts[cellV[lo] as number][1]));
+		gfx.moveTo(
+			nx(vpts[cellV[lo] as number][0]),
+			ny(vpts[cellV[lo] as number][1]),
+		);
 		for (let r = 1; r < k; r++) {
 			const vid = cellV[lo + r] as number;
 			gfx.lineTo(nx(vpts[vid][0]), ny(vpts[vid][1]));
@@ -333,6 +336,26 @@ export function attachCamera(
 	let dragging = false;
 	let lastX = 0;
 	let lastY = 0;
+	// Spacebar-to-pan: the camera only drag-pans while Space is held, so the
+	// editor get clean pointer events for brush/select when Space is up. This
+	// matches Figma/Photoshop's hand-tool modifier. We track Space with a
+	// window keydown/keyup pair (not the canvas) so a held Space is recognized
+	// even if focus is on a sibling control.
+	let spaceDown = false;
+	const onKeyDown = (e: KeyboardEvent) => {
+		if (e.code === "Space" && !spaceDown) {
+			spaceDown = true;
+			// Prevent page scroll while Space is the pan modifier.
+			e.preventDefault();
+		}
+	};
+	const onKeyUp = (e: KeyboardEvent) => {
+		if (e.code === "Space") {
+			spaceDown = false;
+		}
+	};
+	window.addEventListener("keydown", onKeyDown);
+	window.addEventListener("keyup", onKeyUp);
 
 	const onWheel = (e: WheelEvent) => {
 		e.preventDefault();
@@ -350,6 +373,9 @@ export function attachCamera(
 		});
 	};
 	const onDown = (e: PointerEvent) => {
+		// Only start a pan drag while Space is held. Without Space, the editor
+		// owns the pointer (brush / select / macro). Wheel-zoom stays always-on.
+		if (!spaceDown) return;
 		dragging = true;
 		lastX = e.clientX;
 		lastY = e.clientY;
@@ -363,6 +389,7 @@ export function attachCamera(
 		lastY = e.clientY;
 	};
 	const onUp = (e: PointerEvent) => {
+		if (!dragging) return;
 		dragging = false;
 		target.releasePointerCapture?.(e.pointerId);
 	};
@@ -379,5 +406,7 @@ export function attachCamera(
 		target.removeEventListener("pointermove", onMove);
 		target.removeEventListener("pointerup", onUp);
 		target.removeEventListener("pointerleave", onUp);
+		window.removeEventListener("keydown", onKeyDown);
+		window.removeEventListener("keyup", onKeyUp);
 	};
 }

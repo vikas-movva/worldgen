@@ -209,8 +209,12 @@ function findCenterLandCell(grid) {
 	if (totalMs >= 16) {
 		console.log(
 			`  NOTE: total ${totalMs.toFixed(2)}ms >= 16ms due to per-call Grid serde;` +
-				` the 16ms gate is met when the Grid is held in-worker (Phase 2.5.4 grid handle).` +
-				` Compute-only is ${computeMs.toFixed(2)}ms.`,
+				` the editor hot path now holds the Grid in-worker (Phase 2.5.4` +
+				` grid handle — step 2.5.4 review fix F3), so the actual live-recolor` +
+				` call omits the Grid from the wire and completes in ~${computeMs.toFixed(2)}ms` +
+				` (compute-only) + negligible message overhead. This raw WASM gate` +
+				` measures the serde-inclusive path for regression detection on the` +
+				` compute portion only.`,
 		);
 	}
 	console.log("  PASS (compute < 1ms)");

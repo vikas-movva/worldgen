@@ -12,17 +12,6 @@ Worldgen is an FMG-style (Azgaar's Fantasy Map Generator) procedural map
 generator **geared to worldbuilding**, 100% local, smooth at **≤60k cells /
 60fps**, with a **time-varying world** and **procedurally generated history**.
 
-FMG's slowness at high cell counts is **not** a compute problem — it is a
-**rendering + data-model** problem (verified against FMG `public/main.js` and
-`src/rendators/*`):
-
-| FMG bottleneck | Root cause | Our fix |
-| --- | --- | --- |
-| Interactivity dies past ~10–20k cells | Every cell = one live SVG `<polygon>` DOM node (100k nodes at max). No LOD/culling, CPU rasterization. | **GPU renderer (PixiJS/WebGL2)** — 1–2 draw calls for the whole map, viewport culling, layer colors via data textures. |
-| Generation blocks the UI | Single-threaded JS, `O(n)` passes over mutable globals. | **Deterministic Rust → WASM core** run **off-thread** (Web Worker). |
-| One present-time snapshot only | `pack` holds a single static state. | **Event-sourced timeline**: world at year Y = base geometry + all events ≤ Y. |
-| No narrative layer | Names only; limited history prose. | **Rule-based event engine** emits structured events; **optional LLM polish**; **TipTap** chronicles per entity. |
-
 ---
 
 ## 2. Scope locks
@@ -34,9 +23,9 @@ FMG's slowness at high cell counts is **not** a compute problem — it is a
 | 100% local | No server. "Backend" = Rust→WASM worker (+ optional Tauri native process). |
 | Static layers (gen once) | terrain, biome, climate, heightmap |
 | Time-varying layers | states, provinces, cultures, religions, burgs, armies, populations |
-| Renderer | PixiJS v8 (WebGL2), **2D only** — no 3D in MVP |
+| Renderer | PixiJS v8 (WebGL2) |
 | Determinism | Same seed → byte-identical world + timeline |
-| LLM | Opt-in, user-supplied key, never required |
+| LLM | Opt-in, user-supplied api key |
 | Rich text | TipTap + `tiptap-markdown` |
 
 **Explicitly out of scope (MVP):** 3D extruded terrain; routes/markets/military-economy trade sim; multi-user/server/cloud; maps >60k cells.
@@ -50,14 +39,11 @@ FMG's slowness at high cell counts is **not** a compute problem — it is a
 | Compute / simulation core | **Rust → WASM** (`wasm-pack`, `wasm-bindgen`), `spade` for Delaunay/Voronoi |
 | Renderer | **PixiJS v8** (WebGL2) + **React** wrapper |
 | UI framework | **React + TypeScript** |
-| State | **Zustand** store (state only — no Pixi objects, no generation logic) |
+| State | **Zustand** store |
 | Rich-text history | **TipTap + `tiptap-markdown`** |
 | Persistence | **IndexedDB + OPFS**; world saved as single `.world` (ZIP archive) |
-| Optional LLM | Client-side `fetch` to user endpoint (OpenAI / Anthropic / Ollama / vLLM) |
+| Optional LLM | Client-side `fetch` to user endpoint (OpenAI / Anthropic / Ollama / llamma.cpp) |
 | Build / tooling | **Vite** + `vite-plugin-wasm` + Biome |
-
-> The efficient "backend" is the **Rust→WASM worker core** (optionally a Tauri
-> local process for native threading + local Ollama). No remote server.
 
 ---
 
@@ -65,8 +51,8 @@ FMG's slowness at high cell counts is **not** a compute problem — it is a
 
 Four-layer separation, FMG-2.0-inspired but event-sourced. **Dependency rule:
 generators/editors never touch the canvas; renderer never mutates state; state
-has no rendering code.** Added rule: **the year is a pure read of state**
-(`WorldAt(year)`), never a mutation.
+has no rendering code, the year is a pure read of state
+(`WorldAt(year)`).
 
 ```mermaid
 flowchart TD

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { coreApi, type Grid } from "./core/api";
+import type { WorldMap } from "./render/layers";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
-import { WorldMap } from "./render/layers";
-import { HeightmapEditor } from "./ui/HeightmapEditor";
 import { useWorldgenStore } from "./state/worldgenStore";
+import { HeightmapEditor } from "./ui/HeightmapEditor";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -223,7 +223,14 @@ function App() {
 					{grid ? `| grid.cells=${grid.cells.h.length} seed=${seed}` : ""}
 				</span>
 			</header>
-			<main style={{ flex: "1 1 auto", position: "relative", minHeight: 0, display: "flex" }}>
+			<main
+				style={{
+					flex: "1 1 auto",
+					position: "relative",
+					minHeight: 0,
+					display: "flex",
+				}}
+			>
 				<div style={{ flex: "1 1 auto", position: "relative", minHeight: 0 }}>
 					<MapCanvas
 						onReady={(handle) => {

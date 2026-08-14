@@ -98,7 +98,7 @@ export const useHeightmapEditor = create<
 				internal.resolveCurrent = null;
 				internal.rejectCurrent = null;
 				try {
-					const result = await coreApi.recomputeDependents(grid, opts);
+					const result = await coreApi.recomputeDependents(opts, grid);
 					set({
 						recomputePending: false,
 						lastDependentResult: result,
