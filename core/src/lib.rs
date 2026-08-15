@@ -15,6 +15,12 @@ mod grid;
 mod climate;
 mod biomes;
 mod rivers;
+/// Phase 3 Step 3.1: anthropological-layer entity data model + `Pack` holder.
+/// Types-only — no generators (Step 3.2/3.3 add `gen_states.rs` /
+/// `gen_cultures.rs` / `gen_religions.rs`), no rendering, no RNG. Exposed so
+/// the Phase 4 timeline projector and a future `pack` worker message kind can
+/// reference `entities::Pack` from `lib.rs`.
+pub(crate) mod entities;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
