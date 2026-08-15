@@ -67,6 +67,16 @@ export class WorldMap {
 	private heightData: Uint8Array | null = null;
 	/** The biome texture data buffer — updated in place by `updateBiome`. */
 	private biomeData: Uint8Array | null = null;
+	/**
+	 * Step 2.5.5: the currently selected cell + the grid it was picked on,
+	 * stashed so `fitToScreen` can re-stroke the outline after every camera
+	 * change (pan/zoom/resize). Without re-stroking, the `Graphics` stroke
+	 * width is fixed in view-local units and would balloon on zoom.
+	 */
+	private selectedGrid: Grid | null = null;
+	private selectedCellId = -1;
+	/** Last on-screen stroke width applied to the selection outline (px). */
+	private selectionStrokeWidth = 0;
 
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
@@ -147,6 +157,10 @@ export class WorldMap {
 		this.view.scale.set(zx, zy);
 		this.view.x = (screenW - zx) / 2 + this.panX;
 		this.view.y = (screenH - zy) / 2 + this.panY;
+		// Re-stroke the selection outline so its on-screen width stays
+		// constant (the stroke lives in view-local units, which the scale
+		// just changed). No-op when nothing is selected.
+		this.drawSelection();
 	}
 
 	/**
@@ -234,8 +248,16 @@ export class WorldMap {
 	/**
 	 * Step 2.5.4: draw a selection outline around a cell. The outline is a
 	 * `Graphics` polyline of the cell's polygon ring (from `mesh.cells.v` +
-	 * `vertices.p`), added as a child of `view` so it inherits pan/zoom.
-	 * Pass `cellId = -1` to clear the selection.
+	 * `vertices.p`), added as a child of `view` so it inherits pan/zoom
+	 * geometry. Pass `cellId = -1` to clear the selection.
+	 *
+	 * Step 2.5.5 fix: the stroke is drawn in view-local (normalized [0,1])
+	 * units, but `view` is scaled by the fit-to-screen factor (hundreds of
+	 * pixels). A `width: 2` stroke therefore rendered ~2*scaleX px wide on
+	 * screen, filling the whole cell and reading as a big yellow polygon.
+	 * The fix: stash the selection and re-stroke from `fitToScreen` with a
+	 * scale-compensated width so the on-screen thickness stays ~2 px at any
+	 * zoom. See `drawSelection`.
 	 */
 	private selectionGfx: Graphics | null = null;
 	setSelected(grid: Grid, cellId: number): void {
@@ -244,6 +266,28 @@ export class WorldMap {
 			this.selectionGfx.clear();
 		}
 		if (cellId < 0 || cellId >= grid.mesh.points.length) {
+			this.selectedGrid = null;
+			this.selectedCellId = -1;
+			this.selectionStrokeWidth = 0;
+			return;
+		}
+		this.selectedGrid = grid;
+		this.selectedCellId = cellId;
+		this.drawSelection();
+	}
+
+	/**
+	 * Re-stroke the selection outline with the current camera scale. Computes
+	 * a stroke width in view-local units that renders at a constant ~2px on
+	 * screen: `localWidth = desiredPx / meanScale`. Called from `setSelected`
+	 * (initial draw) and from `fitToScreen` (pan/zoom/resize re-stroke).
+	 */
+	private drawSelection(): void {
+		if (this.selectionGfx) this.selectionGfx.clear();
+		const grid = this.selectedGrid;
+		const cellId = this.selectedCellId;
+		if (!grid || cellId < 0 || cellId >= grid.mesh.points.length) {
+			this.selectionStrokeWidth = 0;
 			return;
 		}
 		if (!this.selectionGfx) {
@@ -262,7 +306,10 @@ export class WorldMap {
 		const lo = cellI[cellId] as number;
 		const hi = cellI[cellId + 1] as number;
 		const k = hi - lo;
-		if (k < 3) return;
+		if (k < 3) {
+			this.selectionStrokeWidth = 0;
+			return;
+		}
 
 		const gfx = this.selectionGfx;
 		gfx.clear();
@@ -275,7 +322,35 @@ export class WorldMap {
 			gfx.lineTo(nx(vpts[vid][0]), ny(vpts[vid][1]));
 		}
 		gfx.closePath();
-		gfx.stroke({ color: 0xffff00, width: 2, alignment: 0.5 });
+		// Scale-compensate: stroke width is in view-local units; divide by
+		// the mean of |scaleX|,|scaleY| so the on-screen width is ~2 px.
+		// Clamp to a hairline minimum so a degenerate (near-zero) scale
+		// never reads as a filled polygon.
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		const meanScale = (sx + sy) / 2;
+		const desiredPx = 2;
+		const localWidth = Math.max(
+			desiredPx / meanScale,
+			1 / 4096, // hairline floor; below this strokes flicker out
+		);
+		this.selectionStrokeWidth = localWidth * meanScale; // store on-screen px
+		gfx.stroke({
+			color: 0xffff00,
+			width: localWidth,
+			alignment: 0.5,
+		});
+	}
+
+	/**
+	 * Step 2.5.5: the on-screen width (px) of the current selection
+	 * outline — the value the scale-compensated local width renders at.
+	 * Exposed for tests to assert the outline stays a thin hairline
+	 * (not a giant polygon) across zoom levels. Returns 0 when no cell
+	 * is selected.
+	 */
+	getSelectionStrokeWidth(): number {
+		return this.selectionStrokeWidth;
 	}
 
 	private applyLayers(): void {
@@ -362,6 +437,12 @@ export class WorldMap {
 		this.textures = [];
 		this.heightData = null;
 		this.biomeData = null;
+		// Drop the selection refs so a dangling re-stroke (e.g. a queued
+		// `fitToScreen` after destroy) finds no cell and no-ops.
+		this.selectionGfx = null;
+		this.selectedGrid = null;
+		this.selectedCellId = -1;
+		this.selectionStrokeWidth = 0;
 	}
 }
 

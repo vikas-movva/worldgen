@@ -540,3 +540,82 @@ describe("attachCamera", () => {
 		expect(wm.view.y).toBe(startY2);
 	});
 });
+
+// ---- setSelected (selection outline) ----------------------------------
+
+describe("WorldMap.setSelected (selection outline)", () => {
+	it("draws a hairline outline (~2px on screen), not a giant polygon", () => {
+		// The bug: the stroke was `width: 2` in view-local units. After
+		// fitToScreen, view.scale ~= screenW (hundreds), so the stroke
+		// rendered ~2*scaleX px wide and filled the cell. The fix
+		// scale-compensates so on-screen width stays ~2px.
+		wm.fitToScreen(1280, 720);
+		const grid = quadGrid(1, 1000, 1000);
+		wm.setSelected(grid, 0);
+		const w = wm.getSelectionStrokeWidth();
+		// Before the fix this would be ~2 * 1280 = 2560px; now ~2px (±1
+		// because the width is derived from the mean of a non-uniform scale).
+		expect(w).toBeGreaterThan(1.5);
+		expect(w).toBeLessThan(2.5);
+	});
+
+	it("the outline width stays ~2px across zoom levels (scale-compensated)", () => {
+		wm.fitToScreen(1280, 720);
+		const grid = quadGrid(1, 1000, 1000);
+		wm.setSelected(grid, 0);
+		const atFit = wm.getSelectionStrokeWidth();
+
+		// Zoom in 8x — without re-stroke the stroke would balloon 8x.
+		wm.setZoom(8, 1280, 720);
+		const at8x = wm.getSelectionStrokeWidth();
+
+		// Zoom out to 0.5x.
+		wm.setZoom(0.5, 1280, 720);
+		const atHalf = wm.getSelectionStrokeWidth();
+
+		// All three should be a thin hairline (~2px) regardless of zoom.
+		for (const w of [atFit, at8x, atHalf]) {
+			expect(w).toBeGreaterThan(1.5);
+			expect(w).toBeLessThan(2.5);
+		}
+		// Sanity: the 8x on-screen width should NOT be ~16px (the old
+		// behaviour, scaled with zoom).
+		expect(at8x).toBeLessThan(3);
+	});
+
+	it("resizing (fitToScreen) re-strokes the outline at the new scale", () => {
+		wm.fitToScreen(1280, 720);
+		const grid = quadGrid(1, 1000, 1000);
+		wm.setSelected(grid, 0);
+		const before = wm.getSelectionStrokeWidth();
+
+		// Resize to a much bigger window; fit scale grows ~4x.
+		wm.fitToScreen(5120, 2880);
+		const after = wm.getSelectionStrokeWidth();
+
+		// Both still render ~2px on screen.
+		expect(before).toBeGreaterThan(1.5);
+		expect(before).toBeLessThan(2.5);
+		expect(after).toBeGreaterThan(1.5);
+		expect(after).toBeLessThan(2.5);
+	});
+
+	it("setSelected with cellId = -1 clears the selection (0 width)", () => {
+		wm.fitToScreen(1280, 720);
+		const grid = quadGrid(1, 1000, 1000);
+		wm.setSelected(grid, 0);
+		expect(wm.getSelectionStrokeWidth()).toBeGreaterThan(0);
+		wm.setSelected(grid, -1);
+		expect(wm.getSelectionStrokeWidth()).toBe(0);
+	});
+
+	it("setSelected with an out-of-range id clears the selection", () => {
+		wm.fitToScreen(1280, 720);
+		const grid = quadGrid(1, 1000, 1000);
+		wm.setSelected(grid, 0);
+		expect(wm.getSelectionStrokeWidth()).toBeGreaterThan(0);
+		// 999 is out of range for a 1-cell grid.
+		wm.setSelected(grid, 999);
+		expect(wm.getSelectionStrokeWidth()).toBe(0);
+	});
+});

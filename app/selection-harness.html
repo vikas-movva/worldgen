@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Selection harness</title>
+</head>
+<body style="margin:0;background:#000">
+<canvas id="c" width="600" height="400"></canvas>
+<script type="module">
+import { Application } from "pixi.js";
+import { WorldMap } from "/src/render/layers.ts";
+
+// Minimal single-cell quad grid with a proper CSR (cells.i length N+1).
+function quadGrid() {
+  const points = [[300, 200]];
+  const vertP = [
+    [250, 150],
+    [350, 150],
+    [350, 250],
+    [250, 250],
+  ];
+  const cellV = [0, 1, 2, 3];
+  const cellI = [0, 4];
+  return {
+    seed: 1,
+    mesh: {
+      points,
+      cells: { v: cellV, c: [], i: cellI, b: [], spacing: [], cells_x: 1, cells_y: 1 },
+      vertices: { p: vertP },
+      world_w: 1000,
+      world_h: 1000,
+    },
+    cells: {
+      h: new Float32Array([50]),
+      temp: new Float32Array([0]),
+      prec: new Float32Array([0]),
+      biome: new Uint8Array([0]),
+      state: new Uint8Array([0]),
+      province: new Uint8Array([0]),
+      culture: new Uint8Array([0]),
+      religion: new Uint8Array([0]),
+      burg: new Uint8Array([0]),
+      fl: new Float32Array([0]),
+      r: new Float32Array([0]),
+      conf: new Float32Array([0]),
+    },
+  };
+}
+
+(async () => {
+  const app = new Application();
+  await app.init({
+    canvas: document.getElementById("c"),
+    width: 600,
+    height: 400,
+    background: 0x000000,
+    antialias: true,
+    preserveDrawingBuffer: true, // so readPixels works after render
+  });
+  const grid = quadGrid();
+  const wm = new WorldMap(grid);
+  app.stage.addChild(wm.view);
+  wm.setLayers({ terrain: true, biome: false });
+  wm.fitToScreen(600, 400);
+  // Select cell 0 and force a render.
+  wm.setSelected(grid, 0);
+  app.render();
+
+  // Count yellow (0xffff00) pixels directly from the WebGL framebuffer.
+  // Pixi v8: app.renderer.gl is the WebGL context; readPixels reads the
+  // currently-bound framebuffer. After app.render() the canvas's default
+  // framebuffer is bound, so this reads the composited frame. Wrap in
+  // try/catch and report -1 if unavailable (the screenshot is the fallback).
+  let yellow = -1;
+  try {
+    const gl = app.renderer.gl;
+    if (gl) {
+      const px = new Uint8Array(600 * 400 * 4);
+      gl.readPixels(0, 0, 600, 400, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      yellow = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] > 240 && px[i + 1] > 240 && px[i + 2] < 80) yellow++;
+      }
+    }
+  } catch (e) {
+    yellow = -1;
+  }
+  window.__selResult = {
+    strokeWidthPx: wm.getSelectionStrokeWidth(),
+    yellowCount: yellow,
+    yellowPct: yellow < 0 ? -1 : (yellow / (600 * 400)) * 100,
+    viewScaleX: wm.view.scale.x,
+    viewScaleY: wm.view.scale.y,
+  };
+})();
+</script>
+</body>
+</html>

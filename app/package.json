@@ -15,6 +15,7 @@
 		"verify:pick-reset-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_pick_reset_node.mjs",
 		"verify:recompute-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_recompute_local_node.mjs",
 		"verify:recompute-deps-node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node && cd app && node scripts/verify_recompute_dependents_node.mjs",
+		"verify:selection": "node scripts/verify_selection.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:core": "cargo test --manifest-path ../core/Cargo.toml",
