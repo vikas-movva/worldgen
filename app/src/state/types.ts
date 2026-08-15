@@ -9,9 +9,23 @@
 //
 // KEEP IN SYNC with `core/src/entities.rs`: every field added on the Rust
 // side must land here with the same name (serde-wasm-bindgen maps snake_case
-// Rust fields to snake_case JS keys — no rename), and any field the
-// dependent-recompute path surfaces should also be mirrored in
-// `spliceDependentResult` (api.ts).
+// Rust fields to snake_case JS keys — no rename). NOTE: `Pack` and these
+// entity structs cross the Phase-4 `projectWorld`/`generateTimeline` worker
+// boundary — NOT the Phase-2.5 `spliceDependentResult` per-cell helper
+// (api.ts), which only touches the 11 `cells.*` index arrays + river/lake
+// geometry and never sees `pack.*`. Do not add Pack fields to that helper.
+//
+// TODO(Route): design §3.2 lists `Route` among the seven base entities; it is
+// intentionally NOT modeled here (MVP out-of-scope per §11 — Routes/markets/
+// military-economy trade sim is stretch post-MVP). Add the Rust struct +
+// TS mirror when that stretch goal is taken on.
+//
+// Type-width note (review F1): `Burg.id` is `u32` on the Rust side but the
+// per-cell burg index `cells.burg` is `i16`. Both surface as `number` here so
+// the mismatch is Rust-side only (invisible to the TS key-set tests). The
+// Phase-4 timeline projector joins on `cells.burg[cell] == pack.burgs[id-1].id`;
+// `gen_states.rs` must widen `CellData.burg` to `i32` or clamp, see
+// `entities.rs` module doc.
 
 /**
  * Base anthropological-layer entities at the year-0 anchor (design §3.2).

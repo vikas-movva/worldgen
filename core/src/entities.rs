@@ -21,9 +21,27 @@
 //! `app/src/state/types.ts` carry identical field names with `number` for the
 //! integer types (tech-requirements §3.2). The struct is the wire contract
 //! for the worker messages Phase 4 introduces (`projectWorld` /
-//! `projectDelta` / `generateTimeline`), so adding a field here requires
-//! mirroring it on the TS side and in `spliceDependentResult` if it crosses
-//! the dependent-recompute boundary.
+//! `projectDelta` / `generateTimeline`); adding a Pack-level field requires
+//! mirroring it on the TS side. NOTE: `Pack` and its entity structs cross the
+//! Phase-4 `projectWorld`/`generateTimeline` boundary — NOT the Phase-2.5
+//! `spliceDependentResult` per-cell helper (api.ts), which only ever touches
+//! the 11 `cells.*` index arrays + river/lake geometry. Do not add Pack
+//! fields to `spliceDependentResult`; that helper never sees `pack.*`.
+//!
+//! TODO(Route): design §3.2 lists `Route` among the seven base entities; it
+//! is intentionally NOT modeled here (MVP out-of-scope per §11 — Routes/
+//! markets/military-economy trade sim is stretch post-MVP). Add the struct
+//! + TS mirror when the trade-sim stretch goal is taken on.
+//!
+//! Type-width note (review F1): `Pack.burgs[i].id` is `u32`, but the per-cell
+//! burg index `grid.cells.burg` is `Vec<i16>` (grid.rs). The Phase-3.2
+//! generator writes `Burg.id` into `cells.burg[cell]`; the Phase-4 timeline
+//! projector joins on `cells.burg[cell] == pack.burgs[id-1].id`. `i16` caps
+//! ids at 32 767 (safe under FMG town counts at 60k cells, but a narrowing
+//! cast). When `gen_states.rs` lands, either widen `CellData.burg` to `i32`
+//! (matching `state`/`province`/`culture`/`religion`) so the join is
+//! identity, or clamp + `debug_assert!(id <= i16::MAX as u32)` here or at
+//! the write site. Do not leave the `u32`→`i16` join undocumented.
 
 // The structs below are deliberately not constructed outside of `#[cfg(test)]`
 // yet — Phase 3.2 (`gen_states.rs`) and 3.3 (`gen_cultures.rs` /
