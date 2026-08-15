@@ -3,6 +3,7 @@ import { coreApi, type Grid } from "./core/api";
 import type { WorldMap } from "./render/layers";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
 import { useWorldgenStore } from "./state/worldgenStore";
+import { CellInspector } from "./ui/CellInspector";
 import { HeightmapEditor } from "./ui/HeightmapEditor";
 
 function App() {
@@ -253,6 +254,7 @@ function App() {
 						}}
 					>
 						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
+						<CellInspector worldMap={worldMap} />
 					</div>
 				)}
 			</main>

@@ -232,6 +232,18 @@ export function HeightmapEditor({
 			// Suppress painting while Space is held (pan mode).
 			if (spaceDown.current) return;
 			if (editorTool === "select") {
+				// Min-zoom gate (Step 2.5.5 #7): at 60k cells a cell is sub-pixel
+				// when zoomed out, so a click selects an essentially arbitrary
+				// cell near the cursor. Require the user to be zoomed in to at
+				// least ~1.5x the fit-to-screen base scale before picking. Below
+				// that we surface a hint instead of a misleading selection.
+				const minSelectZoom = 1.5;
+				if (worldMap.getZoom() < minSelectZoom) {
+					setSelectedCellId(-1);
+					worldMap.setSelected(grid, -1);
+					setStatusMsg(`Zoom in to select a cell (need ≥${minSelectZoom}x).`);
+					return;
+				}
 				// Select mode: pick cell and draw selection outline.
 				void (async () => {
 					const cellId = await pointerToCell(e);

@@ -11,7 +11,7 @@
 
 /** FMG biome colors, index == biome id (0 Marine .. 12 Wetland). */
 export const BIOME_COLORS: number[] = [
-	0x4f6c8a, // 0  Marine      (water)
+	0x4f6c8a, // 0  Marine
 	0xc2b280, // 1  Hot desert
 	0x9ca3a8, // 2  Cold desert
 	0xbfc66a, // 3  Savanna
@@ -24,6 +24,24 @@ export const BIOME_COLORS: number[] = [
 	0x9aa0a6, // 10 Tundra
 	0xe8f0f5, // 11 Glacier
 	0x5a7d6a, // 12 Wetland
+];
+
+/** FMG biome display names, index == biome id. Mirrors `core/src/biomes.rs`
+ * `BIOMES` table so the inspector label matches the Rust classification. */
+export const BIOME_NAMES: readonly string[] = [
+	"Marine",
+	"Hot desert",
+	"Cold desert",
+	"Savanna",
+	"Grassland",
+	"Tropical seasonal forest",
+	"Temperate deciduous forest",
+	"Tropical rainforest",
+	"Temperate rainforest",
+	"Taiga",
+	"Tundra",
+	"Glacier",
+	"Wetland",
 ];
 
 /** Convert 0xRRGGBB to a [r,g,b] triple in 0..255. */

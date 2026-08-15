@@ -8,6 +8,8 @@ export default defineConfig({
 	test: {
 		environment: "jsdom",
 		include: ["src/**/*.{test,spec}.{ts,tsx}"],
+		// Setup file enables React `act(...)` environment for component specs.
+		setupFiles: ["./src/test-setup.ts"],
 		// Keep output compact; the bridge tests are fast and synchronous-ish.
 		silent: false,
 	},
