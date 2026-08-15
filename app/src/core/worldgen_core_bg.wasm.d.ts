@@ -12,6 +12,7 @@ export const generate_climate_for_grid: (a: any, b: any) => any;
 export const generate_heightmap: (a: any, b: number) => any;
 export const generate_mesh: (a: number, b: number) => any;
 export const generate_world: (a: number, b: number, c: any) => any;
+export const get_drainage_geometry_h: () => any;
 export const has_grid_h: () => number;
 export const init: () => void;
 export const pick_cell: (a: any, b: number, c: number) => number;

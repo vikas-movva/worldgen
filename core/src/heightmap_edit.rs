@@ -5,7 +5,7 @@
 //! macro tools which use the world `seed`). Determinism: the same `EditOp[]`
 //! applied to the same `grid` yields byte-identical `h`.
 //!
-//! See `worldforge-technical-requirements.md` §3.5 for the contract.
+//! See `worldgen-technical-requirements.md` §3.5 for the contract.
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;

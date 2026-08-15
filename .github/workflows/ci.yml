@@ -54,3 +54,57 @@ jobs:
         run: npm run build:core
       - name: Run Vitest
         run: npm run test
+
+  determinism-node:
+    name: Determinism gate (node-wasm)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain (with wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build node-target WASM core
+        run: npm run build:core:node
+      - name: xxHash64 determinism across runs
+        run: node scripts/verify_determinism_node.mjs
+
+  perf-gates:
+    name: Performance regression gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain (with wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build node-target WASM core
+        run: npm run build:core:node
+      - name: Run perf gates (recompute-deps <1100ms, live recolor compute <1ms, gen <2s)
+        run: npm run verify:perf-node

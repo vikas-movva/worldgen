@@ -15,9 +15,9 @@
 // hand to simulate the worker's reply (same harness as `api.test.ts`). The
 // CellInspector is rendered into a jsdom container via `react-dom/client`.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	__setWorkerForTest,
 	type EditOp,
@@ -69,7 +69,7 @@ beforeEach(() => {
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false },
+		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
 		editorTool: "raise",
 		brushRadius: 30,
 		brushStrength: 0.5,
@@ -464,6 +464,111 @@ describe("CellInspector per-cell height edit", () => {
 		// the readout reflects Water/Marine.
 		expect(text).toMatch(/Water/);
 		expect(text).toMatch(/Marine/);
+
+		unmount();
+	});
+
+	it("splices the full dependent-recompute arrays (11 fields) into the store grid after the debounce fires", async () => {
+		const grid = fakeGrid(10, 7);
+		grid.cells.h[3] = 50;
+		// Stale entity + drainage values that the dependent recompute should replace.
+		grid.cells.state = new Array(10).fill(-1);
+		grid.cells.province = new Array(10).fill(-1);
+		grid.cells.culture = new Array(10).fill(-1);
+		grid.cells.religion = new Array(10).fill(-1);
+		grid.cells.burg = new Array(10).fill(0);
+		grid.cells.fl = new Array(10).fill(0);
+		grid.cells.r = new Array(10).fill(0);
+		grid.cells.conf = new Array(10).fill(0);
+		act(() => useWorldgenStore.setState({ grid, selectedCellId: 3 }));
+
+		// Capture edit + local + dependent requests in order.
+		const reqLog: AnyReq[] = [];
+		const orig = fake.postMessage.bind(fake);
+		fake.postMessage = (msg: AnyReq) => {
+			reqLog.push(msg);
+			orig(msg);
+		};
+
+		const { container, unmount } = renderInspector();
+		await act(async () => {
+			setSliderValue(container, 80);
+		});
+
+		// Reply to edit_heightmap with a thin patch.
+		const editReq = reqLog.find((m) => m.kind === "edit_heightmap")!;
+		const newH = new Array(10).fill(50);
+		newH[3] = 80;
+		await act(async () => {
+			fake.replyTo(editReq, { h: new Uint8Array(newH) });
+		});
+
+		// Reply to recompute_temp_biome_local with a single-entry patch.
+		const localReq = reqLog.find(
+			(m) => m.kind === "recompute_temp_biome_local",
+		)!;
+		await act(async () => {
+			fake.replyTo(localReq, {
+				temp: new Int8Array([8]),
+				biome: new Uint8Array([11]),
+			});
+		});
+
+		// Now advance the 300ms debounce so the dependent recompute is posted.
+		// Install a captor for the dependent reply BEFORE the timer fires.
+		const depReqPromise = new Promise<AnyReq>((resolveDep) => {
+			const prev = fake.postMessage.bind(fake);
+			fake.postMessage = (msg: AnyReq) => {
+				if (msg.kind === "recompute_dependents") resolveDep(msg);
+				prev(msg);
+			};
+		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 320));
+		});
+		const depReq = await depReqPromise;
+
+		// Reply to recompute_dependents with a FULL DependentResult carrying
+		// distinctive values for all 11 spliced fields. This exercises the
+		// .then -> spliceDependentResult path in CellInspector.
+		await act(async () => {
+			fake.replyTo(depReq, {
+				temp: new Int8Array(10).fill(5),
+				prec: new Uint8Array(10).fill(50),
+				biome: new Uint8Array(10).fill(7),
+				state: new Int32Array(10).fill(3),
+				province: new Int32Array(10).fill(2),
+				culture: new Int32Array(10).fill(1),
+				religion: new Int32Array(10).fill(4),
+				burg: new Int16Array(10).fill(8),
+				fl: new Uint16Array(10).fill(100),
+				r: new Uint16Array(10).fill(200),
+				conf: new Uint16Array(10).fill(300),
+				coastline: new Uint8Array(10).fill(1),
+				removed_burgs: [],
+				dissolved_states: new Uint32Array(0),
+				rivers: [],
+				lakes: [],
+			});
+		});
+
+		// The store grid should now reflect ALL 11 dependent-recompute fields,
+		// plus the local h from the edit. This is the path that was previously
+		// untested (Issue 3 in the adversarial review): the debounced `.then`
+		// splice with the full DependentResult.
+		const cur = useWorldgenStore.getState().grid!;
+		expect(cur.cells.h[3]).toBe(80);
+		expect(cur.cells.temp).toEqual(new Array(10).fill(5));
+		expect(cur.cells.prec).toEqual(new Array(10).fill(50));
+		expect(cur.cells.biome).toEqual(new Array(10).fill(7));
+		expect(cur.cells.state).toEqual(new Array(10).fill(3));
+		expect(cur.cells.province).toEqual(new Array(10).fill(2));
+		expect(cur.cells.culture).toEqual(new Array(10).fill(1));
+		expect(cur.cells.religion).toEqual(new Array(10).fill(4));
+		expect(cur.cells.burg).toEqual(new Array(10).fill(8));
+		expect(cur.cells.fl).toEqual(new Array(10).fill(100));
+		expect(cur.cells.r).toEqual(new Array(10).fill(200));
+		expect(cur.cells.conf).toEqual(new Array(10).fill(300));
 
 		unmount();
 	});

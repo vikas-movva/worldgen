@@ -1,22 +1,41 @@
 // Step 2.5.5 selection fix — visual verification via Brave headless + WebGL.
 //
-// Loads a minimal harness page (public/selection-harness.html) that imports
-// WorldMap, builds a single-cell quad grid, calls setSelected, and renders one
-// frame in a real WebGL context. Screenshots the canvas and measures the
-// yellow (0xffff00) outline: it must be a thin hairline, NOT a giant filled
-// polygon. Saves /tmp/step2.5.5_selection.png and prints the yellow pixel%
-// and the WorldMap.getSelectionStrokeWidth() on-screen px value.
+// Loads a minimal harness page (app/selection-harness.html, served by the
+// vite dev server as a root entry) that imports WorldMap, builds a single-
+// cell quad grid, calls setSelected, and renders one frame in a real WebGL
+// context. Screenshots the canvas and measures the yellow (0xffff00)
+// outline: it must be a thin hairline, NOT a giant filled polygon. Saves
+// /tmp/step2.5.5_selection.png and prints the yellow pixel% and the
+// WorldMap.getSelectionStrokeWidth() on-screen px value.
 //
 // Run from app/: node scripts/verify_selection.mjs (vite preview on 4321).
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
 const BRAVE = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
 const PORT = 4321;
 const SHARED_BASE = "/worldgen/"; // vite config `base`
-const URL = `http://localhost:${PORT}${SHARED_BASE}selection-harness.html`;
+const VITE_URL = `http://localhost:${PORT}${SHARED_BASE}selection-harness.html`;
+const HARNESS_PATH = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"selection-harness.html",
+);
+
+// Fail fast with a clear error if the harness file is missing (e.g. a
+// rename or move would silently break the gate with a misleading
+// "vite preview did not start" timeout).
+if (!existsSync(HARNESS_PATH)) {
+	console.error(`  FAIL: selection harness not found at ${HARNESS_PATH}`);
+	console.error("       Expected at app/selection-harness.html (vite root).");
+	console.error("       Did you move or rename it?");
+	process.exit(1);
+}
 
 function startPreview() {
 	// Use the vite DEV server (not preview) so root-level harness html files
@@ -33,7 +52,7 @@ async function waitForServer(timeoutMs = 20000) {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
 		try {
-			if ((await fetch(URL)).ok) return;
+			if ((await fetch(VITE_URL)).ok) return;
 		} catch {}
 		await sleep(250);
 	}
@@ -78,12 +97,11 @@ async function main() {
 		page.on("pageerror", (e) => errors.push(String(e)));
 
 		await page.setViewport({ width: 600, height: 400 });
-		await page.goto(URL, { waitUntil: "networkidle0", timeout: 30000 });
+		await page.goto(VITE_URL, { waitUntil: "networkidle0", timeout: 30000 });
 		// Wait for the harness to set window.__selResult.
-		const res = await page.waitForFunction(
-			() => window.__selResult,
-			{ timeout: 15000 },
-		).then((h) => h.jsonValue());
+		const res = await page
+			.waitForFunction(() => window.__selResult, { timeout: 15000 })
+			.then((h) => h.jsonValue());
 
 		// Screenshot the rendered canvas for human inspection.
 		const shot = await page.screenshot({ encoding: "base64", type: "png" });
@@ -103,9 +121,7 @@ async function main() {
 				`on-screen stroke width ${strokePx.toFixed(2)}px (thin hairline, not ~2560px polygon)`,
 			);
 		} else {
-			fail(
-				`stroke width ${strokePx} px is outside the ~2px hairline range`,
-			);
+			fail(`stroke width ${strokePx} px is outside the ~2px hairline range`);
 		}
 		// A ~2px outline around a moderate quad is well under 1% of a
 		// 600x400 canvas. A filled cell would be several% or more. Also

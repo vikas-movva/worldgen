@@ -26,6 +26,7 @@ import {
 	type EditMode,
 	type Grid,
 	type HeightmapPatch,
+	spliceDependentResult,
 } from "../core/api";
 import type { WorldMap } from "../render/layers";
 import { useHeightmapEditor } from "../state/heightmapEditorStore";
@@ -33,7 +34,7 @@ import type { EditorTool } from "../state/worldgenStore";
 import { useWorldgenStore } from "../state/worldgenStore";
 
 // Map editor tool names to Rust EditMode variants.
-const TOOL_TO_MODE: Record<EditorTool, EditMode> = {
+export const TOOL_TO_MODE: Record<EditorTool, EditMode> = {
 	raise: "Raise",
 	lower: "Lower",
 	flatten: "Flatten",
@@ -49,7 +50,7 @@ const TOOL_TO_MODE: Record<EditorTool, EditMode> = {
 };
 
 // Tools that use the brush radius/strength (continuous painting tools).
-const BRUSH_TOOLS = new Set<EditorTool>([
+export const BRUSH_TOOLS = new Set<EditorTool>([
 	"raise",
 	"lower",
 	"flatten",
@@ -317,26 +318,17 @@ export function HeightmapEditor({
 				// canvas subscription fires `updateBiome` with fresh data.
 				const cur = useWorldgenStore.getState().grid;
 				if (cur) {
-					const next: Grid = {
-						...cur,
-						cells: {
-							...cur.cells,
-							temp: Array.from(result.temp ?? cur.cells.temp),
-							prec: Array.from(result.prec ?? cur.cells.prec),
-							biome: Array.from(result.biome ?? cur.cells.biome),
-							state: Array.from(result.state ?? cur.cells.state),
-							province: Array.from(result.province ?? cur.cells.province),
-							culture: Array.from(result.culture ?? cur.cells.culture),
-							religion: Array.from(result.religion ?? cur.cells.religion),
-							burg: Array.from(result.burg ?? cur.cells.burg),
-							fl: Array.from(result.fl ?? cur.cells.fl),
-							r: Array.from(result.r ?? cur.cells.r),
-							conf: Array.from(result.conf ?? cur.cells.conf),
-						},
-					};
+					const next = spliceDependentResult(cur, result);
 					setGrid(next);
 					lastEditGrid.current = next;
 				}
+				// Step 2.5.6: push the fresh river/lake geometry into the
+				// store so the MapCanvas subscription re-strokes the overlay
+				// with the post-edit drainage. `result.rivers`/`lakes` are
+				// the recomputed polylines/polygons for the held grid.
+				useWorldgenStore
+					.getState()
+					.setDrainageGeometry(result.rivers ?? [], result.lakes ?? []);
 				setStatusMsg(
 					`Recompute done: ${result.rivers?.length ?? 0} rivers, ` +
 						`${result.lakes?.length ?? 0} lakes`,

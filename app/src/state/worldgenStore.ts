@@ -4,7 +4,7 @@
 // without forcing a geometry rebuild.
 
 import { create } from "zustand";
-import type { Climate, Grid, Mesh } from "../core/api";
+import type { Climate, Grid, LakeGeo, Mesh, RiverGeo } from "../core/api";
 import type { LayerName } from "../render/layers";
 
 export type LayerState = Record<LayerName, boolean>;
@@ -21,6 +21,10 @@ export type WorldgenState = {
 	} | null;
 	/** Per-layer visibility for the PixiJS renderer (Step 2.3). */
 	layerEnabled: LayerState;
+	/** Step 2.5.6: river polylines + lake polygons for the displayed Grid
+	 * (from `getDrainageGeometry` on fresh gen, `recomputeDependents` on edit). */
+	rivers: RiverGeo[];
+	lakes: LakeGeo[];
 	/** Step 2.5.4: heightmap editor tool mode. */
 	editorTool: EditorTool;
 	/** Step 2.5.4: brush radius (in relative units, 1.0 = moderate). */
@@ -60,6 +64,8 @@ export type WorldgenActions = {
 	setBrushStrength: (strength: number) => void;
 	/** Step 2.5.4: set the selected cell id (-1 = none). */
 	setSelectedCellId: (id: number) => void;
+	/** Step 2.5.6: set river + lake geometry for the displayed Grid. */
+	setDrainageGeometry: (rivers: RiverGeo[], lakes: LakeGeo[]) => void;
 	clear: () => void;
 };
 
@@ -69,7 +75,9 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false },
+		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
+		rivers: [],
+		lakes: [],
 		editorTool: "raise",
 		brushRadius: 30,
 		brushStrength: 0.5,
@@ -93,6 +101,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		setBrushRadius: (brushRadius) => set({ brushRadius }),
 		setBrushStrength: (brushStrength) => set({ brushStrength }),
 		setSelectedCellId: (selectedCellId) => set({ selectedCellId }),
+		setDrainageGeometry: (rivers, lakes) => set({ rivers, lakes }),
 		clear: () =>
 			set({
 				grid: null,
@@ -100,6 +109,8 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				climate: null,
 				generation: null,
 				selectedCellId: -1,
+				rivers: [],
+				lakes: [],
 			}),
 	}),
 );

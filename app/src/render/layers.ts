@@ -17,7 +17,7 @@
 // be inspected at 60k cells without re-tessellation.
 
 import { Container, Graphics, Mesh, Texture, TextureStyle } from "pixi.js";
-import type { Grid } from "../core/api";
+import type { Grid, LakeGeo, RiverGeo } from "../core/api";
 import { buildWorldGeometry, type MeshGeometryData } from "./buildGeometry";
 import {
 	BIOME_COLORS,
@@ -27,7 +27,7 @@ import {
 	rgb,
 } from "./palette";
 
-export type LayerName = "terrain" | "biome";
+export type LayerName = "terrain" | "biome" | "rivers" | "lakes";
 export type LayerState = Record<LayerName, boolean>;
 
 const STYLE = new TextureStyle({
@@ -60,7 +60,12 @@ export class WorldMap {
 	private terrainMesh: Mesh | null = null;
 	private biomeMesh: Mesh | null = null;
 	private textures: Texture[] = [];
-	private layers: LayerState = { terrain: true, biome: false };
+	private layers: LayerState = {
+		terrain: true,
+		biome: false,
+		rivers: false,
+		lakes: false,
+	};
 	private worldW: number;
 	private worldH: number;
 	/** The height texture data buffer — updated in place by `updateHeight`. */
@@ -77,6 +82,22 @@ export class WorldMap {
 	private selectedCellId = -1;
 	/** Last on-screen stroke width applied to the selection outline (px). */
 	private selectionStrokeWidth = 0;
+	/** Step 2.5.6: rivers overlay Graphics (one polyline per river). */
+	private riverGfx: Graphics | null = null;
+	/** Step 2.5.6: lakes overlay Graphics (filled polygons). */
+	private lakeGfx: Graphics | null = null;
+	/** Last on-screen width (px) of river polylines; exposed for tests. */
+	private riverStrokeWidth = 0;
+	/**
+	 * Step 2.5.6: stashed river + lake geometry + the grid it was computed
+	 * for, so `fitToScreen` can re-stroke the polylines at the new camera
+	 * scale (stroke width is in view-local units; a resize/zoom changes the
+	 * local->screen scale, so the on-screen thickness would balloon without
+	 * re-stroking). Mirrors the selection-outline re-stroke pattern.
+	 */
+	private drainageGrid: Grid | null = null;
+	private drainageRivers: RiverGeo[] = [];
+	private drainageLakes: LakeGeo[] = [];
 
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
@@ -161,6 +182,9 @@ export class WorldMap {
 		// constant (the stroke lives in view-local units, which the scale
 		// just changed). No-op when nothing is selected.
 		this.drawSelection();
+		// Re-stroke the river polylines so their on-screen width stays
+		// constant (same scale-compensation as the selection outline).
+		this.drawRiversLakes();
 	}
 
 	/**
@@ -353,9 +377,143 @@ export class WorldMap {
 		return this.selectionStrokeWidth;
 	}
 
+	/**
+	 * Step 2.5.6: the on-screen width (px) of the current river polylines
+	 * (the value the scale-compensated local width renders at). Exposed for
+	 * tests to assert the strokes stay a thin hairline (~2 px) across zoom,
+	 * not a giant thick line. Returns 0 when no rivers are drawn.
+	 */
+	getRiverStrokeWidth(): number {
+		return this.drainageRivers.length === 0 ? 0 : this.riverStrokeWidth;
+	}
+
+	/**
+	 * Step 2.5.6: set the river + lake geometry to overlay on the map. Both
+	 * are drawn as children of `view` in normalized [0,1]^2 space (y flipped
+	 * so north is up), so they inherit pan/zoom. River polylines are stroked
+	 * with a scale-compensated width (see `drawRiversLakes`) so the on-screen
+	 * thickness stays ~constant across zoom; lakes are filled polygons.
+	 *
+	 * Pass empty arrays to clear the overlays. The geometry is stashed so
+	 * `fitToScreen` can re-stroke at a new camera scale (the local-unit
+	 * stroke width must be recomputed on every resize/zoom, identical to the
+	 * selection-outline pattern).
+	 */
+	setRiversLakes(
+		grid: Grid | null,
+		rivers: RiverGeo[],
+		lakes: LakeGeo[],
+	): void {
+		this.drainageGrid = grid;
+		this.drainageRivers = rivers;
+		this.drainageLakes = lakes;
+		this.drawRiversLakes();
+	}
+
+	/**
+	 * Re-draw the river polylines + lake polygons from the stashed geometry
+	 * at the current camera scale. Stroke widths are scale-compensated
+	 * (`localWidth = desiredPx / meanScale`) so an on-screen target of ~2 px
+	 * survives zoom/pan/resize. Called from `setRiversLakes` (initial draw)
+	 * and from `fitToScreen` (re-stroke on camera change).
+	 */
+	private drawRiversLakes(): void {
+		const grid = this.drainageGrid;
+		if (!grid) {
+			if (this.riverGfx) this.riverGfx.clear();
+			if (this.lakeGfx) this.lakeGfx.clear();
+			this.riverStrokeWidth = 0;
+			return;
+		}
+		const rivers = this.drainageRivers;
+		const lakes = this.drainageLakes;
+		const points = grid.mesh.points as unknown as [number, number][];
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+
+		// Lakes: render each lake cell as a filled polygon using its mesh
+		// quad vertices (`mesh.cells.v` groups + `cells.i` offsets). FMG
+		// draws lakes as filled water polygons; `LakeGeo.cells` are CELL
+		// ids (not vertex ids), so we look up each cell's polygon ring and
+		// fill it. Visually this paints the lake-cell quads blue — the
+		// tightest correct silhouette without tracing the outer boundary
+		// of the cell union (a convex-hull of cell seeds would be spiky
+		// and wrong; per-cell quads tile the lake exactly).
+		if (!this.lakeGfx) {
+			this.lakeGfx = new Graphics();
+			this.lakeGfx.label = "lakes";
+			this.view.addChild(this.lakeGfx);
+		}
+		const lakeGfx = this.lakeGfx;
+		lakeGfx.clear();
+		const LAKE_FILL = 0x2a4d6e; // deep blue, sits above the terrain
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const vpts =
+			(grid.mesh.vertices?.p as unknown as [number, number][]) ?? points;
+		for (const lake of lakes) {
+			for (const cellId of lake.cells) {
+				const lo = cellI[cellId] as number;
+				const hi = (cellI[cellId + 1] as number) ?? lo;
+				if (hi <= lo) continue;
+				let firstVid = cellV[lo] as number;
+				let firstPt = vpts[firstVid];
+				if (!firstPt) {
+					// fall back to centroid points if vertex lookup fails
+					firstVid = cellV[lo] as number;
+					firstPt = points[firstVid];
+					if (!firstPt) continue;
+				}
+				lakeGfx.moveTo(nx(firstPt[0]), ny(firstPt[1]));
+				for (let r = lo + 1; r < hi; r++) {
+					const vid = cellV[r] as number;
+					const p = vpts[vid] ?? points[vid];
+					if (p) lakeGfx.lineTo(nx(p[0]), ny(p[1]));
+				}
+				lakeGfx.closePath();
+				lakeGfx.fill({ color: LAKE_FILL, alpha: 0.85 });
+			}
+		}
+		lakeGfx.visible = this.layers.lakes;
+
+		// Rivers: one polyline per river, traced through its ordered
+		// `points` (already source-to-mouth from `compute_drainage`).
+		if (!this.riverGfx) {
+			this.riverGfx = new Graphics();
+			this.riverGfx.label = "rivers";
+			this.view.addChild(this.riverGfx);
+		}
+		const riverGfx = this.riverGfx;
+		riverGfx.clear();
+		const RIVER_COLOR = 0x3b6e8f;
+		// Scale-compensate the stroke width so on-screen thickness stays
+		// ~2 px regardless of camera zoom (mirrors the selection-outline
+		// fix in drawSelection; a child of `view` inherits the fit-scale).
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		const meanScale = (sx + sy) / 2;
+		const desiredPx = 2;
+		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
+		this.riverStrokeWidth = localWidth * meanScale; // store on-screen px
+		for (const river of rivers) {
+			if (river.points.length < 2) continue;
+			const first = river.points[0];
+			riverGfx.moveTo(nx(first[0]), ny(first[1]));
+			for (let i = 1; i < river.points.length; i++) {
+				riverGfx.lineTo(nx(river.points[i][0]), ny(river.points[i][1]));
+			}
+			riverGfx.stroke({ color: RIVER_COLOR, width: localWidth, alpha: 0.9 });
+		}
+		riverGfx.visible = this.layers.rivers;
+	}
+
 	private applyLayers(): void {
 		if (this.terrainMesh) this.terrainMesh.visible = this.layers.terrain;
 		if (this.biomeMesh) this.biomeMesh.visible = this.layers.biome;
+		if (this.riverGfx) this.riverGfx.visible = this.layers.rivers;
+		if (this.lakeGfx) this.lakeGfx.visible = this.layers.lakes;
 	}
 
 	/** Toggle layer visibility. No geometry rebuild -- pure visibility swap. */
@@ -443,6 +601,15 @@ export class WorldMap {
 		this.selectedGrid = null;
 		this.selectedCellId = -1;
 		this.selectionStrokeWidth = 0;
+		// Step 2.5.6: drop the river/lake overlay refs so a dangling
+		// re-stroke (a queued `fitToScreen` after destroy) finds no
+		// drainage and no-ops.
+		this.riverGfx = null;
+		this.lakeGfx = null;
+		this.drainageGrid = null;
+		this.drainageRivers = [];
+		this.drainageLakes = [];
+		this.riverStrokeWidth = 0;
 	}
 }
 

@@ -185,6 +185,15 @@ export function MapCanvas({
 				});
 				if (placeholder.parent) worldLayer.removeChild(placeholder);
 				setStatus("world ready");
+				// Step 2.5.6: push the current river/lake geometry (if any)
+				// to the freshly-built overlay so a regenerated world does
+				// not arrive without its drainage drawn. The store updates
+				// first (App sets grid); buildMap runs next; this seeds
+				// the new WorldMap with whatever drainage is current.
+				const st = useWorldgenStore.getState();
+				if (st.rivers.length || st.lakes.length) {
+					worldMap.setRiversLakes(grid, st.rivers, st.lakes);
+				}
 				// Step 2.5.4: notify the editor that a new WorldMap is available.
 				onWorldMapChangeRef.current?.(worldMap, app.canvas);
 			};
@@ -215,6 +224,11 @@ export function MapCanvas({
 					} else {
 						rebuildMap(state.grid);
 					}
+				}
+				// Step 2.5.6: river/lake geometry change (new world or post-edit
+				// recompute). Push the fresh polylines + polygons to the overlay.
+				if (state.rivers !== prev.rivers || state.lakes !== prev.lakes) {
+					worldMap?.setRiversLakes(state.grid, state.rivers, state.lakes);
 				}
 				if (state.layerEnabled !== prev.layerEnabled)
 					worldMap?.setLayers(state.layerEnabled);

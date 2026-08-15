@@ -178,6 +178,31 @@ export function generate_world(seed, cell_count, opts_js) {
 }
 
 /**
+ * Step 2.5.6: compute river + lake geometry from the held Grid and return it
+ * as a serde-encoded `{ rivers: RiverGeo[], lakes: LakeGeo[] }` object.
+ *
+ * `generate_world` populates `cells.r`/`fl`/`conf` (the per-cell arrays) so
+ * downstream generators (biome moisture's river-flux bonus, Phase 3
+ * entities) can read them, but it does NOT export the
+ * [`grid::RiverGeo`]/[`grid::LakeGeo`] polyline/polygon geometry. This call
+ * runs `rivers::compute_drainage` on the held grid (cheap: ~13ms at 60k) and
+ * returns just the geometry the renderer needs to draw rivers + lakes on a
+ * fresh world. `recompute_dependents` returns the same geometry inside its
+ * `DependentResult` (alongside the climate/biome arrays); this call is the
+ * initial-load counterpart.
+ *
+ * Also assigns sequential 1-based lake ids for renderer stability (mirrors
+ * `recompute_dependents_inner`).
+ *
+ * Exposed as `get_drainage_geometry_h()` to JS.
+ * @returns {any}
+ */
+export function get_drainage_geometry_h() {
+    const ret = wasm.get_drainage_geometry_h();
+    return ret;
+}
+
+/**
  * Check whether the Rust side is currently holding a grid.
  * @returns {boolean}
  */

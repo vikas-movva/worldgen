@@ -24,7 +24,7 @@ beforeEach(() => {
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false },
+		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
 	});
 });
 
@@ -90,7 +90,12 @@ describe("worldgenStore initial state", () => {
 
 	it("defaults layerEnabled to terrain=on, biome=off", () => {
 		const s = useWorldgenStore.getState();
-		expect(s.layerEnabled).toEqual({ terrain: true, biome: false });
+		expect(s.layerEnabled).toEqual({
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+		});
 	});
 });
 
@@ -160,7 +165,12 @@ describe("worldgenStore.toggleLayer", () => {
 		useWorldgenStore.getState().toggleLayer("biome");
 		const after = useWorldgenStore.getState().layerEnabled;
 		expect(after).not.toBe(before);
-		expect(after).toEqual({ terrain: true, biome: true });
+		expect(after).toEqual({
+			terrain: true,
+			biome: true,
+			rivers: false,
+			lakes: false,
+		});
 	});
 });
 
@@ -195,6 +205,8 @@ describe("worldgenStore.clear", () => {
 		expect(useWorldgenStore.getState().layerEnabled).toEqual({
 			terrain: true,
 			biome: true,
+			rivers: false,
+			lakes: false,
 		});
 	});
 });

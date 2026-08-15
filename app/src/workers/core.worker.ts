@@ -23,6 +23,7 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_world,
+	get_drainage_geometry_h,
 	has_grid_h,
 	pick_cell,
 	pick_cell_h,
@@ -129,7 +130,8 @@ type WorkerRequest =
 			/** Optional: omit to use the held grid handle (Step 2.5.4). */
 			grid?: unknown;
 	  }
-	| { kind: "store_grid"; reqId: number; grid: unknown };
+	| { kind: "store_grid"; reqId: number; grid: unknown }
+	| { kind: "get_drainage_geometry"; reqId: number };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
@@ -227,7 +229,30 @@ type WorkerResponse =
 			result: Grid | { h: Uint8Array };
 	  }
 	| { kind: "store_grid"; reqId: number; ok: true; result: null }
+	| {
+			kind: "get_drainage_geometry";
+			reqId: number;
+			ok: true;
+			result: { rivers: RiverGeo[]; lakes: LakeGeo[] };
+	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
+
+// River + lake geometry (mirrors api.ts RiverGeo/LakeGeo).
+type RiverGeo = {
+	id: number;
+	source: number;
+	mouth: number;
+	discharge: number;
+	cells: number[];
+	points: [number, number][];
+};
+type LakeGeo = {
+	id: number;
+	height: number;
+	cells: number[];
+	shoreline: number[];
+	closed: boolean;
+};
 
 let nextReqId = 1;
 
@@ -435,6 +460,32 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				heldGrid = result; // keep handle in sync with the reset grid
 				send({ kind: "reset_heightmap", reqId, ok: true, result });
 			}
+		} else if (req.kind === "get_drainage_geometry") {
+			// Step 2.5.6: fetch river + lake geometry for the held grid.
+			// `generate_world` populates cells.r but NOT the RiverGeo/LakeGeo
+			// polylines/polygons; this runs compute_drainage on the held grid
+			// and returns just the geometry the renderer draws. On heightmap
+			// edits, recompute_dependents carries the same geometry in its
+			// DependentResult; this is the initial-load counterpart.
+			if (!has_grid_h()) {
+				send({
+					kind: "error",
+					reqId,
+					ok: false,
+					message: "get_drainage_geometry: no held grid",
+				});
+				return;
+			}
+			const result = get_drainage_geometry_h() as {
+				rivers: RiverGeo[];
+				lakes: LakeGeo[];
+			};
+			send({
+				kind: "get_drainage_geometry",
+				reqId,
+				ok: true,
+				result,
+			});
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

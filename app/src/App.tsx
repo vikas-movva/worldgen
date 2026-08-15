@@ -18,6 +18,7 @@ function App() {
 	const grid = useWorldgenStore((s) => s.grid);
 	const setGrid = useWorldgenStore((s) => s.setGrid);
 	const setGenerationMeta = useWorldgenStore((s) => s.setGenerationMeta);
+	const setDrainageGeometry = useWorldgenStore((s) => s.setDrainageGeometry);
 	const layerEnabled = useWorldgenStore((s) => s.layerEnabled);
 	const toggleLayer = useWorldgenStore((s) => s.toggleLayer);
 
@@ -105,6 +106,20 @@ function App() {
 				startedAt: t0,
 				finishedAt: t1,
 			});
+			// Step 2.5.6: fetch river + lake geometry for the freshly-generated
+			// world so the rivers/lakes overlays can render immediately (the
+			// Grid carries per-cell `cells.r` but not the polyline/polygon
+			// geometry). `generateWorld` auto-stores the grid into the worker's
+			// held handle, so no Grid arg is needed.
+			try {
+				const geo = await coreApi.getDrainageGeometry();
+				setDrainageGeometry(geo.rivers, geo.lakes);
+			} catch (geoErr) {
+				setResult(
+					(prev: string) =>
+						`${prev}  | drainage geometry Error: ${String(geoErr)}`,
+				);
+			}
 			const n = g.cells.h.length;
 			let land = 0;
 			for (let i = 0; i < n; i++) if (g.cells.h[i] >= 20) land++;
@@ -218,6 +233,16 @@ function App() {
 					label="Biome"
 					active={layerEnabled.biome}
 					onClick={() => toggleLayer("biome")}
+				/>
+				<LayerToggle
+					label="Rivers"
+					active={layerEnabled.rivers}
+					onClick={() => toggleLayer("rivers")}
+				/>
+				<LayerToggle
+					label="Lakes"
+					active={layerEnabled.lakes}
+					onClick={() => toggleLayer("lakes")}
 				/>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
 					rAF: {tickCount}{" "}

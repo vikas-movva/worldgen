@@ -21,6 +21,8 @@ import {
   type Grid,
   type EditOp,
   type EditMode,
+  spliceDependentResult,
+  type DependentResult,
 } from "./api";
 
 // ---- fake worker harness -------------------------------------------------
@@ -709,6 +711,287 @@ describe("coreApi.generateBiomesForGrid", () => {
     const p = coreApi.generateBiomesForGrid(grid);
     fake.replyError("wasm panic: grid biome failed");
     await expect(p).rejects.toThrow(/grid biome failed/);
+  });
+});
+
+// ---- spliceDependentResult (Step 2.5.5 helper) ----------------------------
+
+describe("spliceDependentResult", () => {
+  it("splices all 11 numeric fields from a DependentResult into a new Grid", () => {
+    const n = 10;
+    const grid = makeFakeGrid(n, 1);
+    // Give the grid distinctive stale values so we can confirm they are replaced.
+    grid.cells.temp = new Array(n).fill(-99);
+    grid.cells.prec = new Array(n).fill(99);
+    grid.cells.biome = new Array(n).fill(13);
+    grid.cells.state = new Array(n).fill(-1);
+    grid.cells.province = new Array(n).fill(-1);
+    grid.cells.culture = new Array(n).fill(-1);
+    grid.cells.religion = new Array(n).fill(-1);
+    grid.cells.burg = new Array(n).fill(0);
+    grid.cells.fl = new Array(n).fill(0);
+    grid.cells.r = new Array(n).fill(0);
+    grid.cells.conf = new Array(n).fill(0);
+
+    const dep: DependentResult = {
+      temp: new Int8Array(n).fill(5),
+      prec: new Uint8Array(n).fill(50),
+      biome: new Uint8Array(n).fill(7),
+      state: new Int32Array(n).fill(3),
+      province: new Int32Array(n).fill(2),
+      culture: new Int32Array(n).fill(1),
+      religion: new Int32Array(n).fill(4),
+      burg: new Int16Array(n).fill(8),
+      fl: new Uint16Array(n).fill(100),
+      r: new Uint16Array(n).fill(200),
+      conf: new Uint16Array(n).fill(300),
+      coastline: new Uint8Array(n).fill(1),
+      removed_burgs: ["Helms Deep"],
+      dissolved_states: new Uint32Array([5]),
+      rivers: [],
+      lakes: [],
+    };
+
+    const result = spliceDependentResult(grid, dep);
+
+    // h is NOT touched by the dependent recompute (it remains the user's
+    // edited heightmap).
+    expect(result.cells.h).toEqual(grid.cells.h);
+    // The 11 spliced fields should reflect dep, not the stale grid values.
+    expect(result.cells.temp).toEqual(new Array(n).fill(5));
+    expect(result.cells.prec).toEqual(new Array(n).fill(50));
+    expect(result.cells.biome).toEqual(new Array(n).fill(7));
+    expect(result.cells.state).toEqual(new Array(n).fill(3));
+    expect(result.cells.province).toEqual(new Array(n).fill(2));
+    expect(result.cells.culture).toEqual(new Array(n).fill(1));
+    expect(result.cells.religion).toEqual(new Array(n).fill(4));
+    expect(result.cells.burg).toEqual(new Array(n).fill(8));
+    expect(result.cells.fl).toEqual(new Array(n).fill(100));
+    expect(result.cells.r).toEqual(new Array(n).fill(200));
+    expect(result.cells.conf).toEqual(new Array(n).fill(300));
+    // TypedArrays are converted to plain number[] (Grid type contract).
+    expect(Array.isArray(result.cells.temp)).toBe(true);
+    expect(Array.isArray(result.cells.state)).toBe(true);
+    // The original grid is NOT mutated (immutability for React subscribers).
+    expect(grid.cells.temp).toEqual(new Array(n).fill(-99));
+    expect(grid.cells.state).toEqual(new Array(n).fill(-1));
+  });
+
+  it("falls back to the grid's existing arrays when a dep field is missing", () => {
+    const n = 5;
+    const grid = makeFakeGrid(n, 1);
+    grid.cells.temp = [10, 20, 30, 40, 50];
+
+    // A dep with only `temp` set; everything else is undefined / missing.
+    const dep = {
+      temp: new Int8Array(n).fill(-5),
+      rivers: [],
+      lakes: [],
+      removed_burgs: [],
+    } as unknown as DependentResult;
+
+    const result = spliceDependentResult(grid, dep);
+
+    expect(result.cells.temp).toEqual([-5, -5, -5, -5, -5]);
+    // prec was missing on dep, so the grid's prec is preserved.
+    expect(result.cells.prec).toEqual(grid.cells.prec);
+    expect(result.cells.biome).toEqual(grid.cells.biome);
+  });
+
+  it("returns a new Grid object (reference inequality) for zustand subscribers", () => {
+    const grid = makeFakeGrid(3, 1);
+    const dep = {
+      temp: new Int8Array(3).fill(0),
+      prec: new Uint8Array(3).fill(0),
+      biome: new Uint8Array(3).fill(0),
+      state: new Int32Array(3).fill(-1),
+      province: new Int32Array(3).fill(-1),
+      culture: new Int32Array(3).fill(-1),
+      religion: new Int32Array(3).fill(-1),
+      burg: new Int16Array(3).fill(0),
+      fl: new Uint16Array(3).fill(0),
+      r: new Uint16Array(3).fill(0),
+      conf: new Uint16Array(3).fill(0),
+      coastline: new Uint8Array(3).fill(0),
+      removed_burgs: [],
+      dissolved_states: new Uint32Array(0),
+      rivers: [],
+      lakes: [],
+    } as DependentResult;
+
+    const result = spliceDependentResult(grid, dep);
+    expect(result).not.toBe(grid);
+    expect(result.cells).not.toBe(grid.cells);
+    // h should be the SAME array reference (not copied) since it's untouched.
+    expect(result.cells.h).toBe(grid.cells.h);
+  });
+});
+
+// ---- pickCell (Step 2.5.4) ------------------------------------------------
+
+describe("coreApi.pickCell", () => {
+  it("emits the 'pick_cell' wire message with x, y and no grid (hot path)", () => {
+    coreApi.pickCell(123.4, 567.8);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "pick_cell",
+      x: 123.4,
+      y: 567.8,
+    });
+    // No grid key on the wire — worker uses its held grid handle.
+    expect((fake.lastMessage as AnyReq).grid).toBeUndefined();
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("includes the grid on the wire when explicitly passed", () => {
+    const grid = makeFakeGrid(100, 42);
+    coreApi.pickCell(10, 20, grid);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "pick_cell",
+      grid,
+      x: 10,
+      y: 20,
+    });
+  });
+
+  it("resolves with a cell id number from the worker", async () => {
+    const p = coreApi.pickCell(50, 60);
+    fake.reply(42);
+    const result = await p;
+    expect(result).toBe(42);
+    expect(typeof result).toBe("number");
+  });
+
+  it("resolves with -1 when the worker finds no cell", async () => {
+    const p = coreApi.pickCell(0, 0);
+    fake.reply(-1);
+    const result = await p;
+    expect(result).toBe(-1);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const p = coreApi.pickCell(1, 2);
+    fake.replyError("wasm panic: pick_cell failed");
+    await expect(p).rejects.toThrow(/pick_cell failed/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const p1 = coreApi.pickCell(10, 20);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.pickCell(30, 40);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    // Deliver replies out of order.
+    fake.reply(99); // satisfies p2 (most recent reqId)
+    fake.lastMessage = firstMsg;
+    fake.reply(7); // satisfies p1
+
+    await expect(p2).resolves.toBe(99);
+    await expect(p1).resolves.toBe(7);
+  });
+});
+
+// ---- resetHeightmap (Step 2.5.4) ------------------------------------------
+
+describe("coreApi.resetHeightmap", () => {
+  it("emits the 'reset_heightmap' wire message with no grid (hot path)", () => {
+    coreApi.resetHeightmap();
+    expect(fake.lastMessage).toMatchObject({ kind: "reset_heightmap" });
+    expect((fake.lastMessage as AnyReq).grid).toBeUndefined();
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("includes the grid on the wire when explicitly passed", () => {
+    const grid = makeFakeGrid(100, 42);
+    coreApi.resetHeightmap(grid);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "reset_heightmap",
+      grid,
+    });
+  });
+
+  it("resolves with a HeightmapPatch (Uint8Array h) when no grid is passed", async () => {
+    const p = coreApi.resetHeightmap();
+    const patch = { h: new Uint8Array(100).fill(50) };
+    fake.reply(patch);
+    const result = (await p) as { h: Uint8Array };
+    expect(result.h).toBeInstanceOf(Uint8Array);
+    expect(result.h.length).toBe(100);
+    expect(result.h[0]).toBe(50);
+  });
+
+  it("resolves with a full Grid when a grid is explicitly passed", async () => {
+    const grid = makeFakeGrid(100, 42);
+    const p = coreApi.resetHeightmap(grid);
+    const expected = makeFakeGrid(100, 42);
+    expected.cells.h = new Array(100).fill(25);
+    fake.reply(expected);
+    const result = (await p) as Grid;
+    expect(result).toBe(expected);
+    expect(result.cells.h[0]).toBe(25);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const p = coreApi.resetHeightmap();
+    fake.replyError("wasm panic: reset failed");
+    await expect(p).rejects.toThrow(/reset failed/);
+  });
+});
+
+// ---- storeGrid (Step 2.5.4) ------------------------------------------------
+
+describe("coreApi.storeGrid", () => {
+  it("emits the 'store_grid' wire message with the grid", () => {
+    const grid = makeFakeGrid(1000, 42);
+    coreApi.storeGrid(grid);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "store_grid",
+      grid,
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("always includes the grid (storeGrid has no grid-optional path)", () => {
+    const grid = makeFakeGrid(50, 7);
+    coreApi.storeGrid(grid);
+    expect((fake.lastMessage as AnyReq).grid).toBeDefined();
+    expect((fake.lastMessage as AnyReq).grid).toBe(grid);
+  });
+
+  it("resolves with null after the worker stores the grid", async () => {
+    const grid = makeFakeGrid(100, 1);
+    const p = coreApi.storeGrid(grid);
+    fake.reply(null);
+    const result = await p;
+    expect(result).toBeNull();
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const grid = makeFakeGrid(100, 1);
+    const p = coreApi.storeGrid(grid);
+    fake.replyError("wasm panic: store_grid failed");
+    await expect(p).rejects.toThrow(/store_grid failed/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const g1 = makeFakeGrid(100, 1);
+    const g2 = makeFakeGrid(100, 2);
+    const p1 = coreApi.storeGrid(g1);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.storeGrid(g2);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    // Deliver replies out of order.
+    fake.reply(null); // satisfies p2 (most recent)
+    fake.lastMessage = firstMsg;
+    fake.reply(null); // satisfies p1
+
+    await expect(p2).resolves.toBeNull();
+    await expect(p1).resolves.toBeNull();
   });
 });
 

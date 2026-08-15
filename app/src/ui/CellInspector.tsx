@@ -29,13 +29,14 @@
 // HeightmapEditor so the readout/numeric edit UI doesn't clutter the brush
 // palette; both share the store + the same edit/recompute pipeline.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
+	coreApi,
 	type DependentResult,
 	type EditOp,
 	type Grid,
 	type HeightmapPatch,
-	coreApi,
+	spliceDependentResult,
 } from "../core/api";
 import { BIOME_NAMES } from "../render/palette";
 import { useHeightmapEditor } from "../state/heightmapEditorStore";
@@ -66,9 +67,6 @@ export function CellInspector({
 	const lastError = useHeightmapEditor((s) => s.lastError);
 
 	const [statusMsg, setStatusMsg] = useState<string>("");
-	// Pending recompute promise (for the "Recomputing…" indicator until it
-	// resolves). Held in a ref so it doesn't trigger re-renders.
-	const pendingRecompute = useRef<Promise<DependentResult> | null>(null);
 
 	// IDs: -1 means "no selection" or "grid unloaded".
 	const id = selectedCellId;
@@ -78,9 +76,9 @@ export function CellInspector({
 	// store grid is updated on every edit, so the inspector re-renders with the
 	// new values immediately after the splice.
 	const h = hasSelection ? grid.cells.h[id] : null;
-	const temp = hasSelection ? grid.cells.temp?.[id] ?? null : null;
-	const prec = hasSelection ? grid.cells.prec?.[id] ?? null : null;
-	const biomeId = hasSelection ? grid.cells.biome?.[id] ?? 0 : 0;
+	const temp = hasSelection ? (grid.cells.temp?.[id] ?? null) : null;
+	const prec = hasSelection ? (grid.cells.prec?.[id] ?? null) : null;
+	const biomeId = hasSelection ? (grid.cells.biome?.[id] ?? 0) : 0;
 	const biomeName =
 		biomeId >= 0 && biomeId < BIOME_NAMES.length
 			? BIOME_NAMES[biomeId]
@@ -157,12 +155,11 @@ export function CellInspector({
 				// Debounced full recompute — reconciles rivers/lakes/precip/
 				// biome entity repair on land/water flips, same as brush
 				// stroke-end. Coalesces rapid slider drags into one run.
-				if (pendingRecompute.current) {
-					// A prior recompute is still debounced; the new request
-					// supersedes it (the store rejects the old promise).
-				}
-				pendingRecompute.current = scheduleDependentRecompute(null);
-				pendingRecompute.current
+				// The store's `scheduleDependentRecompute` handles dedup:
+				// it rejects the prior promise when a new request supersedes
+				// it, so the old `.then` is routed to `.catch` and skips the
+				// splice. No local guard needed here.
+				scheduleDependentRecompute(null)
 					.then((dep: DependentResult) => {
 						// Splice the full recompute arrays back into the
 						// store grid so temp/prec/biome/entity arrays reflect
@@ -170,39 +167,10 @@ export function CellInspector({
 						// brush stroke-end handler in HeightmapEditor.
 						const cur2 = useWorldgenStore.getState().grid;
 						if (cur2) {
-							const spliced: Grid = {
-								...cur2,
-								cells: {
-									...cur2.cells,
-									temp: Array.from(
-										dep.temp ?? cur2.cells.temp,
-									),
-									prec: Array.from(dep.prec ?? cur2.cells.prec),
-									biome: Array.from(
-										dep.biome ?? cur2.cells.biome,
-									),
-									state: Array.from(
-										dep.state ?? cur2.cells.state,
-									),
-									province: Array.from(
-										dep.province ?? cur2.cells.province,
-									),
-									culture: Array.from(
-										dep.culture ?? cur2.cells.culture,
-									),
-									religion: Array.from(
-										dep.religion ?? cur2.cells.religion,
-									),
-									burg: Array.from(dep.burg ?? cur2.cells.burg),
-									fl: Array.from(dep.fl ?? cur2.cells.fl),
-									r: Array.from(dep.r ?? cur2.cells.r),
-									conf: Array.from(dep.conf ?? cur2.cells.conf),
-								},
-							};
+							const spliced = spliceDependentResult(cur2, dep);
 							setGrid(spliced);
 							worldMap?.setSelected(spliced, id);
 						}
-						pendingRecompute.current = null;
 						setStatusMsg(
 							`Recompute done: ${dep.rivers?.length ?? 0} rivers, ` +
 								`${dep.lakes?.length ?? 0} lakes`,
@@ -210,7 +178,6 @@ export function CellInspector({
 					})
 					.catch(() => {
 						// Error is surfaced via `lastError` from the store.
-						pendingRecompute.current = null;
 					});
 			} catch (err) {
 				setStatusMsg(
@@ -284,10 +251,7 @@ export function CellInspector({
 						value={isWater ? "Water" : "Land"}
 						accent={isWater ? "#4f6c8a" : "#8fbf5f"}
 					/>
-					<ReadoutRow
-						label="Temp"
-						value={temp !== null ? `${temp}°C` : "?"}
-					/>
+					<ReadoutRow label="Temp" value={temp !== null ? `${temp}°C` : "?"} />
 					<ReadoutRow
 						label="Precip"
 						value={prec !== null ? `${prec} mm` : "?"}
@@ -340,10 +304,7 @@ export function CellInspector({
 							padding: "0.25rem 0.5rem",
 							fontSize: "0.78rem",
 							cursor: "pointer",
-							border:
-								delta > 0
-									? "1px solid #2ea043"
-									: "1px solid #da3633",
+							border: delta > 0 ? "1px solid #2ea043" : "1px solid #da3633",
 							background: "transparent",
 							color: delta > 0 ? "#3fb950" : "#f85149",
 							borderRadius: "4px",

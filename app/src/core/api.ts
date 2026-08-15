@@ -139,6 +139,41 @@ export type DependentResult = {
 	lakes: LakeGeo[];
 };
 
+/**
+ * Step 2.5.5 (adversarial review Issue 7): shared 12-field dependent-splice.
+ * Takes the current store Grid and a `DependentResult` (from
+ * `recomputeDependents`), returns a NEW Grid with the recomputed arrays
+ * spliced in. Uses `Array.from` to copy TypedArrays into regular `number[]`
+ * (the Grid type contract) so React/zustand subscribers detect the change via
+ * reference inequality. If a field is missing on `dep`, falls back to the
+ * current store value (keeps the stale array rather than dropping the field).
+ *
+ * Used by both `HeightmapEditor` (brush stroke-end) and `CellInspector`
+ * (per-cell edit dependent recompute) so a schema change is a one-line edit.
+ */
+export function spliceDependentResult(
+	grid: Grid,
+	dep: DependentResult,
+): Grid {
+	return {
+		...grid,
+		cells: {
+			...grid.cells,
+			temp: Array.from(dep.temp ?? grid.cells.temp),
+			prec: Array.from(dep.prec ?? grid.cells.prec),
+			biome: Array.from(dep.biome ?? grid.cells.biome),
+			state: Array.from(dep.state ?? grid.cells.state),
+			province: Array.from(dep.province ?? grid.cells.province),
+			culture: Array.from(dep.culture ?? grid.cells.culture),
+			religion: Array.from(dep.religion ?? grid.cells.religion),
+			burg: Array.from(dep.burg ?? grid.cells.burg),
+			fl: Array.from(dep.fl ?? grid.cells.fl),
+			r: Array.from(dep.r ?? grid.cells.r),
+			conf: Array.from(dep.conf ?? grid.cells.conf),
+		},
+	};
+}
+
 let nextReqId = 1;
 function nextId(): number {
 	return nextReqId++;
@@ -156,7 +191,7 @@ export function clampSeed(seed: number): number {
 }
 
 /// Clamp a user-supplied cell_count into a safe range. The MVP caps at 60k
-/// (worldforge-technical-requirements.md); the Rust mesh clamps to [4, 1_000_000].
+/// (worldgen-technical-requirements.md); the Rust mesh clamps to [4, 1_000_000].
 /// Clamping at the JS boundary prevents a negative/overlarge value from
 /// coercing to u32::MAX and capacity-overflow-panicking the WASM module
 /// (adversarial review Phase 1.5 C1).
@@ -364,6 +399,24 @@ export const coreApi = {
    */
   storeGrid(grid: Grid): Promise<null> {
     return call("store_grid", { grid }) as Promise<null>;
+  },
+
+  /**
+   * Step 2.5.6: fetch river + lake geometry for the held grid (the
+   * initial-load counterpart to `recomputeDependents`). `generateWorld`
+   * populates `cells.r` but NOT the `RiverGeo`/`LakeGeo` polylines/polygons;
+   * this runs `compute_drainage` on the held grid and returns just the
+   * geometry the renderer draws. On heightmap edits, `recomputeDependents`
+   * carries the same geometry in its `DependentResult`.
+   *
+   * Always operates on the held grid (no Grid arg). Returns
+   * `{ rivers: RiverGeo[], lakes: LakeGeo[] }`.
+   */
+  getDrainageGeometry(): Promise<{ rivers: RiverGeo[]; lakes: LakeGeo[] }> {
+    return call("get_drainage_geometry", {}) as Promise<{
+      rivers: RiverGeo[];
+      lakes: LakeGeo[];
+    }>;
   },
 
   // Placeholders for future phases:

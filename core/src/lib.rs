@@ -461,6 +461,58 @@ pub fn recompute_dependents_h2(opts_js: JsValue) -> JsValue {
     })
 }
 
+/// River + lake geometry only, for the renderer to draw initial drainage on a
+/// freshly-generated world. The [`grid::Grid`] carries per-cell drainage arrays
+/// (`fl`, `r`, `conf`) but NOT the [`grid::RiverGeo`]/[`grid::LakeGeo`]
+/// polyline/polygon lists — those are derived in `compute_drainage` and only
+/// surfaced here (or via `recompute_dependents`) so the renderer can draw them
+/// without re-running the full climate+biome cascade.
+#[derive(Serialize)]
+struct DrainageGeometry {
+    rivers: Vec<grid::RiverGeo>,
+    lakes: Vec<grid::LakeGeo>,
+}
+
+/// Step 2.5.6: compute river + lake geometry from the held Grid and return it
+/// as a serde-encoded `{ rivers: RiverGeo[], lakes: LakeGeo[] }` object.
+///
+/// `generate_world` populates `cells.r`/`fl`/`conf` (the per-cell arrays) so
+/// downstream generators (biome moisture's river-flux bonus, Phase 3
+/// entities) can read them, but it does NOT export the
+/// [`grid::RiverGeo`]/[`grid::LakeGeo`] polyline/polygon geometry. This call
+/// runs `rivers::compute_drainage` on the held grid (cheap: ~13ms at 60k) and
+/// returns just the geometry the renderer needs to draw rivers + lakes on a
+/// fresh world. `recompute_dependents` returns the same geometry inside its
+/// `DependentResult` (alongside the climate/biome arrays); this call is the
+/// initial-load counterpart.
+///
+/// Also assigns sequential 1-based lake ids for renderer stability (mirrors
+/// `recompute_dependents_inner`).
+///
+/// Exposed as `get_drainage_geometry_h()` to JS.
+#[wasm_bindgen]
+pub fn get_drainage_geometry_h() -> JsValue {
+    HELD_GRID.with(|g| {
+        let guard = g.borrow();
+        let grid = guard.as_ref().expect("get_drainage_geometry_h: no held grid");
+        let drainage = rivers::compute_drainage(
+            &grid.mesh,
+            &grid.cells.h,
+            &grid.cells.temp,
+            &grid.cells.prec,
+        );
+        let mut lakes = drainage.lakes;
+        for (i, lake) in lakes.iter_mut().enumerate() {
+            lake.id = (i + 1) as u32;
+        }
+        let geo = DrainageGeometry {
+            rivers: drainage.rivers,
+            lakes,
+        };
+        serde_wasm_bindgen::to_value(&geo).expect("get_drainage_geometry_h: serde to JsValue")
+    })
+}
+
 /// Serde helper: only the small (non-numeric-array) fields of `DependentResult`,
 /// used by `recompute_dependents_h2` to serde-encode the tiny collections while
 /// the large numeric arrays go through zero-copy TypedArrays.
@@ -1740,6 +1792,51 @@ mod tests {
         assert!(
             elapsed.as_secs_f64() < 5.0,
             "60k recompute_dependents took {elapsed:?} (asserted < 5s debug / < 500ms release)"
+        );
+    }
+
+    /// Determinism contract (tech-reqs §4): same `(seed, cell_count, opts)` →
+    /// byte-identical world. Serialize the full `Grid` to JSON and xxHash64 it;
+    /// the digest must be stable across re-runs and must change when the seed
+    /// changes. This is the native (non-WASM) leg of the cross-context
+    /// determinism gate; the node-wasm and browser-wasm legs live in
+    /// `app/scripts/verify_determinism_node.mjs` and CI.
+    #[test]
+    fn generate_world_is_deterministic() {
+        let opts = climate::ClimateOpts::default();
+        let g1 = generate_world_inner(42, 60_000, &opts);
+        let g2 = generate_world_inner(42, 60_000, &opts);
+
+        // Byte-identical serialized form.
+        let j1 = serde_json::to_vec(&g1).expect("serialize grid 1");
+        let j2 = serde_json::to_vec(&g2).expect("serialize grid 2");
+        assert_eq!(j1, j2, "two runs with same seed must serialize identically");
+
+        // xxHash64 digest stable + non-trivial.
+        let h1 = xxhash_rust::xxh64::xxh64(&j1, 0);
+        let h2 = xxhash_rust::xxh64::xxh64(&j2, 0);
+        assert_eq!(h1, h2, "xxHash64 must match across runs");
+        assert_ne!(h1, 0, "digest must be non-trivial (not all-zero world)");
+
+        // Different seed → different world.
+        let g3 = generate_world_inner(43, 60_000, &opts);
+        let j3 = serde_json::to_vec(&g3).expect("serialize grid 3");
+        let h3 = xxhash_rust::xxh64::xxh64(&j3, 0);
+        assert_ne!(h1, h3, "different seed must produce a different world");
+    }
+
+    /// Slower determinism leg at the full 60k resolution, gated so it only runs
+    /// with `cargo test -- --ignored` (keeps the default `cargo test` fast).
+    #[test]
+    #[ignore = "slow: 60k determinism digest — run with `cargo test -- --ignored`"]
+    fn generate_world_is_deterministic_sixty_k() {
+        let opts = climate::ClimateOpts::default();
+        let a = serde_json::to_vec(&generate_world_inner(7, 60_000, &opts)).unwrap();
+        let b = serde_json::to_vec(&generate_world_inner(7, 60_000, &opts)).unwrap();
+        assert_eq!(a, b, "60k world not byte-identical across runs");
+        assert_eq!(
+            xxhash_rust::xxh64::xxh64(&a, 0),
+            xxhash_rust::xxh64::xxh64(&b, 0)
         );
     }
 }

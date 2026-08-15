@@ -112,6 +112,27 @@ export function generate_mesh(cell_count: number, seed: number): any;
 export function generate_world(seed: number, cell_count: number, opts_js: any): any;
 
 /**
+ * Step 2.5.6: compute river + lake geometry from the held Grid and return it
+ * as a serde-encoded `{ rivers: RiverGeo[], lakes: LakeGeo[] }` object.
+ *
+ * `generate_world` populates `cells.r`/`fl`/`conf` (the per-cell arrays) so
+ * downstream generators (biome moisture's river-flux bonus, Phase 3
+ * entities) can read them, but it does NOT export the
+ * [`grid::RiverGeo`]/[`grid::LakeGeo`] polyline/polygon geometry. This call
+ * runs `rivers::compute_drainage` on the held grid (cheap: ~13ms at 60k) and
+ * returns just the geometry the renderer needs to draw rivers + lakes on a
+ * fresh world. `recompute_dependents` returns the same geometry inside its
+ * `DependentResult` (alongside the climate/biome arrays); this call is the
+ * initial-load counterpart.
+ *
+ * Also assigns sequential 1-based lake ids for renderer stability (mirrors
+ * `recompute_dependents_inner`).
+ *
+ * Exposed as `get_drainage_geometry_h()` to JS.
+ */
+export function get_drainage_geometry_h(): any;
+
+/**
  * Check whether the Rust side is currently holding a grid.
  */
 export function has_grid_h(): boolean;
@@ -262,6 +283,7 @@ export interface InitOutput {
     readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
+    readonly get_drainage_geometry_h: () => any;
     readonly has_grid_h: () => number;
     readonly init: () => void;
     readonly pick_cell: (a: any, b: number, c: number) => number;

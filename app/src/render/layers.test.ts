@@ -23,7 +23,7 @@
 
 import { Container } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Grid } from "../core/api";
+import type { Grid, LakeGeo, RiverGeo } from "../core/api";
 import { attachCamera, WorldMap } from "./layers";
 
 // ---- fixture ------------------------------------------------------------
@@ -95,7 +95,12 @@ afterEach(() => {
 
 describe("WorldMap construction + layer state", () => {
 	it("defaults to terrain=on, biome=off", () => {
-		expect(wm.getLayers()).toEqual({ terrain: true, biome: false });
+		expect(wm.getLayers()).toEqual({
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+		});
 	});
 
 	it("preserve a smaller priority value when reinserted", () => {
@@ -103,7 +108,12 @@ describe("WorldMap construction + layer state", () => {
 		const custom = new WorldMap(quadGrid(1), {
 			initialLayers: { biome: true, terrain: false },
 		});
-		expect(custom.getLayers()).toEqual({ terrain: false, biome: true });
+		expect(custom.getLayers()).toEqual({
+			terrain: false,
+			biome: true,
+			rivers: false,
+			lakes: false,
+		});
 		custom.destroy();
 	});
 
@@ -123,7 +133,12 @@ describe("WorldMap construction + layer state", () => {
 		const snap = wm.getLayers();
 		wm.setLayers({ biome: true });
 		// The snapshot should not have changed.
-		expect(snap).toEqual({ terrain: true, biome: false });
+		expect(snap).toEqual({
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+		});
 	});
 });
 
@@ -617,5 +632,180 @@ describe("WorldMap.setSelected (selection outline)", () => {
 		// 999 is out of range for a 1-cell grid.
 		wm.setSelected(grid, 999);
 		expect(wm.getSelectionStrokeWidth()).toBe(0);
+	});
+
+	// ---- Step 2.5.6: river + lake overlays ---------------------------------
+
+	describe("WorldMap river + lake overlays", () => {
+		// Helper: a 2x2 quad grid with distinct vertex positions so lake quads
+		// / river polylines can be checked against the normalized [0,1] box.
+		function quadGrid2x2(): Grid {
+			// 4 cells in a 2000x2000 world.
+			const points: [number, number][] = [];
+			const vertP: [number, number][] = [];
+			const cellV: number[] = [];
+			const cellI: number[] = [0];
+			const cellCenters: [number, number][] = [
+				[500, 500],
+				[1500, 500],
+				[500, 1500],
+				[1500, 1500],
+			];
+			for (let c = 0; c < 4; c++) {
+				const [cx, cy] = cellCenters[c];
+				points.push([cx, cy]);
+				const v0 = vertP.length;
+				// Each cell has 4 quad vertices spanning a 1000x1000 region.
+				vertP.push(
+					[cx - 500, cy - 500],
+					[cx + 500, cy - 500],
+					[cx + 500, cy + 500],
+					[cx - 500, cy + 500],
+				);
+				cellV.push(v0, v0 + 1, v0 + 2, v0 + 3);
+				cellI.push(cellV.length);
+			}
+			return {
+				seed: 1,
+				mesh: {
+					points,
+					cells: {
+						v: cellV,
+						c: [],
+						i: cellI,
+						b: [],
+						spacing: [],
+						cells_x: 2,
+						cells_y: 2,
+					},
+					vertices: { p: vertP },
+					world_w: 2000,
+					world_h: 2000,
+				},
+				cells: {
+					h: new Array(4).fill(50),
+					temp: new Array(4).fill(0),
+					prec: new Array(4).fill(0),
+					biome: new Array(4).fill(0),
+					state: new Array(4).fill(0),
+					province: new Array(4).fill(0),
+					culture: new Array(4).fill(0),
+					religion: new Array(4).fill(0),
+					burg: new Array(4).fill(0),
+					fl: new Array(4).fill(0),
+					r: new Array(4).fill(0),
+					conf: new Array(4).fill(0),
+				},
+			};
+		}
+
+		it("rivers layer is off by default (getRiverStrokeWidth = 0)", () => {
+			wm.fitToScreen(1280, 720);
+			expect(wm.getRiverStrokeWidth()).toBe(0);
+		});
+
+		it("draws rivers as a scale-compensated ~2 px polyline", () => {
+			wm.fitToScreen(1280, 720);
+			const grid = quadGrid2x2();
+			const rivers: RiverGeo[] = [
+				{
+					id: 1,
+					source: 0,
+					mouth: 3,
+					discharge: 10,
+					cells: [0, 1, 3],
+					points: [
+						[500, 500],
+						[1500, 500],
+						[1500, 1500],
+					],
+				},
+			];
+			wm.setRiversLakes(grid, rivers, []);
+			expect(wm.getRiverStrokeWidth()).toBeGreaterThan(1.5);
+			expect(wm.getRiverStrokeWidth()).toBeLessThan(2.5);
+		});
+
+		it("river stroke stays ~2 px across zoom (scale-compensated)", () => {
+			wm.fitToScreen(1280, 720);
+			const grid = quadGrid2x2();
+			const rivers: RiverGeo[] = [
+				{
+					id: 1,
+					source: 0,
+					mouth: 3,
+					discharge: 10,
+					cells: [0, 3],
+					points: [
+						[500, 500],
+						[1500, 1500],
+					],
+				},
+			];
+			wm.setRiversLakes(grid, rivers, []);
+			const at1x = wm.getRiverStrokeWidth();
+
+			// 8x the window: fit scale grows ~8x; compensated stroke stays ~2px.
+			wm.fitToScreen(10240, 5760);
+			const at8x = wm.getRiverStrokeWidth();
+
+			expect(at1x).toBeGreaterThan(1.5);
+			expect(at1x).toBeLessThan(2.5);
+			expect(at8x).toBeGreaterThan(1.5);
+			expect(at8x).toBeLessThan(2.5);
+		});
+
+		it("lakes layer paints lake-cell quads (no throw) for a 2-cell lake", () => {
+			wm.fitToScreen(1280, 720);
+			const grid = quadGrid2x2();
+			const lakes: LakeGeo[] = [
+				{
+					id: 1,
+					height: 40,
+					cells: [0, 1],
+					shoreline: [2, 3],
+					closed: true,
+				},
+			];
+			// Should not throw; the lake cells (0,1) exist in the mesh.
+			expect(() => wm.setRiversLakes(grid, [], lakes)).not.toThrow();
+		});
+
+		it("rivers/lakes layers start hidden; toggling setLayers flips visibility", () => {
+			wm.fitToScreen(1280, 720);
+			const grid = quadGrid2x2();
+			const rivers: RiverGeo[] = [
+				{
+					id: 1,
+					source: 0,
+					mouth: 1,
+					discharge: 5,
+					cells: [0, 1],
+					points: [
+						[500, 500],
+						[1500, 500],
+					],
+				},
+			];
+			wm.setRiversLakes(grid, rivers, []);
+			// Default layers: rivers=lakes=false. Overlays must be invisible.
+			// First pull current state via getLayers.
+			expect(wm.getLayers()).toEqual({
+				terrain: true,
+				biome: false,
+				rivers: false,
+				lakes: false,
+			});
+			// Toggle rivers on: the overlay Graphics should become visible.
+			wm.setLayers({
+				terrain: true,
+				biome: false,
+				rivers: true,
+				lakes: false,
+			});
+			// Visibility of the overlay is internal; assert through getLayers
+			// round-trip (setLayers flipped it).
+			expect(wm.getLayers().rivers).toBe(true);
+		});
 	});
 });
