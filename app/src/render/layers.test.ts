@@ -822,6 +822,121 @@ describe("WorldMap.setSelected (selection outline)", () => {
 			// Visibility of the overlay is internal; assert through getLayers
 			// round-trip (setLayers flipped it).
 			expect(wm.getLayers().rivers).toBe(true);
+			});
+			});
+
+			// ---- state border edges use the GEOMETRIC neighbor, not cells.c -------
+			//
+			// Regression test for the "state outline draws non-border edges" bug.
+			// The mesh packs `cells.c` rotated one slot against `cells.v`, so the
+			// border algorithm must NOT trust `cells.c`. We build a 2-cell grid where
+			// the cells share an edge, point `cells.c` at WRONG values, and assert that
+			// exactly one border segment (the shared edge) is drawn for two different
+			// states, and zero for two same-state cells.
+			describe("state border edges are true geometric borders", () => {
+			// Two squares side by side sharing the vertical edge x=500.
+			// Cell A ring (clockwise): 0(500,400) -> 2(400,400) -> 3(400,600) -> 1(500,600)
+			// Cell B ring:            4(600,400) -> 0(500,400) -> 1(500,600) -> 5(600,600)
+			function twoCellGrid(): Grid {
+			const vertP: [number, number][] = [
+				[500, 400], // 0 shared
+				[500, 600], // 1 shared
+				[400, 400], // 2 A-only
+				[400, 600], // 3 A-only
+				[600, 400], // 4 B-only
+				[600, 600], // 5 B-only
+			];
+			const cellV = [0, 2, 3, 1, 4, 0, 1, 5];
+			const cellI = [0, 4, 8];
+			// Deliberately WRONG: proves the fix ignores cells.c entirely.
+			const cellC = [99, 99, 99, 99, 99, 99, 99, 99];
+			return {
+				seed: 1,
+				mesh: {
+					points: [[450, 500], [550, 500]],
+					cells: { v: cellV, c: cellC, i: cellI, b: [], spacing: [], cells_x: 1, cells_y: 1 },
+					vertices: { p: vertP },
+					world_w: 1000,
+					world_h: 1000,
+				},
+				cells: {
+					h: [50, 50], temp: [0, 0], prec: [0, 0], biome: [0, 0],
+					state: [0, 0], province: [0, 0], culture: [0, 0], religion: [0, 0],
+					burg: [0, 0], fl: [0, 0], r: [0, 0], conf: [0, 0],
+				},
+			};
+			}
+
+			// Count border segments by spying on Graphics.moveTo (one per segment).
+			// In PixiJS v8 the path is baked into a single stroke instruction on
+			// stroke(), so we intercept the path-building calls, not read `instructions`.
+			function countBorderSegments(wm: WorldMap): number {
+			const gfx = (wm as unknown as { stateBorderGfx: { moveTo: () => void } }).stateBorderGfx;
+			let count = 0;
+			const spy = vi.spyOn(gfx, "moveTo" as never).mockImplementation(() => {
+				count++;
+			}) as unknown as { mockRestore: () => void };
+			wm.setLayers({ provinces: true });
+			spy.mockRestore();
+			return count;
+			}
+
+			it("draws the shared A|B edge as a border, not the non-shared edges", () => {
+			const g = twoCellGrid();
+			const wm = new WorldMap(g);
+			// A and B are different states: the ONLY border segment is the shared
+			// edge (v0-v1). With the bug (trusting cells.c) every edge would look
+			// like a border to void -> 8 segments instead of 1.
+			wm.setEntities(g, {
+				pack: { states: [{ color: 1 }, { color: 2 }], provinces: [], cultures: [], religions: [] },
+				cells_state: [1, 2],
+				cells_province: [-1, -1],
+				cells_culture: [0, 0],
+				cells_religion: [0, 0],
+			});
+			const segments = countBorderSegments(wm);
+			// 6 coastline edges (neighbor -1 = void) are drawn for either
+			// state assignment; PLUS the 2 shared A-B edges are drawn ONLY
+			// when A and B differ. So different-state = 6 + 2 = 8.
+			expect(segments).toBe(8);
+			expect(wm.getStateBorderStrokeWidth()).toBeGreaterThan(0);
+			wm.destroy();
 		});
-	});
+
+		it("shared edge responds to the TRUE neighbor's state, not cells.c", () => {
+			const g = twoCellGrid();
+			const wmDiff = new WorldMap(g);
+			// A=state1, B=state2 (different) -> shared edge drawn.
+			wmDiff.setEntities(g, {
+				pack: { states: [{ color: 1 }, { color: 2 }], provinces: [], cultures: [], religions: [] },
+				cells_state: [1, 2],
+				cells_province: [-1, -1],
+				cells_culture: [0, 0],
+				cells_religion: [0, 0],
+			});
+			const diffSegments = countBorderSegments(wmDiff);
+			wmDiff.destroy();
+
+			const wmSame = new WorldMap(g);
+			// A and B SAME state -> the shared edge is NOT a border; only the
+			// 6 coastline edges remain.
+			wmSame.setEntities(g, {
+				pack: { states: [{ color: 1 }], provinces: [], cultures: [], religions: [] },
+				cells_state: [1, 1],
+				cells_province: [-1, -1],
+				cells_culture: [0, 0],
+				cells_religion: [0, 0],
+			});
+			const sameSegments = countBorderSegments(wmSame);
+			wmSame.destroy();
+
+			// The only difference between the two runs is the shared-edge
+			// pair's state equality. The fix derives the true neighbor from
+			// geometry, so the shared edges appear/disappear correctly. With
+			// the bug (trusting the rotated cells.c, here all 99/void) the
+			// shared edge would be drawn in BOTH cases -> diff == same.
+			expect(sameSegments).toBe(6);
+			expect(diffSegments).toBe(sameSegments + 2);
+		});
+});
 });

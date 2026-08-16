@@ -150,6 +150,24 @@ function App() {
 					statesResult,
 				);
 				setCulturesResult(culturesResult);
+				// Step 3.4/3.5 fix: splice the generated per-cell entity
+				// arrays back into the main-thread grid so click-to-select
+				// (which reads grid.cells.religion/culture/state/province to
+				// detect the clicked entity) and the state-border overlay see
+				// real data. The worker fills its internal heldGrid, but the
+				// store's grid kept all-zero entity arrays — so selection and
+				// borders silently failed. New grid reference triggers the
+				// renderer's grid-subscription so the WorldMap re-reads cells.
+				setGrid({
+					...g,
+					cells: {
+						...g.cells,
+						state: Array.from(statesResult.cells_state),
+						province: Array.from(statesResult.cells_province),
+						culture: Array.from(culturesResult.cells_culture),
+						religion: Array.from(culturesResult.cells_religion),
+					},
+				});
 				const t3 = performance.now();
 				setResult(
 					(prev: string) =>

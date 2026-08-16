@@ -156,6 +156,18 @@ export class WorldMap {
 	/** Last on-screen width (px) of the state-border strokes. */
 	private stateBorderStrokeWidth = 5;
 
+	/**
+	 * Per-edge TRUE neighbor, derived from geometry (the other cell that
+	 * shares BOTH endpoints of the segment), NOT from `cells.c`. The Rust
+	 * mesh packs `cells.c` with a one-slot rotation against `cells.v`, so
+	 * `cells.c[r]` is NOT the neighbor across segment `(v[r], v[r+1])` —
+	 * using it makes `drawStateBorders` test the state of the wrong
+	 * neighbor and outline non-border edges. Indexed by the global edge
+	 * index `r` in `cells.v`/`cells.c`. `-1` = no neighbor (hull / coast
+	 * edge). Built once per grid in `buildEdgeNeighbor`.
+	 */
+	private edgeNeighbor: Int32Array | null = null;
+
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
 		const geoData = buildWorldGeometry(grid);
@@ -163,6 +175,10 @@ export class WorldMap {
 		this.worldW = geoData.worldW;
 		this.worldH = geoData.worldH;
 		this.stashGridForBorders = grid;
+		// Build the per-edge TRUE-neighbor map from geometry. This is what
+		// `drawStateBorders` uses to decide if a segment is a state border,
+		// because `cells.c` is not edge-aligned to `cells.v` in the mesh.
+		this.edgeNeighbor = this.buildEdgeNeighbor(grid);
 		const texDim = geoData.texDim;
 		const heightData = buildHeightTextureData(grid.cells.h, texDim);
 		this.heightData = heightData;
@@ -407,29 +423,41 @@ export class WorldMap {
 	 * scale-compensation pattern as `drawSelection`).
 	 */
 	setSelectedEntity(grid: Grid, cellId: number): void {
-		if (cellId < 0 || cellId >= grid.mesh.points.length) {
-			this.selectedEntity = null;
-			this.setSelected(grid, -1);
-			return;
-		}
-		const cells = grid.cells;
-		// Priority: most-specific visible layer wins.
-		let kind: "state" | "province" | "culture" | "religion" | null = null;
-		let id = -1;
-		if (this.layers.religions && cells.religion[cellId] > 0) {
-			kind = "religion";
-			id = cells.religion[cellId];
-		} else if (this.layers.cultures && cells.culture[cellId] > 0) {
-			kind = "culture";
-			id = cells.culture[cellId];
-		} else if (this.layers.provinces && cells.province[cellId] >= 0) {
-			kind = "province";
-			id = cells.province[cellId];
-		} else if (this.layers.states && cells.state[cellId] >= 0) {
-			kind = "state";
-			id = cells.state[cellId];
-		}
-		if (!kind || id < 0) {
+	if (cellId < 0 || cellId >= grid.mesh.points.length) {
+		this.selectedEntity = null;
+		this.setSelected(grid, -1);
+		return;
+	}
+	const cells = grid.cells;
+	// Priority: most-specific visible layer wins. We detect the owning
+	// entity by reading BOTH the grid's per-cell arrays AND the
+	// entity-layer stash populated by setEntities — whichever has real
+	// (non-sentinel) data wins. The main-thread grid.cells.* may lag the
+	// worker's heldGrid (e.g. right after generation, before the
+	// App splices them back), so falling back to entityCells keeps
+	// click-to-select working regardless of that timing.
+	const probe = (kind: "state" | "province" | "culture" | "religion", id: number) =>
+		id > (kind === "state" || kind === "province" ? -1 : 0);
+	let kind: "state" | "province" | "culture" | "religion" | null = null;
+	let id = -1;
+	const stash = this.entityCells;
+	if (this.layers.religions) {
+		const v = (stash?.religion ?? cells.religion)[cellId] ?? 0;
+		if (probe("religion", v)) { kind = "religion"; id = v; }
+	}
+	if (!kind && this.layers.cultures) {
+		const v = (stash?.culture ?? cells.culture)[cellId] ?? 0;
+		if (probe("culture", v)) { kind = "culture"; id = v; }
+	}
+	if (!kind && this.layers.provinces) {
+		const v = (stash?.province ?? cells.province)[cellId] ?? -1;
+		if (probe("province", v)) { kind = "province"; id = v; }
+	}
+	if (!kind && this.layers.states) {
+		const v = (stash?.state ?? cells.state)[cellId] ?? -1;
+		if (probe("state", v)) { kind = "state"; id = v; }
+	}
+	if (!kind || id < 0) {
 			// No entity layer active, or clicked cell is unassigned -> single cell.
 			this.selectedEntity = null;
 			this.setSelected(grid, cellId);
@@ -476,60 +504,134 @@ export class WorldMap {
 	 * (initial draw) and from `fitToScreen` (pan/zoom/resize re-stroke).
 	 */
 	private drawSelection(): void {
-		if (this.selectionGfx) this.selectionGfx.clear();
-		const grid = this.selectedGrid;
-		const cellId = this.selectedCellId;
-		if (!grid || cellId < 0 || cellId >= grid.mesh.points.length) {
-			this.selectionStrokeWidth = 0;
-			return;
-		}
-		if (!this.selectionGfx) {
-			this.selectionGfx = new Graphics();
-			this.selectionGfx.label = "selection";
-			this.view.addChild(this.selectionGfx);
-		}
-		const gfx = this.selectionGfx;
-		gfx.clear();
+			if (this.selectionGfx) this.selectionGfx.clear();
+			const grid = this.selectedGrid;
+			const cellId = this.selectedCellId;
+			const entity = this.selectedEntity;
 
-		// Scale-compensate: stroke width is in view-local units; divide by
-		// the mean of |scaleX|,|scaleY| so the on-screen width is ~2 px.
-		// Clamp to a hairline minimum so a degenerate (near-zero) scale
-		// never reads as a filled polygon.
-		const sx = Math.abs(this.view.scale.x) || 1;
-		const sy = Math.abs(this.view.scale.y) || 1;
-		const meanScale = (sx + sy) / 2;
-		const desiredPx = 2;
-		const localWidth = Math.max(
-			desiredPx / meanScale,
-			1 / 4096, // hairline floor; below this strokes flicker out
-		);
-		this.selectionStrokeWidth = localWidth * meanScale; // store on-screen px
-
-		// Which cells to outline: every cell of the selected entity, or just
-		// the clicked cell when no entity is selected.
-		const entity = this.selectedEntity;
-		if (entity && this.entityCells) {
-			const arr =
-				entity.kind === "state"
-					? this.entityCells.state
-					: entity.kind === "province"
-						? this.entityCells.province
-						: entity.kind === "culture"
-							? this.entityCells.culture
-							: this.entityCells.religion;
-			const n = grid.mesh.points.length;
-			let drawn = 0;
-			for (let c = 0; c < n; c++) {
-				if (arr[c] === entity.id) {
-					this.strokeCellOutline(gfx, grid, c, localWidth);
-					drawn++;
+			// Entity selection: outline every cell belonging to the entity.
+			// This path must NOT depend on `cellId >= 0` because selectEntity
+			// sets selectedCellId = -1 (no single cell picked).
+			if (entity && this.entityCells && grid) {
+				if (!this.selectionGfx) {
+					this.selectionGfx = new Graphics();
+					this.selectionGfx.label = "selection";
+					this.view.addChild(this.selectionGfx);
 				}
+				const gfx = this.selectionGfx;
+				gfx.clear();
+
+				const sx = Math.abs(this.view.scale.x) || 1;
+				const sy = Math.abs(this.view.scale.y) || 1;
+				const meanScale = (sx + sy) / 2;
+				const desiredPx = 2;
+				const localWidth = Math.max(
+					desiredPx / meanScale,
+					1 / 4096,
+				);
+				this.selectionStrokeWidth = localWidth * meanScale;
+
+				const arr =
+					entity.kind === "state"
+						? this.entityCells.state
+						: entity.kind === "province"
+							? this.entityCells.province
+							: entity.kind === "culture"
+								? this.entityCells.culture
+								: this.entityCells.religion;
+				const n = grid.mesh.points.length;
+				let drawn = 0;
+				for (let c = 0; c < n; c++) {
+					if (arr[c] === entity.id) {
+						drawn++;
+					}
+				}
+				if (drawn > 0) {
+					// Border-only outline of the entity silhouette (not the
+					// full per-cell rings — those trace interior edges too).
+					this.strokeEntityBoundary(gfx, grid, arr, entity.id, localWidth);
+				} else if (cellId >= 0 && cellId < grid.mesh.points.length) {
+					// Fallback: if the entity somehow has no cells, outline the picked one.
+					this.strokeCellOutline(gfx, grid, cellId, localWidth);
+				}
+				return;
 			}
-			// Fallback: if the entity somehow has no cells, outline the picked one.
-			if (drawn === 0) this.strokeCellOutline(gfx, grid, cellId, localWidth);
-		} else {
+
+			// Single-cell selection (no entity, or no entityCells data).
+			if (!grid || cellId < 0 || cellId >= grid.mesh.points.length) {
+				this.selectionStrokeWidth = 0;
+				return;
+			}
+			if (!this.selectionGfx) {
+				this.selectionGfx = new Graphics();
+				this.selectionGfx.label = "selection";
+				this.view.addChild(this.selectionGfx);
+			}
+			const gfx = this.selectionGfx;
+			gfx.clear();
+
+			const sx = Math.abs(this.view.scale.x) || 1;
+			const sy = Math.abs(this.view.scale.y) || 1;
+			const meanScale = (sx + sy) / 2;
+			const desiredPx = 2;
+			const localWidth = Math.max(
+				desiredPx / meanScale,
+				1 / 4096,
+			);
+			this.selectionStrokeWidth = localWidth * meanScale;
+
 			this.strokeCellOutline(gfx, grid, cellId, localWidth);
 		}
+
+	/**
+	 * Stroke only the OUTER boundary of an entity (the set of cells with
+	 * `arr[c] === id`) — i.e. the segments along which a cell of the entity
+	 * borders a cell of a DIFFERENT entity (or the map void). This is what a
+	 * "select a state" highlight should show: the silhouette of the state,
+	 * not every internal cell-to-cell edge.
+	 *
+	 * Uses the geometry-derived `edgeNeighbor` map (not `cells.c`, which is
+	 * rotated) to find each segment's true neighbor. Segments whose neighbor
+	 * is also in the entity are skipped; segments whose neighbor is outside
+	 * the entity (or -1, the hull/coast) are stroked.
+	 */
+	private strokeEntityBoundary(
+		gfx: Graphics,
+		grid: Grid,
+		arr: number[],
+		id: number,
+		localWidth: number,
+	): void {
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const edgeNb = this.edgeNeighbor;
+		const n = grid.mesh.points.length;
+		const inEntity = (c: number) => c >= 0 && c < n && arr[c] === id;
+
+		for (let c = 0; c < n; c++) {
+			if (arr[c] !== id) continue;
+			const lo = cellI[c] as number;
+			const hi = (cellI[c + 1] as number) ?? lo;
+			const k = hi - lo;
+			if (k < 3) continue;
+			for (let r = lo; r < hi; r++) {
+				const vid0 = cellV[r] as number;
+				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const p0 = vpts[vid0];
+				const p1 = vpts[vid1];
+				if (!p0 || !p1) continue;
+				const nb = edgeNb ? edgeNb[r] : -1;
+				if (inEntity(nb)) continue; // internal edge — not a boundary
+				gfx.moveTo(nx(p0[0]), ny(p0[1]));
+				gfx.lineTo(nx(p1[0]), ny(p1[1]));
+			}
+		}
+		gfx.stroke({ color: 0xffff00, width: localWidth, alignment: 0.5 });
 	}
 
 	/** Stroke the polygon ring of a single cell onto the selection Graphics. */
@@ -731,6 +833,61 @@ export class WorldMap {
 	}
 
 	/**
+	 * Build the per-edge TRUE-neighbor map from geometry.
+	 *
+	 * The mesh's `cells.c` is NOT edge-aligned to `cells.v` (it's rotated by
+	 * one per cell), so `cells.c[r]` is the wrong neighbor for segment
+	 * `(v[r], v[r+1])`. Instead we derive the true neighbor directly: every
+	 * interior Voronoi vertex is shared by exactly the 2 cells on either side
+	 * of that edge, so for segment `r` of cell `c` (from vertex `v[r]` to
+	 * `v[r+1]`) the true neighbor is the OTHER cell that also contains both
+	 * `v[r]` and `v[r+1]`. We precompute `vertexToCells[vid]` (the list of
+	 * cells owning `vid`), then for each edge pick the one non-`c` cell in the
+	 * intersection of the two endpoints' cell lists. Edges on the hull
+	 * (outer/clamped vertices) have only one owning cell -> `-1`.
+	 *
+	 * This is exact for every edge (interior, coast, and hull), unlike any
+	 * `cells.c` rotation which breaks on spade's spurious hull neighbors.
+	 */
+	private buildEdgeNeighbor(grid: Grid): Int32Array {
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const n = grid.mesh.points.length;
+		const totalEdges = cellV.length;
+		const vertexToCells: number[][] = [];
+		for (let c = 0; c < n; c++) {
+			const lo = cellI[c] as number;
+			const hi = (cellI[c + 1] as number) ?? lo;
+			for (let r = lo; r < hi; r++) {
+				const vid = cellV[r] as number;
+				(vertexToCells[vid] ??= []).push(c);
+			}
+		}
+		const edgeNeighbor = new Int32Array(totalEdges).fill(-1);
+		for (let c = 0; c < n; c++) {
+			const lo = cellI[c] as number;
+			const hi = (cellI[c + 1] as number) ?? lo;
+			const k = hi - lo;
+			if (k < 3) continue;
+			for (let r = lo; r < hi; r++) {
+				const vid0 = cellV[r] as number;
+				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const a = vertexToCells[vid0] ?? [];
+				const b = vertexToCells[vid1] ?? [];
+				// The true neighbor is the cell (other than c) present in both
+				// endpoint lists. Interior edges have exactly 2 shared cells.
+				let nb = -1;
+				for (const x of a) {
+					if (x === c) continue;
+					if (b.includes(x)) { nb = x; break; }
+				}
+				edgeNeighbor[r] = nb;
+			}
+		}
+		return edgeNeighbor;
+	}
+
+	/**
 	 * stroke every state's outer boundary in white, drawn over the
 	 * province fills so the state map reads on top (FMG draws state borders
 	 * over provinces). Only visible while the Provinces layer is active.
@@ -767,10 +924,8 @@ export class WorldMap {
 			return;
 		}
 		gfx.visible = true;
-		const cells = grid.cells;
 		const cellI = grid.mesh.cells.i as unknown as number[];
 		const cellV = grid.mesh.cells.v as unknown as number[];
-		const cellC = grid.mesh.cells.c as unknown as number[];
 		const vpts =
 			grid.mesh.vertices?.p as unknown as [number, number][] ?? [];
 		const n = grid.mesh.points.length;
@@ -779,20 +934,24 @@ export class WorldMap {
 		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
 		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
 
-		// Scale-compensate the stroke width (~1.5 px on screen).
-		const sx = Math.abs(this.view.scale.x) || 1;
-		const sy = Math.abs(this.view.scale.y) || 1;
-		const meanScale = (sx + sy) / 2;
-		const desiredPx = 1.5;
-		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
-		this.stateBorderStrokeWidth = localWidth * meanScale;
+		// Use the entity cells from setEntities (the authoritative per-cell
+		// state assignment), NOT grid.cells.state (which is -1/unassigned
+		// until the entity layer is filled). This is what makes state borders
+		// render after the entity data arrives.
+		const stateCells = this.entityCells?.state ?? null;
 
 		const stateOf = (cellId: number) =>
-			cellId >= 0 && cellId < n ? cells.state[cellId] : -1;
+			stateCells && cellId >= 0 && cellId < n ? stateCells[cellId] : -1;
+
+		// Per-edge TRUE neighbor, derived from geometry (see buildEdgeNeighbor).
+		// This replaces the mesh's `cells.c`, which is rotated one slot and so
+		// would match each segment against the wrong neighbor.
+		const edgeNb = this.edgeNeighbor;
 
 		// Accumulate every border segment into ONE path, then stroke once.
 		// (Per-segment stroke() calls are O(segments) expensive in PixiJS;
 		// batching keeps the border overlay a single draw call.)
+		let anySegment = false;
 		for (let c = 0; c < n; c++) {
 			const myState = stateOf(c);
 			if (myState < 0) continue; // unassigned cell — no border
@@ -805,14 +964,33 @@ export class WorldMap {
 				const p0 = vpts[vid0];
 				const p1 = vpts[vid1];
 				if (!p0 || !p1) continue;
-				const nb = cellC[r] as number;
+				// TRUE neighbor of this segment, or -1 (hull/coast edge).
+				const nb = edgeNb ? edgeNb[r] : -1;
 				const nbState = stateOf(nb);
 				if (nbState !== myState) {
 					gfx.moveTo(nx(p0[0]), ny(p0[1]));
 					gfx.lineTo(nx(p1[0]), ny(p1[1]));
+					anySegment = true;
 				}
 			}
 		}
+
+		if (!anySegment) {
+			// No border segments to draw (all cells unassigned or no entity
+			// data). Report 0 stroke width so tests/inspectors see "no
+			// borders" rather than a phantom 1.5px.
+			this.stateBorderStrokeWidth = 0;
+			return;
+		}
+
+		// Scale-compensate the stroke width (~1.5 px on screen).
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		const meanScale = (sx + sy) / 2;
+		const desiredPx = 1.5;
+		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
+		this.stateBorderStrokeWidth = localWidth * meanScale;
+
 		gfx.stroke({ color: 0x000000, width: localWidth, alpha: 0.95 });
 	}
 
@@ -924,6 +1102,7 @@ export class WorldMap {
 			cells_religion: number[];
 		},
 	): void {
+		this.stashGridForBorders = grid;
 		const n = grid.mesh.points.length;
 		this.entityCells = {
 			state: result.cells_state,
@@ -968,6 +1147,11 @@ export class WorldMap {
 		this.textures[3]?.source.update();
 		this.textures[4]?.source.update();
 		this.textures[5]?.source.update();
+		// Re-draw state borders now that the entity cells are populated
+		// (drawStateBorders reads this.entityCells.state, which was just
+		// filled — without this call the borders never render after the
+		// entity data arrives).
+		this.drawStateBorders();
 	}
 
 	clearEntities(): void {
@@ -1067,6 +1251,9 @@ export class WorldMap {
 		// finds no data and no-ops.
 		this.entityCells = null;
 		this.selectedEntity = null;
+		// Drop the geometry-derived edge-neighbor map (depends on the mesh
+		// that backs this instance) so a dangling re-stroke finds nothing.
+		this.edgeNeighbor = null;
 		// Step 2.5.6: drop the river/lake overlay refs so a dangling
 		// re-stroke (a queued `fitToScreen` after destroy) finds no
 		// drainage and no-ops.
