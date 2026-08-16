@@ -917,7 +917,7 @@ export class WorldMap {
 		const sel = this.selectedEntity;
 		const selTriggersBorder =
 			!!sel &&
-			(sel.kind === "state" || sel.kind === "province" || sel.kind === "religion");
+			(sel.kind === "state" || sel.kind === "province");
 		if (!grid || (!this.layers.provinces && !selTriggersBorder)) {
 			gfx.visible = false;
 			this.stateBorderStrokeWidth = 0;
