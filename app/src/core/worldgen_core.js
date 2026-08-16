@@ -129,6 +129,22 @@ export function generate_climate_for_grid(grid_js, opts_js) {
 }
 
 /**
+ * Phase 3 Step 3.3 — Generate cultures + religions for a grid that already
+ * has states + burgs (from `generate_states`). Returns a `CulturesResult`
+ * with culture/religion entity vectors and per-cell culture/religion arrays.
+ * @param {any} grid_js
+ * @param {number} seed
+ * @param {number} culture_count
+ * @param {number} religion_count
+ * @param {any} states_result_js
+ * @returns {any}
+ */
+export function generate_cultures_religions(grid_js, seed, culture_count, religion_count, states_result_js) {
+    const ret = wasm.generate_cultures_religions(grid_js, seed, culture_count, religion_count, states_result_js);
+    return ret;
+}
+
+/**
  * Step 1.2: generate the heightmap `cells.h` (Uint8Array, `0..=100`,
  * `< 20` == water) from a deserialized `Mesh`. Seeded blob/pit/range/trough
  * floods ported from FMG's `heightmap-generator.ts`. Exposed as

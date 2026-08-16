@@ -23,6 +23,7 @@ mod rivers;
 pub(crate) mod entities;
 /// Phase 3 Step 3.2: states + provinces generator (FMG port).
 mod gen_states;
+mod gen_cultures;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -720,6 +721,34 @@ pub fn generate_states(grid_js: JsValue, seed: u32, count: u32) -> JsValue {
         .expect("generate_states: failed to deserialize Grid from JsValue");
     let result = gen_states::generate_states(&grid, seed, count);
     serde_wasm_bindgen::to_value(&result).expect("generate_states: serde to JsValue")
+}
+
+/// Phase 3 Step 3.3 — Generate cultures + religions for a grid that already
+/// has states + burgs (from `generate_states`). Returns a `CulturesResult`
+/// with culture/religion entity vectors and per-cell culture/religion arrays.
+#[wasm_bindgen]
+pub fn generate_cultures_religions(
+    grid_js: JsValue,
+    seed: u32,
+    culture_count: u32,
+    religion_count: u32,
+    states_result_js: JsValue,
+) -> JsValue {
+    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("generate_cultures_religions: failed to deserialize Grid");
+    let states_result: gen_states::StatesResult = serde_wasm_bindgen::from_value(states_result_js)
+        .expect("generate_cultures_religions: failed to deserialize StatesResult");
+    let suitability = gen_states::compute_suitability(&grid);
+    let result = gen_cultures::generate_cultures_religions(
+        &grid,
+        seed,
+        culture_count,
+        religion_count,
+        &suitability,
+        &states_result.cells_state,
+        &states_result.pack.burgs,
+    );
+    serde_wasm_bindgen::to_value(&result).expect("generate_cultures_religions: serde to JsValue")
 }
 
 /// Pure-data inner implementation of `generate_world` — used by the WASM

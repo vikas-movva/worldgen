@@ -9,6 +9,7 @@ export const generate_biomes: (a: any, b: any, c: any) => any;
 export const generate_biomes_for_grid: (a: any) => any;
 export const generate_climate: (a: any, b: any, c: any) => any;
 export const generate_climate_for_grid: (a: any, b: any) => any;
+export const generate_cultures_religions: (a: any, b: number, c: number, d: number, e: any) => any;
 export const generate_heightmap: (a: any, b: number) => any;
 export const generate_mesh: (a: number, b: number) => any;
 export const generate_states: (a: any, b: number, c: number) => any;

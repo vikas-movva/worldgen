@@ -37,7 +37,7 @@ const BIOME_COST: [f64; 13] = [
 ];
 
 /// Sea level threshold (height < 20 = water). FMG convention.
-const SEA_LEVEL: u8 = 20;
+pub const SEA_LEVEL: u8 = 20;
 
 /// Height thresholds for traversal cost (FMG `getHeightCost`).
 const HEIGHT_MOUNTAIN: u8 = 67;
@@ -199,7 +199,7 @@ pub fn generate_states_with_rates(
 /// Per-cell suitability for settlement (FMG `cells.s`). Land cells get a
 /// score from biome habitability × temperature factor; water cells get 0.
 /// TODO(Phase 3.3): incorporate culture/religion suitability modifiers.
-fn compute_suitability(grid: &Grid) -> Vec<f64> {
+pub fn compute_suitability(grid: &Grid) -> Vec<f64> {
     let n = grid.cell_count();
     let mut s = vec![0.0f64; n];
     for (i, si) in s.iter_mut().enumerate().take(n) {
@@ -418,7 +418,7 @@ fn generate_state_color(state_id: u32, seed: u32) -> u32 {
 }
 
 /// Convert HSL to a packed 0xRRGGBB u32. Standard algorithm.
-fn hsl_to_rgb_u32(h: f64, s: f64, l: f64) -> u32 {
+pub fn hsl_to_rgb_u32(h: f64, s: f64, l: f64) -> u32 {
     if s == 0.0 {
         let v = (l * 255.0) as u32;
         return (v << 16) | (v << 8) | v;
