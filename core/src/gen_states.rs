@@ -662,9 +662,11 @@ fn subdivide_provinces(
             continue;
         }
 
-        // Target province count scales with state area.
+        // Target province count scales with state area. Clamp to at least 1
+        // (a state with a single land cell still gets exactly 1 province) and
+        // at most the number of land cells available.
         let target = ((land_cells.len() as f64 / 40.0).ceil() as usize)
-            .clamp(2, land_cells.len());
+            .clamp(1, land_cells.len());
 
         // Seed #0 is the state capital cell.
         let mut seeds: Vec<usize> = Vec::new();

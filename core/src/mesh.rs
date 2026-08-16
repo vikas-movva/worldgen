@@ -1,4 +1,4 @@
-//! Voronoi mesh generator — Step 1.1 (Phase 1).
+//! Voronoi mesh generator
 //!
 //! Builds a Voronoi diagram over `cell_count` deterministically-seeded random
 //! points in the world rectangle `[0, WORLD_W) × [0, WORLD_H)`, then extracts the
@@ -34,6 +34,7 @@
 //! math in `f64`. No `Math.random`/`Date`/`performance.now` — pure compute.
 
 use std::collections::BTreeMap;
+use std::f64::consts::PI;
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -118,14 +119,29 @@ pub struct Vertices {
 pub fn build(cell_count: u32, seed: u32) -> Mesh {
     let n = cell_count.clamp(4, 1_000_000) as usize;
 
-    // 1. Deterministic points in the world rectangle.
+    // 1. Poisson-disk sampling + Lloyd relaxation → well-spaced seed points.
+    //    Uniform random sampling produces clustered points that yield skinny
+    //    Voronoi cells (bad for downstream generators and rendering). Poisson
+    //    disk enforces a minimum separation (≈ r_min = world_diagonal / √N),
+    //    and 3-5 Lloyd iterations move each point to its cell centroid, giving
+    //    a blue-noise, centroidal-Voronoi-tessellation layout with regular,
+    //    roughly hexagonal cells.
     let mut rng = StdRng::seed_from_u64(seed as u64);
-    let mut points_in: Vec<Point2<f64>> = Vec::with_capacity(n);
-    for _ in 0..n {
-        // Sample uniformly; reject-pull is not needed for the open rectangle.
-        let x = rng.gen_range(0.0..WORLD_W);
-        let y = rng.gen_range(0.0..WORLD_H);
-        points_in.push(Point2::new(x, y));
+    let mut points_in: Vec<Point2<f64>> = poisson_disk_sample(n, &mut rng);
+    // Clamp to a tiny margin inside the world edge so that the small_jitter
+    // applied later (±5e-6) cannot push points outside [0, WORLD_W]×[0, WORLD_H].
+    let margin = 1e-5;
+    for p in &mut points_in {
+        p.x = p.x.clamp(margin, WORLD_W - margin);
+        p.y = p.y.clamp(margin, WORLD_H - margin);
+    }
+    for _ in 0..3 {
+        points_in = lloyd_relax(&points_in, 0.5, &mut rng);
+        // Re-clamp after each relaxation step (Lloyd can drift points out).
+        for p in &mut points_in {
+            p.x = p.x.clamp(margin, WORLD_W - margin);
+            p.y = p.y.clamp(margin, WORLD_H - margin);
+        }
     }
 
     // 2. Order-preserving bulk load → vertex index == input point index.
@@ -334,6 +350,279 @@ fn build_spacing(points: &[[f64; 2]], cells_x: u32, cells_y: u32) -> Vec<u32> {
         .iter()
         .map(|&c| if c < 0 { 0u32 } else { c as u32 })
         .collect()
+}
+
+/// Poisson-disk sampling of `n` points in the world rectangle.
+///
+/// Uses Bridson's algorithm with a uniform grid for O(N) candidate lookup.
+/// `r_min` is the minimum separation; the grid cell size is `r_min / √2` so
+/// every candidate only needs to check its own and neighbouring cells.
+/// The RNG is consumed only for the initial seed point and the random
+/// direction/angle of each candidate — the algorithm is deterministic given
+/// the seed (§4).
+///
+/// Returns exactly `n` points (or fewer if the world is too small to fit
+/// `n` points at the requested `r_min`, which only happens at extreme
+/// `n` / tiny world ratios — the caller clamps `n` to `[4, 1_000_000]`).
+fn poisson_disk_sample(n: usize, rng: &mut StdRng) -> Vec<Point2<f64>> {
+    if n == 0 {
+        return vec![];
+    }
+    // Minimum separation: target ~n points in a world of area A → average
+    // spacing ≈ √(A/n). Poisson-disk r_min is typically a bit smaller than
+    // that so the final count lands near n (Bridson's algorithm is a
+    // rejection sampler — it stops when the active list is empty, which
+    // happens once the disk is saturated).
+    let area = WORLD_W * WORLD_H;
+    let r_min = (area / n as f64).sqrt() * 0.9;
+    let r_min = r_min.max(1.0); // guard against degenerate tiny worlds
+
+    // Grid: cell size = r_min / √2 ensures any two points within r_min are
+    // in the same or adjacent cells (so a 3×3 neighbourhood check suffices).
+    let cell_size = r_min / 2.0_f64.sqrt();
+    let cols = (WORLD_W / cell_size).ceil() as usize + 1;
+    let rows = (WORLD_H / cell_size).ceil() as usize + 1;
+
+    // `grid[s]` = list of point indices in cell `s` (row-major).
+    let mut grid: Vec<Vec<usize>> = vec![vec![]; cols * rows];
+    let mut points: Vec<Point2<f64>> = Vec::with_capacity(n);
+
+    // Helper: insert a point into the grid if it satisfies the minimum
+    // distance to all existing points (checked against the 3×3 neighbourhood).
+    let insert = |p: Point2<f64>, grid: &mut Vec<Vec<usize>>, points: &mut Vec<Point2<f64>>| -> bool {
+        let col = (p.x / cell_size) as usize;
+        let row = (p.y / cell_size) as usize;
+        let col = col.min(cols - 1);
+        let row = row.min(rows - 1);
+        // Check 3×3 neighbourhood.
+        for dcol in 0..=2 {
+            for drow in 0..=2 {
+                let nc = col as isize + dcol as isize - 1;
+                let nr = row as isize + drow as isize - 1;
+                if nc < 0 || nr < 0 || nc >= cols as isize || nr >= rows as isize {
+                    continue;
+                }
+                let idx = nr as usize * cols + nc as usize;
+                for &pi in &grid[idx] {
+                    let dp = points[pi];
+                    let dx = p.x - dp.x;
+                    let dy = p.y - dp.y;
+                    if dx * dx + dy * dy < r_min * r_min {
+                        return false;
+                    }
+                }
+            }
+        }
+        let id = points.len();
+        points.push(p);
+        grid[row * cols + col].push(id);
+        true
+    };
+
+    // Seed: a random point in the world rectangle.
+    let sx = rng.gen_range(0.0..WORLD_W);
+    let sy = rng.gen_range(0.0..WORLD_H);
+    let seed = Point2::new(sx, sy);
+    insert(seed, &mut grid, &mut points);
+
+    // Active list: indices of points that may still spawn candidates.
+    let mut active: Vec<usize> = vec![0];
+
+    while !active.is_empty() && points.len() < n {
+        // Pick a random active point.
+        let ai = rng.gen_range(0..active.len());
+        let anchor = active[ai];
+        let ap = points[anchor];
+
+        let mut found = false;
+        // Up to 30 attempts per active point before we give up on it.
+        for _ in 0..30 {
+            // Random direction and radius in [r_min, 2*r_min].
+            let angle = rng.gen_range(0.0..2.0 * PI);
+            let dist = rng.gen_range(r_min..2.0 * r_min);
+            let cx = ap.x + dist * angle.cos();
+            let cy = ap.y + dist * angle.sin();
+            if cx < 0.0 || cx >= WORLD_W || cy < 0.0 || cy >= WORLD_H {
+                continue;
+            }
+            let cand = Point2::new(cx, cy);
+            if insert(cand, &mut grid, &mut points) {
+                active.push(points.len() - 1);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // Remove this active point (swap-remove for O(1)).
+            active.swap_remove(ai);
+        }
+    }
+
+    // Poisson-disk may not reach exactly `n` points (the active list empties
+    // before the disk is full — this is normal for Bridson's algorithm when
+    // the minimum separation is large relative to the world area). Fill the
+    // remainder with uniform random points, which is deterministic given the
+    // seed (§4) and preserves the exact cell count contract.
+    while points.len() < n {
+        let x = rng.gen_range(0.0..WORLD_W);
+        let y = rng.gen_range(0.0..WORLD_H);
+        points.push(Point2::new(x, y));
+    }
+
+    points
+}
+
+/// Lloyd relaxation: move each point toward the centroid of its Voronoi cell.
+///
+/// Uses a uniform spatial grid so each point only clips against its local
+/// neighbourhood (O(N × avg_neighbors) instead of O(N²)). The grid cell size
+/// is set so that any point whose Voronoi cell could reach the target point
+/// must be in the same or adjacent cell. Each point's cell polygon is clipped
+/// against the half-planes of nearby points, and the centroid of the resulting
+/// polygon is computed exactly (area-weighted). Points are moved a fraction
+/// `step` of the way to the centroid and clamped to the world rectangle.
+///
+/// The RNG is unused (reserved for future tie-breaking); the function is
+/// deterministic given the input points.
+fn lloyd_relax(points: &[Point2<f64>], step: f64, _rng: &mut StdRng) -> Vec<Point2<f64>> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    // Spatial grid: cell size = 2 * r_min where r_min is the typical nearest-
+    // neighbour distance. A point's Voronoi cell is bounded by bisectors with
+    // its neighbours; any neighbour whose bisector intersects the cell must be
+    // within ~2× the typical spacing. We use a generous cell size so the 3×3
+    // neighbourhood covers all relevant points.
+    let area = WORLD_W * WORLD_H;
+    let r_typ = (area / n as f64).sqrt();
+    let cell_size = r_typ * 2.5;
+    let cell_size = cell_size.max(1.0);
+    let cols = (WORLD_W / cell_size).ceil() as usize + 1;
+    let rows = (WORLD_H / cell_size).ceil() as usize + 1;
+
+    // Build the grid: `grid[s]` = list of point indices in cell `s`.
+    let mut grid: Vec<Vec<usize>> = vec![vec![]; cols * rows];
+    for (i, p) in points.iter().enumerate() {
+        let col = (p.x / cell_size) as usize;
+        let row = (p.y / cell_size) as usize;
+        let col = col.min(cols - 1);
+        let row = row.min(rows - 1);
+        grid[row * cols + col].push(i);
+    }
+
+    let mut new_points: Vec<Point2<f64>> = Vec::with_capacity(n);
+    for (i, &p) in points.iter().enumerate() {
+        let col = (p.x / cell_size) as usize;
+        let row = (p.y / cell_size) as usize;
+        let col = col.min(cols - 1);
+        let row = row.min(rows - 1);
+
+        // Collect candidate neighbours from the 3×3 cell neighbourhood.
+        let mut candidates: Vec<usize> = Vec::new();
+        for dcol in 0..=2 {
+            for drow in 0..=2 {
+                let nc = col as isize + dcol as isize - 1;
+                let nr = row as isize + drow as isize - 1;
+                if nc < 0 || nr < 0 || nc >= cols as isize || nr >= rows as isize {
+                    continue;
+                }
+                let idx = nr as usize * cols + nc as usize;
+                for &pi in &grid[idx] {
+                    if pi != i {
+                        candidates.push(pi);
+                    }
+                }
+            }
+        }
+
+        // Start with the world rectangle as the initial cell polygon.
+        let mut poly: Vec<[f64; 2]> = vec![
+            [0.0, 0.0],
+            [WORLD_W, 0.0],
+            [WORLD_W, WORLD_H],
+            [0.0, WORLD_H],
+        ];
+        for &j in &candidates {
+            let q = points[j];
+            let mx = (p.x + q.x) / 2.0;
+            let my = (p.y + q.y) / 2.0;
+            let dx = q.x - p.x;
+            let dy = q.y - p.y;
+            poly = clip_polygon(&poly, mx, my, dx, dy);
+            if poly.len() < 3 {
+                break;
+            }
+        }
+        if poly.len() >= 3 {
+            // Compute polygon centroid (area-weighted).
+            let mut cx = 0.0;
+            let mut cy = 0.0;
+            let mut area = 0.0;
+            for k in 0..poly.len() {
+                let x0 = poly[k][0];
+                let y0 = poly[k][1];
+                let x1 = poly[(k + 1) % poly.len()][0];
+                let y1 = poly[(k + 1) % poly.len()][1];
+                let cross = x0 * y1 - x1 * y0;
+                cx += (x0 + x1) * cross;
+                cy += (y0 + y1) * cross;
+                area += cross;
+            }
+            area *= 0.5;
+            if area.abs() > 1e-12 {
+                cx /= 6.0 * area;
+                cy /= 6.0 * area;
+                let nx = p.x + (cx - p.x) * step;
+                let ny = p.y + (cy - p.y) * step;
+                new_points.push(Point2::new(
+                    nx.clamp(0.0, WORLD_W),
+                    ny.clamp(0.0, WORLD_H),
+                ));
+            } else {
+                new_points.push(p);
+            }
+        } else {
+            new_points.push(p);
+        }
+    }
+    new_points
+}
+
+/// Clip a convex polygon against the half-plane `dx*(x - mx) + dy*(y - my) <= 0`.
+/// Returns the resulting polygon (possibly empty).
+fn clip_polygon(poly: &[[f64; 2]], mx: f64, my: f64, dx: f64, dy: f64) -> Vec<[f64; 2]> {
+    let mut result: Vec<[f64; 2]> = Vec::with_capacity(poly.len() + 1);
+    let n = poly.len();
+    if n == 0 {
+        return result;
+    }
+    for i in 0..n {
+        let cur = poly[i];
+        let next = poly[(i + 1) % n];
+        let cur_inside = dx * (cur[0] - mx) + dy * (cur[1] - my) <= 1e-12;
+        let next_inside = dx * (next[0] - mx) + dy * (next[1] - my) <= 1e-12;
+        if cur_inside {
+            result.push(cur);
+        }
+        if cur_inside != next_inside {
+            // Edge crosses the line: compute intersection.
+            let t = {
+                let num = dx * (cur[0] - mx) + dy * (cur[1] - my);
+                let den = dx * (next[0] - cur[0]) + dy * (next[1] - cur[1]);
+                if den.abs() < 1e-15 {
+                    continue;
+                }
+                -num / den
+            };
+            if t >= 0.0 && t <= 1.0 {
+                let ix = cur[0] + t * (next[0] - cur[0]);
+                let iy = cur[1] + t * (next[1] - cur[1]);
+                result.push([ix, iy]);
+            }
+        }
+    }
+    result
 }
 
 /// Small non-zero jitter to avoid degenerate (collinear/duplicate) Delaunay
