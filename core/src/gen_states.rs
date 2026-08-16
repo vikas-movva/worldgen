@@ -174,7 +174,6 @@ pub fn generate_states_with_rates(
     subdivide_provinces(
         grid,
         &mut rng,
-        &pack.burgs,
         &pack.states,
         &cells_state,
         &mut cells_province,
@@ -625,13 +624,11 @@ fn expand_states(
 fn subdivide_provinces(
     grid: &Grid,
     rng: &mut StdRng,
-    burgs: &[Burg],
     states: &[State],
     cells_state: &[i32],
     cells_province: &mut [i32],
     provinces: &mut Vec<Province>,
 ) {
-    let n = grid.cell_count();
     let max_growth = 200.0; // FMG: gauss(20,5,5,100) * sqrt(100) ≈ 200
 
     // For each state, pick province-center burgs and create Province records.
@@ -639,29 +636,75 @@ fn subdivide_provinces(
     // pass (FMG does the same: push all province centers, then expand).
     let mut province_seeds: Vec<(usize, u32, u32)> = Vec::new(); // (cell, state_id, province_id)
 
+    let n = grid.cell_count();
+    let world_w = grid.mesh.world_w;
+    let world_h = grid.mesh.world_h;
+
     let mut next_province_id: u32 = 1;
 
+    // The capital burg is the only burg a state gets from `seed_capitals`
+    // (one per state), so the old "need >= 2 burgs" guard skipped EVERY state
+    // and produced zero provinces — the Provinces layer then had nothing to
+    // draw. Instead we synthesize province centers from the state's own land
+    // cells: the capital is always seed #0, and we greedily add spread-out
+    // land cells until we reach a target province count derived from the
+    // state's area (FMG's provincesRatio heuristic, here ~1 province per
+    // 40 land cells, clamped to [2, land_count]). This guarantees every
+    // state (with enough land) gets a non-empty set of provinces.
     for state in states {
-        // Collect this state's burgs, sort by capital-first then population.
-        let mut state_burgs: Vec<&Burg> = burgs
-            .iter()
-            .filter(|b| b.state == state.id)
+        // Gather this state's land cells (deterministic: by cell index).
+        let land_cells: Vec<usize> = (0..n)
+            .filter(|&i| {
+                cells_state[i] == state.id as i32 && grid.cells.h[i] >= SEA_LEVEL
+            })
             .collect();
-        // Capitals first, then by population descending.
-        state_burgs.sort_by(|a, b| {
-            b.capital
-                .cmp(&a.capital)
-                .then(b.population.partial_cmp(&a.population).unwrap_or(std::cmp::Ordering::Equal))
-        });
-
-        if state_burgs.len() < 2 {
-            continue; // FMG: at least 2 burgs required for provinces.
+        if land_cells.is_empty() {
+            continue;
         }
 
-        // provincesRatio = 100 → all burgs become province centers.
-        let provinces_number = state_burgs.len().max(2);
+        // Target province count scales with state area.
+        let target = ((land_cells.len() as f64 / 40.0).ceil() as usize)
+            .clamp(2, land_cells.len());
 
-        for (_i, burg) in state_burgs.iter().enumerate().take(provinces_number) {
+        // Seed #0 is the state capital cell.
+        let mut seeds: Vec<usize> = Vec::new();
+        let capital_cell = (state.center_cell as usize).min(n - 1);
+        seeds.push(capital_cell);
+
+        // Greedy spacing: add land cells that are far enough from every
+        // existing seed. minSpacing shrinks as we need more seeds so we
+        // always reach `target` (fallback below fills any shortfall).
+        let min_spacing =
+            ((world_w + world_h) / 2.0 / target as f64).max(1.0);
+        for &c in &land_cells {
+            if seeds.len() >= target {
+                break;
+            }
+            if seeds.contains(&c) {
+                continue;
+            }
+            let [cx, cy] = grid.mesh.points[c];
+            let too_close = seeds.iter().any(|&s| {
+                let [sx, sy] = grid.mesh.points[s];
+                let d2 = (sx - cx).powi(2) + (sy - cy).powi(2);
+                d2 < min_spacing * min_spacing
+            });
+            if !too_close {
+                seeds.push(c);
+            }
+        }
+        // Fallback: if spacing left us short, top up from the front of the
+        // land-cell list (deterministic) until we hit `target`.
+        for &c in &land_cells {
+            if seeds.len() >= target {
+                break;
+            }
+            if !seeds.contains(&c) {
+                seeds.push(c);
+            }
+        }
+
+        for &cell in &seeds {
             let province_id = next_province_id;
             next_province_id += 1;
 
@@ -670,14 +713,14 @@ fn subdivide_provinces(
                 state: state.id,
                 name: format!("Province {}", province_id),
                 color: generate_province_color(state.color, rng),
-                center_cell: burg.cell,
+                center_cell: cell as u32,
                 rural_pop: 0.0,
                 urban_pop: 0.0,
                 founded_year: 0,
                 dissolved_year: None,
             };
             provinces.push(province);
-            province_seeds.push((burg.cell as usize, state.id, province_id));
+            province_seeds.push((cell, state.id, province_id));
         }
     }
 

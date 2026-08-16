@@ -222,6 +222,15 @@ export function MapCanvas({
 					initialLayers: useWorldgenStore.getState().layerEnabled,
 				});
 				worldMapRef.current = worldMap;
+				// Step 3.5: mirror map click-selections back into the store
+				// so the EntityPanel highlights the clicked entity. The
+				// store->map subscription then re-applies the selection to
+				// the map, but selectEntity's value guard prevents a loop.
+				worldMap.onSelectEntity = (kind, id) => {
+					const cur = useWorldgenStore.getState().selectedEntity;
+					if (cur && cur.kind === kind && cur.id === id) return;
+					useWorldgenStore.getState().selectEntity({ kind, id });
+				};
 				// Fit the normalized [0,1]^2 geometry into the canvas pixel space.
 				// Without this the entire world renders in a ~1px area at the
 				// top-left corner — the root cause of the blank-canvas bug.
@@ -279,6 +288,10 @@ export function MapCanvas({
 				try {
 					const cellId = await coreApi.pickCell(x, y);
 					wm.setSelectedEntity(g, cellId);
+					// setSelectedEntity selects an entity OR a single cell.
+					// Mirror the resulting selection into the store.
+					const sel = wm.getSelectedEntity();
+					useWorldgenStore.getState().selectEntity(sel);
 				} catch {
 					/* pick failed; ignore */
 				}
@@ -338,6 +351,17 @@ export function MapCanvas({
 				) {
 					if (worldMap && state.grid) {
 						pushEntities(worldMap, state.grid, state);
+					}
+				}
+				// Step 3.5: a panel-driven entity selection. Mirror the store
+				// selection onto the map (highlights the entity's cells; for
+				// a state on the Provinces layer, also draws its border).
+				if (state.selectedEntity !== prev.selectedEntity) {
+					if (worldMap && state.grid && state.selectedEntity) {
+						const sel = state.selectedEntity;
+						worldMap.selectEntity(state.grid, sel.kind, sel.id);
+					} else if (worldMap && state.grid) {
+						worldMap.setSelected(state.grid, -1);
 					}
 				}
 			});

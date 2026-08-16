@@ -13,9 +13,17 @@ import type {
 	RiverGeo,
 	StatesResult,
 } from "../core/api";
-import type { LayerName } from "../render/layers";
+import type { EntityKind, LayerName } from "../render/layers";
 
 export type LayerState = Record<LayerName, boolean>;
+
+/** Maps each entity kind to its `layerEnabled` key (plural ids). */
+export const ENTITY_LAYER_KEYS: Record<EntityKind, LayerName> = {
+	state: "states",
+	province: "provinces",
+	culture: "cultures",
+	religion: "religions",
+};
 
 export type WorldgenState = {
 	grid: Grid | null;
@@ -37,6 +45,8 @@ export type WorldgenState = {
 	statesResult: StatesResult | null;
 	/** Step 3.3: the culture/religion vectors + per-cell arrays. */
 	culturesResult: CulturesResult | null;
+	/** The currently selected entity (click-to-select or panel-select). */
+	selectedEntity: { kind: EntityKind; id: number } | null;
 	/** Step 2.5.4: heightmap editor tool mode. */
 	editorTool: EditorTool;
 	/** Step 2.5.4: brush radius (in relative units, 1.0 = moderate). */
@@ -68,6 +78,20 @@ export type WorldgenActions = {
 	setGenerationMeta: (meta: WorldgenState["generation"]) => void;
 	/** Toggle a render layer on/off (terrain/biome). */
 	toggleLayer: (layer: LayerName) => void;
+	/**
+	 * Toggle one of the four entity layers. Entity layers are mutually
+	 * exclusive — enabling one disables the other three so only a single
+	 * entity layer is ever displayed at a time (per the entity-UI spec).
+	 */
+	toggleEntityLayer: (layer: EntityKind) => void;
+	/** Select an entity (for highlight + the edit panel). */
+	selectEntity: (sel: { kind: EntityKind; id: number } | null) => void;
+	/** Update an entity's color + name in the relevant pack result in place. */
+	updateEntity: (
+		kind: EntityKind,
+		id: number,
+		patch: { color?: number; name?: string },
+	) => void;
 	/** Step 2.5.4: set the active editor tool. */
 	setEditorTool: (tool: EditorTool) => void;
 	/** Step 2.5.4: set brush radius. */
@@ -105,6 +129,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		lakes: [],
 		statesResult: null,
 		culturesResult: null,
+		selectedEntity: null,
 		editorTool: "raise",
 		brushRadius: 15,
 		brushStrength: 0.05,
@@ -117,6 +142,93 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			set((s) => ({
 				layerEnabled: { ...s.layerEnabled, [layer]: !s.layerEnabled[layer] },
 			})),
+		// Entity layers are mutually exclusive: enabling one turns the other
+		// three off so only a single entity layer shows at once.
+		toggleEntityLayer: (layer) =>
+			set((s) => {
+				const layerKey = ENTITY_LAYER_KEYS[layer];
+				const turningOn = !s.layerEnabled[layerKey];
+				const next: LayerState = { ...s.layerEnabled };
+				for (const k of Object.values(ENTITY_LAYER_KEYS)) next[k] = false;
+				if (turningOn) next[layerKey] = true;
+				// Selecting an entity only makes sense while its layer is on;
+				// clear the selection when the layer is turned off.
+				return {
+					layerEnabled: next,
+					selectedEntity: turningOn ? s.selectedEntity : null,
+				};
+			}),
+		selectEntity: (sel) => set({ selectedEntity: sel }),
+		// Mutate the matching entity in the relevant pack result. We replace
+		// the result object (new reference) so React/MapCanvas subscribers
+		// re-run pushEntities and re-upload the entity color texture.
+		updateEntity: (kind, id, patch) =>
+			set((s) => {
+				if (kind === "state") {
+					if (!s.statesResult) return {};
+					const pack = s.statesResult.pack;
+					const idx = id - 1; // ids are 1-based
+					if (idx < 0 || idx >= pack.states.length) return {};
+					const updated: typeof pack.states[number] = {
+						...pack.states[idx],
+						...(patch.color !== undefined ? { color: patch.color } : {}),
+						...(patch.name !== undefined ? { name: patch.name } : {}),
+					};
+					const newStates = pack.states.slice();
+					newStates[idx] = updated;
+					return {
+						statesResult: { ...s.statesResult, pack: { ...pack, states: newStates } },
+					};
+				}
+				if (kind === "province") {
+					if (!s.statesResult) return {};
+					const pack = s.statesResult.pack;
+					const idx = id - 1; // ids are 1-based
+					if (idx < 0 || idx >= pack.provinces.length) return {};
+					const updated: typeof pack.provinces[number] = {
+						...pack.provinces[idx],
+						...(patch.color !== undefined ? { color: patch.color } : {}),
+						...(patch.name !== undefined ? { name: patch.name } : {}),
+					};
+					const newProvinces = pack.provinces.slice();
+					newProvinces[idx] = updated;
+					return {
+						statesResult: {
+							...s.statesResult,
+							pack: { ...pack, provinces: newProvinces },
+						},
+					};
+				}
+				if (kind === "culture") {
+					if (!s.culturesResult) return {};
+					const idx = id; // ids are 0-based
+					if (idx < 0 || idx >= s.culturesResult.cultures.length) return {};
+					const updated: typeof s.culturesResult.cultures[number] = {
+						...s.culturesResult.cultures[idx],
+						...(patch.color !== undefined ? { color: patch.color } : {}),
+						...(patch.name !== undefined ? { name: patch.name } : {}),
+					};
+					const newCultures = s.culturesResult.cultures.slice();
+					newCultures[idx] = updated;
+					return { culturesResult: { ...s.culturesResult, cultures: newCultures } };
+				}
+				if (kind === "religion") {
+					if (!s.culturesResult) return {};
+					const idx = id; // ids are 0-based
+					if (idx < 0 || idx >= s.culturesResult.religions.length) return {};
+					const updated: typeof s.culturesResult.religions[number] = {
+						...s.culturesResult.religions[idx],
+						...(patch.color !== undefined ? { color: patch.color } : {}),
+						...(patch.name !== undefined ? { name: patch.name } : {}),
+					};
+					const newReligions = s.culturesResult.religions.slice();
+					newReligions[idx] = updated;
+					return {
+						culturesResult: { ...s.culturesResult, religions: newReligions },
+					};
+				}
+				return {};
+			}),
 		// Switching away from select clears the selection; switching to
 		// select preserves any existing selection (the user may have a cell
 		// picked from a previous interaction).

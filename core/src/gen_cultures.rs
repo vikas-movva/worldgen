@@ -867,11 +867,13 @@ fn generate_religions(
         } else {
             0x888888
         };
+        // Saturated tints of the parent culture so religions stay vivid and
+        // distinguishable (the old 25-50% grey mix washed them to near-grey).
         let color = match rtype {
             RTYPE_FOLK => culture_color,
-            RTYPE_HERESY => mix_color(culture_color, 0.35, 0.2),
-            RTYPE_CULT => mix_color(culture_color, 0.5, 0.0),
-            _ => mix_color(culture_color, 0.25, 0.4),
+            RTYPE_HERESY => mix_color(culture_color, 0.12, 0.08),
+            RTYPE_CULT => mix_color(culture_color, 0.18, 0.0),
+            _ => mix_color(culture_color, 0.10, 0.12),
         };
 
         let religion = Religion {

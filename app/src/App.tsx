@@ -10,6 +10,7 @@ import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
 import { useWorldgenStore } from "./state/worldgenStore";
 import { CellInspector } from "./ui/CellInspector";
 import { HeightmapEditor } from "./ui/HeightmapEditor";
+import { EntityPanel } from "./ui/EntityPanel";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -28,6 +29,7 @@ function App() {
 	const setCulturesResult = useWorldgenStore((s) => s.setCulturesResult);
 	const layerEnabled = useWorldgenStore((s) => s.layerEnabled);
 	const toggleLayer = useWorldgenStore((s) => s.toggleLayer);
+	const toggleEntityLayer = useWorldgenStore((s) => s.toggleEntityLayer);
 
 	const canvasHandleRef = useRef<MapCanvasHandle | null>(null);
 	const [worldMap, setWorldMap] = useState<WorldMap | null>(null);
@@ -207,7 +209,9 @@ function App() {
 				}}
 			>
 				<h1 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 600 }}>
-					Worldforge
+					<a href="https://github.com/vikas-movva/worldgen" target="_blank" rel="noopener noreferrer" style={{ color: "inherit", textDecoration: "none" }}>
+						Worldgen
+					</a>
 				</h1>
 				<button
 					type="button"
@@ -301,22 +305,22 @@ function App() {
 				<LayerToggle
 					label="States"
 					active={layerEnabled.states}
-					onClick={() => toggleLayer("states")}
+					onClick={() => toggleEntityLayer("state")}
 				/>
 				<LayerToggle
 					label="Provinces"
 					active={layerEnabled.provinces}
-					onClick={() => toggleLayer("provinces")}
+					onClick={() => toggleEntityLayer("province")}
 				/>
 				<LayerToggle
 					label="Cultures"
 					active={layerEnabled.cultures}
-					onClick={() => toggleLayer("cultures")}
+					onClick={() => toggleEntityLayer("culture")}
 				/>
 				<LayerToggle
 					label="Religions"
 					active={layerEnabled.religions}
-					onClick={() => toggleLayer("religions")}
+					onClick={() => toggleEntityLayer("religion")}
 				/>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
 					rAF: {tickCount}{" "}
@@ -354,7 +358,8 @@ function App() {
 					>
 						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
 						<CellInspector worldMap={worldMap} />
-					</div>
+						<EntityPanel worldMap={worldMap} />
+						</div>
 				)}
 			</main>
 			<footer

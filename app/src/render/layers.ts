@@ -38,6 +38,9 @@ export type LayerName =
 	| "religions";
 export type LayerState = Record<LayerName, boolean>;
 
+/** The four anthropological entity kinds (states/provinces/cultures/religions). */
+export type EntityKind = "state" | "province" | "culture" | "religion";
+
 const STYLE = new TextureStyle({
 	scaleMode: "nearest",
 	addressMode: "clamp-to-edge",
@@ -143,6 +146,15 @@ export class WorldMap {
 	private drainageGrid: Grid | null = null;
 	private drainageRivers: RiverGeo[] = [];
 	private drainageLakes: LakeGeo[] = [];
+	/**
+	 * state-border overlay Graphics. When the Provinces layer is
+	 * visible, every state's outer boundary is stroked in white so the
+	 * state map reads on top of the province fills (FMG draws state borders
+	 * over provinces). Children of `view` so it inherits pan/zoom.
+	 */
+	private stateBorderGfx: Graphics | null = null;
+	/** Last on-screen width (px) of the state-border strokes. */
+	private stateBorderStrokeWidth = 5;
 
 	constructor(grid: Grid, opts: { initialLayers?: Partial<LayerState> } = {}) {
 		if (opts.initialLayers) Object.assign(this.layers, opts.initialLayers);
@@ -150,6 +162,7 @@ export class WorldMap {
 		this.geometry = geoData.geometry;
 		this.worldW = geoData.worldW;
 		this.worldH = geoData.worldH;
+		this.stashGridForBorders = grid;
 		const texDim = geoData.texDim;
 		const heightData = buildHeightTextureData(grid.cells.h, texDim);
 		this.heightData = heightData;
@@ -265,6 +278,8 @@ export class WorldMap {
 		// Re-stroke the river polylines so their on-screen width stays
 		// constant (same scale-compensation as the selection outline).
 		this.drawRiversLakes();
+		// Re-stroke state borders (Provinces layer) at the new scale.
+		this.drawStateBorders();
 	}
 
 	/**
@@ -418,13 +433,41 @@ export class WorldMap {
 			// No entity layer active, or clicked cell is unassigned -> single cell.
 			this.selectedEntity = null;
 			this.setSelected(grid, cellId);
+			this.drawStateBorders();
 			return;
 		}
+		this.selectEntity(grid, kind, id);
+	}
+
+	/**
+	 * Step 3.5: select an entity directly by (kind, id) — used by the entity
+	 * panel list. Highlights every cell belonging to that entity and (if a
+	 * state is selected while the Provinces layer is shown) its border.
+	 */
+	selectEntity(
+		grid: Grid,
+		kind: "state" | "province" | "culture" | "religion",
+		id: number,
+	): void {
+		// Guard against re-entrancy: the store mirrors this selection back
+		// onto the map (store -> map subscription). If the requested
+		// selection equals the current one, skip the re-stroke + the
+		// onSelectEntity callback so we don't loop map <-> store forever.
+		const cur = this.selectedEntity;
+		if (cur && cur.kind === kind && cur.id === id) return;
 		this.selectedEntity = { kind, id };
 		this.selectedGrid = grid;
-		this.selectedCellId = cellId;
+		this.selectedCellId = -1;
 		this.drawSelection();
+		this.drawStateBorders();
+		// Keep the store-facing selection in sync via the canvas hook.
+		this.onSelectEntity?.(kind, id);
 	}
+
+	/** Optional callback the canvas wires to mirror selection into the store. */
+	onSelectEntity:
+		| ((kind: "state" | "province" | "culture" | "religion", id: number) => void)
+		| null = null;
 
 	/**
 	 * Re-stroke the selection outline with the current camera scale. Computes
@@ -537,6 +580,15 @@ export class WorldMap {
 	}
 
 	/**
+	 * Step 3.5: return the currently selected entity (for mirroring into the
+	 * store / panel after a map click). Returns `{ kind, id }` or `null` when
+	 * nothing is selected (or a single cell is picked, which has no entity).
+	 */
+	getSelectedEntity(): { kind: EntityKind; id: number } | null {
+		return this.selectedEntity;
+	}
+
+	/**
 	 * Step 2.5.6: the on-screen width (px) of the current river polylines
 	 * (the value the scale-compensated local width renders at). Exposed for
 	 * tests to assert the strokes stay a thin hairline (~2 px) across zoom,
@@ -544,6 +596,16 @@ export class WorldMap {
 	 */
 	getRiverStrokeWidth(): number {
 		return this.drainageRivers.length === 0 ? 0 : this.riverStrokeWidth;
+	}
+
+	/**
+	 * Step 3.5: the on-screen width (px) of the current state-border
+	 * strokes — the value the scale-compensated local width renders at.
+	 * Exposed for tests to assert the borders stay a thin hairline (~1.5 px)
+	 * across zoom. Returns 0 when the Provinces layer is off / no borders.
+	 */
+	getStateBorderStrokeWidth(): number {
+		return this.layers.provinces ? this.stateBorderStrokeWidth : 0;
 	}
 
 	/**
@@ -668,6 +730,95 @@ export class WorldMap {
 		riverGfx.visible = this.layers.rivers;
 	}
 
+	/**
+	 * stroke every state's outer boundary in white, drawn over the
+	 * province fills so the state map reads on top (FMG draws state borders
+	 * over provinces). Only visible while the Provinces layer is active.
+	 *
+	 * A state boundary runs along the edges between a state's cells and a
+	 * DIFFERENT state's cells (or map water/void). For each cell edge we
+	 * compute the shared normalized-space segment; if the two endpoints'
+	 * states differ, we stroke that segment. Edges on the map border (a
+	 * neighbor index == -1) are drawn only when the cell itself is land and
+	 * belongs to a state, giving each state a coast/outline.
+	 *
+	 * The stroke width is scale-compensated (same pattern as rivers/selection)
+	 * so it stays ~1.5 px on screen at any zoom. `fitToScreen` re-strokes on
+	 * every pan/zoom/resize.
+	 */
+	private drawStateBorders(): void {
+		if (!this.stateBorderGfx) {
+			this.stateBorderGfx = new Graphics();
+			this.stateBorderGfx.label = "state-borders";
+			this.view.addChild(this.stateBorderGfx);
+		}
+		const gfx = this.stateBorderGfx;
+		gfx.clear();
+		const grid = this.stashGridForBorders;
+		// Draw black state borders whenever the Provinces layer is shown OR a
+		// state / province / religion is selected in the legend (per spec).
+		const sel = this.selectedEntity;
+		const selTriggersBorder =
+			!!sel &&
+			(sel.kind === "state" || sel.kind === "province" || sel.kind === "religion");
+		if (!grid || (!this.layers.provinces && !selTriggersBorder)) {
+			gfx.visible = false;
+			this.stateBorderStrokeWidth = 0;
+			return;
+		}
+		gfx.visible = true;
+		const cells = grid.cells;
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const cellC = grid.mesh.cells.c as unknown as number[];
+		const vpts =
+			grid.mesh.vertices?.p as unknown as [number, number][] ?? [];
+		const n = grid.mesh.points.length;
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+
+		// Scale-compensate the stroke width (~1.5 px on screen).
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		const meanScale = (sx + sy) / 2;
+		const desiredPx = 1.5;
+		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
+		this.stateBorderStrokeWidth = localWidth * meanScale;
+
+		const stateOf = (cellId: number) =>
+			cellId >= 0 && cellId < n ? cells.state[cellId] : -1;
+
+		// Accumulate every border segment into ONE path, then stroke once.
+		// (Per-segment stroke() calls are O(segments) expensive in PixiJS;
+		// batching keeps the border overlay a single draw call.)
+		for (let c = 0; c < n; c++) {
+			const myState = stateOf(c);
+			if (myState < 0) continue; // unassigned cell — no border
+			const lo = cellI[c] as number;
+			const hi = (cellI[c + 1] as number) ?? lo;
+			if (hi <= lo) continue;
+			for (let r = lo; r < hi; r++) {
+				const vid0 = cellV[r] as number;
+				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const p0 = vpts[vid0];
+				const p1 = vpts[vid1];
+				if (!p0 || !p1) continue;
+				const nb = cellC[r] as number;
+				const nbState = stateOf(nb);
+				if (nbState !== myState) {
+					gfx.moveTo(nx(p0[0]), ny(p0[1]));
+					gfx.lineTo(nx(p1[0]), ny(p1[1]));
+				}
+			}
+		}
+		gfx.stroke({ color: 0x000000, width: localWidth, alpha: 0.95 });
+	}
+
+	/** Grid stashed for state-border re-stroking (set in setEntities/setGrid). */
+	private stashGridForBorders: Grid | null = null;
+
 	private applyLayers(): void {
 		if (this.terrainMesh) this.terrainMesh.visible = this.layers.terrain;
 		if (this.biomeMesh) this.biomeMesh.visible = this.layers.biome;
@@ -677,6 +828,10 @@ export class WorldMap {
 		if (this.provinceMesh) this.provinceMesh.visible = this.layers.provinces;
 		if (this.cultureMesh) this.cultureMesh.visible = this.layers.cultures;
 		if (this.religionMesh) this.religionMesh.visible = this.layers.religions;
+		// State borders render on top of the provinces fill.
+		if (this.stateBorderGfx)
+			this.stateBorderGfx.visible = this.layers.provinces;
+		this.drawStateBorders();
 	}
 
 	/** Toggle layer visibility. No geometry rebuild -- pure visibility swap. */
@@ -782,6 +937,7 @@ export class WorldMap {
 			result.pack.states,
 			result.cells_state,
 			-1, // -1 == unassigned state
+			1, // state ids are 1-based; subtract to index pack.states (0-based)
 		);
 		this.fillEntityBuffer(
 			this.provinceData,
@@ -789,6 +945,7 @@ export class WorldMap {
 			result.pack.provinces,
 			result.cells_province,
 			-1,
+			1, // province ids are 1-based
 		);
 		this.fillEntityBuffer(
 			this.cultureData,
@@ -796,6 +953,7 @@ export class WorldMap {
 			result.pack.cultures,
 			result.cells_culture,
 			0, // 0 == Wildlands (no culture)
+			0, // culture ids are 0-based
 		);
 		this.fillEntityBuffer(
 			this.religionData,
@@ -803,6 +961,7 @@ export class WorldMap {
 			result.pack.religions,
 			result.cells_religion,
 			0, // 0 == no religion
+			0, // religion ids are 0-based
 		);
 		// Upload all four textures.
 		this.textures[2]?.source.update();
@@ -830,6 +989,12 @@ export class WorldMap {
 	 * (>= 0, != the unassigned sentinel, and within `entities`), write the
 	 * packed `0xRRGGBB` color at texel `i` with alpha 255; otherwise leave the
 	 * texel transparent (alpha 0).
+	 *
+	 * `idBias` compensates for the wire encoding of entity ids: states /
+	 * provinces use 1-based ids (0 is unused, -1 is unassigned), so we
+	 * subtract `1` to index the 0-based `pack.*` vectors; cultures /
+	 * religions use 0-based ids (0 is a valid "none" sentinel, not -1), so
+	 * `idBias` is 0 there.
 	 */
 	private fillEntityBuffer(
 		buf: Uint8Array | null,
@@ -837,17 +1002,24 @@ export class WorldMap {
 		entities: { color: number }[],
 		cells: number[],
 		unassigned: number,
+		idBias: number,
 	): void {
 		if (!buf) return;
 		const maxId = entities.length - 1;
 		for (let i = 0; i < count; i++) {
 			const eid = cells[i] ?? unassigned;
 			const o = i * 4;
-			if (eid === unassigned || eid < 0 || eid > maxId) {
+			if (eid === unassigned || eid < 0) {
 				buf[o + 3] = 0; // transparent
 				continue;
 			}
-			const color = entities[eid].color;
+			// Map the (possibly 1-based) wire id onto the 0-based entity vec.
+			const idx = eid - idBias;
+			if (idx < 0 || idx > maxId) {
+				buf[o + 3] = 0; // transparent
+				continue;
+			}
+			const color = entities[idx].color;
 			buf[o + 0] = (color >> 16) & 0xff;
 			buf[o + 1] = (color >> 8) & 0xff;
 			buf[o + 2] = color & 0xff;
