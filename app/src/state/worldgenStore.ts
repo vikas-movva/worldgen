@@ -4,7 +4,15 @@
 // without forcing a geometry rebuild.
 
 import { create } from "zustand";
-import type { Climate, Grid, LakeGeo, Mesh, RiverGeo } from "../core/api";
+import type {
+	Climate,
+	CulturesResult,
+	Grid,
+	LakeGeo,
+	Mesh,
+	RiverGeo,
+	StatesResult,
+} from "../core/api";
 import type { LayerName } from "../render/layers";
 
 export type LayerState = Record<LayerName, boolean>;
@@ -25,6 +33,10 @@ export type WorldgenState = {
 	 * (from `getDrainageGeometry` on fresh gen, `recomputeDependents` on edit). */
 	rivers: RiverGeo[];
 	lakes: LakeGeo[];
+	/** Step 3.2: the full states/provinces/burgs pack + per-cell arrays. */
+	statesResult: StatesResult | null;
+	/** Step 3.3: the culture/religion vectors + per-cell arrays. */
+	culturesResult: CulturesResult | null;
 	/** Step 2.5.4: heightmap editor tool mode. */
 	editorTool: EditorTool;
 	/** Step 2.5.4: brush radius (in relative units, 1.0 = moderate). */
@@ -66,6 +78,10 @@ export type WorldgenActions = {
 	setSelectedCellId: (id: number) => void;
 	/** Step 2.5.6: set river + lake geometry for the displayed Grid. */
 	setDrainageGeometry: (rivers: RiverGeo[], lakes: LakeGeo[]) => void;
+	/** Step 3.2: store the states/provinces/burgs result. */
+	setStatesResult: (r: StatesResult) => void;
+	/** Step 3.3: store the culture/religion result. */
+	setCulturesResult: (r: CulturesResult) => void;
 	clear: () => void;
 };
 
@@ -75,12 +91,23 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
+		layerEnabled: {
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
+		},
 		rivers: [],
 		lakes: [],
+		statesResult: null,
+		culturesResult: null,
 		editorTool: "raise",
-		brushRadius: 30,
-		brushStrength: 0.5,
+		brushRadius: 15,
+		brushStrength: 0.05,
 		selectedCellId: -1,
 		setGrid: (grid) => set({ grid }),
 		setMesh: (mesh) => set({ mesh }),
@@ -102,6 +129,8 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		setBrushStrength: (brushStrength) => set({ brushStrength }),
 		setSelectedCellId: (selectedCellId) => set({ selectedCellId }),
 		setDrainageGeometry: (rivers, lakes) => set({ rivers, lakes }),
+		setStatesResult: (statesResult) => set({ statesResult }),
+		setCulturesResult: (culturesResult) => set({ culturesResult }),
 		clear: () =>
 			set({
 				grid: null,
@@ -111,6 +140,8 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				selectedCellId: -1,
 				rivers: [],
 				lakes: [],
+				statesResult: null,
+				culturesResult: null,
 			}),
 	}),
 );

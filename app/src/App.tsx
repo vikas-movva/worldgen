@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { coreApi, type Grid } from "./core/api";
+import {
+	type CulturesResult,
+	coreApi,
+	type Grid,
+	type StatesResult,
+} from "./core/api";
 import type { WorldMap } from "./render/layers";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
 import { useWorldgenStore } from "./state/worldgenStore";
@@ -19,6 +24,8 @@ function App() {
 	const setGrid = useWorldgenStore((s) => s.setGrid);
 	const setGenerationMeta = useWorldgenStore((s) => s.setGenerationMeta);
 	const setDrainageGeometry = useWorldgenStore((s) => s.setDrainageGeometry);
+	const setStatesResult = useWorldgenStore((s) => s.setStatesResult);
+	const setCulturesResult = useWorldgenStore((s) => s.setCulturesResult);
 	const layerEnabled = useWorldgenStore((s) => s.layerEnabled);
 	const toggleLayer = useWorldgenStore((s) => s.toggleLayer);
 
@@ -118,6 +125,42 @@ function App() {
 				setResult(
 					(prev: string) =>
 						`${prev}  | drainage geometry Error: ${String(geoErr)}`,
+				);
+			}
+			// Step 3.2 + 3.3: generate states/provinces/burgs and
+			// cultures/religions on top of the freshly-generated world. These
+			// populate the per-cell `state`/`province`/`culture`/`religion`
+			// arrays (and the entity pack) that the entity layers render.
+			// generateWorld already stored the grid into the worker's held
+			// handle, so no grid arg is needed for the worker call — but the
+			// api wrapper still passes it for the local path.
+			let statesResult: StatesResult | null = null;
+			let culturesResult: CulturesResult | null = null;
+			try {
+				const t2 = performance.now();
+				statesResult = await coreApi.generateStates(g, seed, 12);
+				setStatesResult(statesResult);
+				culturesResult = await coreApi.generateCulturesReligions(
+					g,
+					seed,
+					18,
+					12,
+					statesResult,
+				);
+				setCulturesResult(culturesResult);
+				const t3 = performance.now();
+				setResult(
+					(prev: string) =>
+						prev +
+						`  | states=${statesResult?.pack.states.length} ` +
+						`cultures=${culturesResult?.cultures.length} ` +
+						`religions=${culturesResult?.religions.length} ` +
+						`(${(t3 - t2).toFixed(0)}ms)`,
+				);
+			} catch (entErr) {
+				setResult(
+					(prev: string) =>
+						`${prev}  | entity generation Error: ${String(entErr)}`,
 				);
 			}
 			const n = g.cells.h.length;
@@ -243,6 +286,37 @@ function App() {
 					label="Lakes"
 					active={layerEnabled.lakes}
 					onClick={() => toggleLayer("lakes")}
+				/>
+				<span
+					style={{
+						fontSize: "0.7rem",
+						color: "#8b949e",
+						marginLeft: "0.5rem",
+						borderLeft: "1px solid #30363d",
+						paddingLeft: "0.5rem",
+					}}
+				>
+					Entities
+				</span>
+				<LayerToggle
+					label="States"
+					active={layerEnabled.states}
+					onClick={() => toggleLayer("states")}
+				/>
+				<LayerToggle
+					label="Provinces"
+					active={layerEnabled.provinces}
+					onClick={() => toggleLayer("provinces")}
+				/>
+				<LayerToggle
+					label="Cultures"
+					active={layerEnabled.cultures}
+					onClick={() => toggleLayer("cultures")}
+				/>
+				<LayerToggle
+					label="Religions"
+					active={layerEnabled.religions}
+					onClick={() => toggleLayer("religions")}
 				/>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
 					rAF: {tickCount}{" "}

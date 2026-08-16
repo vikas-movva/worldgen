@@ -163,7 +163,7 @@ export function HeightmapEditor({
 			const worldRadius = BRUSH_TOOLS.has(tool)
 				? brushRadius * avgSpacing * 0.5
 				: 0;
-			const strength = BRUSH_TOOLS.has(tool) ? brushStrength : 0.5;
+			const strength = BRUSH_TOOLS.has(tool) ? brushStrength : 0.05;
 
 			try {
 				// No grid arg → worker uses Rust-held grid (serde fix).

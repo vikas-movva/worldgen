@@ -19,6 +19,7 @@
 		"build:core:node": "cd .. && wasm-pack build core --target nodejs --out-dir /tmp/world_node",
 		"verify:handle": "npm run build:core:node && node scripts/verify_handle_serde.mjs",
 		"verify:determinism-node": "npm run build:core:node && node scripts/verify_determinism_node.mjs",
+		"verify:entities-node": "npm run build:core:node && node scripts/verify_entities_node.mjs",
 		"verify:perf-node": "npm run build:core:node && node scripts/verify_recompute_dependents_node.mjs && node scripts/verify_recompute_local_node.mjs && node scripts/verify_generate_world_node.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",

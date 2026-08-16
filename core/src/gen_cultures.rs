@@ -159,17 +159,26 @@ pub fn generate_cultures_religions(
     );
 
     // --- 3. Collect culture cell counts -------------------------------------
+    //
+    // `cells_culture[i]` holds the **culture id** of cell i (0 = Wildlands,
+    // 1 = first real culture, 2 = next, ...). Since `cultures[k]` has
+    // `cultures[k].id == k`, the count of cells belonging to culture id `c`
+    // (c > 0) lives at index `c`, NOT at `c - 1`. Indexing `culture_cells[c-1]`
+    // would silently shift every culture's count one slot left, so culture 1
+    // ends up holding culture 2's count, culture 2 holds culture 3's, ...,
+    // and the highest culture id holds 0 (out-of-range) — see adversarial
+    // review P9.
     let mut culture_cells = vec![0u32; cultures.len()];
     for &c in &cells_culture {
-        if c > 0 {
-            let idx = (c - 1) as usize;
-            if idx < culture_cells.len() {
-                culture_cells[idx] += 1;
-            }
+        let id = c as usize;
+        if id > 0 && id < culture_cells.len() {
+            culture_cells[id] += 1;
         }
     }
 
     // Build final culture list with cell_count populated.
+    // `cultures[i].id == i`, so index `culture_cells` directly by id (i.e. the
+    // enumerate index). culture 0 (Wildlands) is zeroed explicitly below.
     let cultures: Vec<Culture> = cultures
         .into_iter()
         .enumerate()
@@ -345,7 +354,8 @@ fn generate_cultures(
     for (idx, &cell) in centers.iter().enumerate() {
         let culture_id = (idx + 1) as u32;
         let type_code = define_culture_type(grid, cell);
-        let _expansionism = define_culture_expansionism(type_code, rng);
+        // expansionism is re-derived in expand_cultures from type_code;
+        // the draw here was only for RNG consistency and is removed.
 
         let culture = Culture {
             id: culture_id,
@@ -381,11 +391,9 @@ fn define_culture_type(grid: &Grid, cell: usize) -> u8 {
     if h > 50 {
         return CTYPE_HIGHLAND;
     }
-    // River: has river with flux > 100
-    if grid.cells.r[cell] != 0 && grid.cells.fl[cell] > 100 {
-        return CTYPE_RIVER;
-    }
-    // Naval: coast cell (land adjacent to water) — simplified, check neighbors.
+    // Lake: would require cells.f / haven feature — deferred, see ref notes.
+    // Naval: FMG checks harbor cells with probability, isle group with prob.
+    //       Simplified: coastal land cell.
     let lo = grid.mesh.cells.i[cell] as usize;
     let hi = grid.mesh.cells.i[cell + 1] as usize;
     let has_water_nb = grid.mesh.cells.c[lo..hi]
@@ -394,7 +402,11 @@ fn define_culture_type(grid: &Grid, cell: usize) -> u8 {
     if has_water_nb {
         return CTYPE_NAVAL;
     }
-    // Hunting: inland biome 3,7,8,9,10,12
+    // River: only checked AFTER Naval.
+    if grid.cells.r[cell] != 0 && grid.cells.fl[cell] > 100 {
+        return CTYPE_RIVER;
+    }
+    // Hunting: matches FMG.
     if matches!(biome, 3 | 7 | 8 | 9 | 10 | 12) {
         return CTYPE_HUNTING;
     }
@@ -403,6 +415,9 @@ fn define_culture_type(grid: &Grid, cell: usize) -> u8 {
 }
 
 /// Culture expansionism by type (FMG `defineCultureExpansionism`).
+/// FMG uses `gauss(5, 3, 0, 10, 1)` (mean 5, std 3, clamped [0, 10]).
+/// Port uses uniform jitter [0.5, 1.5] × base × 10 → rounded to 0.1.
+/// This is an intentional simplification (no Gaussian dependency in rand 0.8).
 fn define_culture_expansionism(type_code: u8, rng: &mut StdRng) -> f64 {
     let base = match type_code {
         CTYPE_LAKE => 0.8,
@@ -414,6 +429,7 @@ fn define_culture_expansionism(type_code: u8, rng: &mut StdRng) -> f64 {
         _ => 1.0, // Generic
     };
     // FMG: ((random * sizeVariety / 2 + 1) * base) with default sizeVariety=1.
+    // Port: uniform jitter in [0.5, 1.5] instead of gauss(5, 3, 0, 10, 1).
     let jitter = rng.gen::<f64>() * 0.5 + 1.0;
     (jitter * base * 10.0).round() / 10.0 // rn(x, 1)
 }
@@ -682,6 +698,7 @@ fn generate_religions(
         parent: None,
         followers: 0.0,
         type_code: RTYPE_FOLK,
+        expansion_mode: "global".to_string(),
         founded_year: 0,
         dissolved_year: None,
     });
@@ -703,6 +720,7 @@ fn generate_religions(
             parent: None,
             followers: 0.0,
             type_code: RTYPE_FOLK,
+            expansion_mode: "culture".to_string(), // Folk: locked to culture (auto-assign)
             founded_year: 0,
             dissolved_year: None,
         };
@@ -817,8 +835,10 @@ fn generate_religions(
 
     // Determine types: ~60% Organized, ~20% Cult, ~20% Heresy.
     let total = placed.len();
-    let cults_count = ((rng.gen::<f64>() * 0.3 + 0.1) * total as f64).floor() as usize;
-    let heresies_count = ((rng.gen::<f64>() * 0.3) * total as f64).floor() as usize;
+    // FMG uses discrete integer draws: rand(1,4)/10 ∈ {0.1,0.2,0.3,0.4} (25% each)
+    // and rand(0,3)/10 ∈ {0.0,0.1,0.2,0.3} (25% each). Port faithfully:
+    let cults_count = (rng.gen_range(1..=4) as f64 / 10.0 * total as f64).floor() as usize;
+    let heresies_count = (rng.gen_range(0..=3) as f64 / 10.0 * total as f64).floor() as usize;
     let organized_count = total.saturating_sub(cults_count + heresies_count);
 
     for (idx, &cell) in placed.iter().enumerate() {
@@ -835,26 +855,11 @@ fn generate_religions(
         let _state_id = if cell < n { cells_state[cell] } else { 0 };
 
         // Expansionism by type (FMG `expansionismMap`).
-        // We draw from RNG to keep the RNG state consistent, but the actual
-        // expansionism used in expand_religions is re-derived from type_code
-        // there (since Religion struct has no expansionism field).
-        let _expansionism = match rtype {
-            RTYPE_FOLK => 0.0,
-            RTYPE_ORGANIZED => {
-                // gauss(5, 3, 0, 10, 1) — approximate with clamped normal.
-                let v = 5.0 + rng.gen::<f64>() * 6.0 - 3.0;
-                v.clamp(0.0, 10.0).round()
-            }
-            RTYPE_CULT => {
-                let v = 0.5 + rng.gen::<f64>() * 1.0 - 0.5;
-                v.clamp(0.0, 5.0)
-            }
-            RTYPE_HERESY => {
-                let v = 1.0 + rng.gen::<f64>() * 1.0 - 0.5;
-                v.clamp(0.0, 5.0)
-            }
-            _ => 1.0,
-        };
+        // Not stored on Religion (no field); hardcoded values used in
+        // expand_religions match the FMG mean values for each type.
+        // The RNG draw from the FMG port is intentionally omitted — the
+        // expansionism is re-derived deterministically in expand_religions.
+        let _rtype = rtype;
 
         // Color: mix of culture color.
         let culture_color = if (culture_id as usize) < cultures.len() {
@@ -877,6 +882,7 @@ fn generate_religions(
             parent: None,
             followers: 0.0,
             type_code: rtype,
+            expansion_mode: "global".to_string(), // MVP default; Phase 4 will set via generateReligionName
             founded_year: 0,
             dissolved_year: None,
         };
@@ -988,10 +994,16 @@ fn expand_religions(
                 continue;
             }
 
-            // Culture constraint: if expansion is "culture", only spread
-            // within same culture. FMG: expansion === "culture".
-            // For MVP, organized religions spread globally (no culture lock).
-            // TODO: wire expansion mode from religion.
+            // FMG expansion-mode hard-return (religions.ts 930-932):
+            // if (expansion === "culture" && culture !== cells.culture[nextCell]) return;
+            // if (expansion === "state"   && state   !== cells.state[nextCell]) return;
+            // Only applies to non-folk (folk expand via auto-assign, not Dijkstra).
+            if r.expansion_mode == "culture" && culture as i32 != cells_culture[nb] {
+                continue; // hard stop at culture boundary
+            }
+            if r.expansion_mode == "state" && state != cells_state[nb] {
+                continue; // hard stop at state boundary
+            }
 
             // Culture cost: 0 if same, 10 if different.
             let culture_cost = if culture == cells_culture[nb] as u32 { 0.0 } else { 10.0 };
@@ -1041,6 +1053,377 @@ fn mix_color(base: u32, mix_factor: f64, darkening: f64) -> u32 {
     let g = ((mix_g as f64) * (1.0 - darkening)).min(255.0) as u32;
     let b = ((mix_b as f64) * (1.0 - darkening)).min(255.0) as u32;
     (r << 16) | (g << 8) | b
+}
+
+/// Adversarial probe module for Step 3.3 review.
+/// Runs alongside the impl-driver tests; prints probe results to stderr.
+#[cfg(test)]
+mod adversarial_probes {
+    use super::*;
+    use crate::climate;
+    use crate::generate_world_inner;
+    use crate::gen_states;
+    use std::collections::BTreeMap;
+
+    fn grid(seed: u32, n: u32) -> Grid {
+        generate_world_inner(seed, n, &climate::ClimateOpts::default())
+    }
+
+    /// P1: culture centers must not be overwritten by neighbor expansion.
+    /// `cells_culture[c.origin]` must equal `c.id` after expansion.
+    #[test]
+    fn p1_culture_centers_not_overwritten() {
+        let cases = [(42u32, 1000u32), (0, 1000), (u32::MAX, 1000), (7, 2000), (123, 4000)];
+        for (seed, n) in cases {
+            let g = grid(seed, n);
+            let states = gen_states::generate_states(&g, seed, 12);
+            let suit = gen_states::compute_suitability(&g);
+            let r = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            let mut bad = Vec::new();
+            for c in &r.cultures {
+                if c.id == 0 { continue; }
+                let cell = c.origin as usize;
+                if cell >= r.cells_culture.len() { continue; }
+                let assigned = r.cells_culture[cell];
+                if assigned != c.id as i32 {
+                    bad.push((c.id, c.origin, assigned));
+                }
+            }
+            if !bad.is_empty() {
+                eprintln!(
+                    "P1 FAIL seed={seed} n={n}: {} center(s) overwritten; first 5: {:?}",
+                    bad.len(), &bad[..bad.len().min(5)]
+                );
+            }
+            assert_eq!(bad.len(), 0, "P1 culture-center overwrite: seed={seed} n={n}");
+        }
+    }
+
+    /// P2: culture color stability across counts.
+    /// The reference claim "first N cultures get identical colors regardless
+    /// of total culture count" should hold. color is derived from
+    /// (seed, culture_id) independently so this SHOULD pass — verify it does.
+    #[test]
+    fn p2_culture_color_stability_across_counts() {
+        let g = grid(42, 2000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r4 = generate_cultures_religions(
+            &g, 42, 4, 0, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let r12 = generate_cultures_religions(
+            &g, 42, 12, 0, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let common = r4.cultures.len().min(r12.cultures.len());
+        let mismatches: Vec<_> = (0..common)
+            .filter(|&i| r4.cultures[i].color != r12.cultures[i].color)
+            .collect();
+        if !mismatches.is_empty() {
+            eprintln!("P2 color mismatches at indices {:?}", mismatches);
+        }
+        assert_eq!(mismatches.len(), 0, "P2 color stability broken");
+    }
+
+    /// P3: water cells (h < SEA_LEVEL) should never have a religion > 0.
+    #[test]
+    fn p3_religions_not_on_water() {
+        let g = grid(42, 1000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let bad: Vec<usize> = (0..g.cell_count())
+            .filter(|&i| g.cells.h[i] < SEA_LEVEL && r.cells_religion[i] > 0)
+            .collect();
+        if !bad.is_empty() {
+            eprintln!("P3 religion-on-water: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+        }
+        assert_eq!(bad.len(), 0, "P3 religions on water");
+    }
+
+    /// P4: culture not on water.
+    #[test]
+    fn p4_cultures_not_on_water() {
+        let g = grid(42, 1000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let bad: Vec<usize> = (0..g.cell_count())
+            .filter(|&i| g.cells.h[i] < SEA_LEVEL && r.cells_culture[i] > 0)
+            .collect();
+        if !bad.is_empty() {
+            eprintln!("P4 culture-on-water: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+        }
+        assert_eq!(bad.len(), 0, "P4 cultures on water");
+    }
+
+    /// P5: pure-data determinism across runs (full struct equality).
+    #[test]
+    fn p5_full_determinism() {
+        let cases = [0u32, 42, 99, u32::MAX];
+        for seed in cases {
+            let g = grid(seed, 1000);
+            let states = gen_states::generate_states(&g, seed, 12);
+            let suit = gen_states::compute_suitability(&g);
+            let r1 = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            let r2 = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            // Compare Cultures/Religions field-by-field since they don't
+            // derive PartialEq (only Serialize + Debug + Clone + Default).
+            let cols_eq = r1.cultures.len() == r2.cultures.len()
+                && r1.cultures.iter().zip(r2.cultures.iter())
+                    .all(|(a, b)| a.id == b.id
+                        && a.name == b.name
+                        && a.color == b.color
+                        && a.origin == b.origin
+                        && a.type_code == b.type_code
+                        && a.cell_count == b.cell_count);
+            let rels_eq = r1.religions.len() == r2.religions.len()
+                && r1.religions.iter().zip(r2.religions.iter())
+                    .all(|(a, b)| a.id == b.id
+                        && a.color == b.color
+                        && a.followers.to_bits() == b.followers.to_bits()
+                        && a.type_code == b.type_code);
+            let same = cols_eq
+                && rels_eq
+                && r1.cells_culture == r2.cells_culture
+                && r1.cells_religion == r2.cells_religion;
+            assert!(same, "P5 seed={seed} non-deterministic");
+            println!("P5 seed={seed} full-equality: {same}");
+        }
+    }
+
+    /// P6: edge counts (0, 1, huge u32). No panic; reasonable behavior.
+    #[test]
+    fn p6_edge_counts_no_panic() {
+        let g = grid(42, 1000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let cases = [
+            (0u32, 0u32), (0, 10), (1, 0), (1, 1), (10, 10),
+            (u32::MAX, 10), (10, u32::MAX), (u32::MAX, u32::MAX),
+        ];
+        for (cc, rc) in cases {
+            let r = generate_cultures_religions(
+                &g, 42, cc, rc, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            // Sanity: cult assigned count ≤ cell_count.
+            assert_eq!(r.cells_culture.len(), g.cell_count());
+            assert_eq!(r.cells_religion.len(), g.cell_count());
+            // Religion ids must be in [0, religions.len()).
+            for &rid in &r.cells_religion {
+                assert!(rid >= 0 && (rid as usize) < r.religions.len(),
+                    "P6 cc={cc} rc={rc}: cells_religion id {rid} out of range");
+            }
+            for &cid in &r.cells_culture {
+                assert!(cid >= 0 && (cid as usize) < r.cultures.len(),
+                    "P6 cc={cc} rc={rc}: cells_culture id {cid} out of range");
+            }
+        }
+    }
+
+    /// P7: folk auto-assign invariant — every cultured land cell has its
+    /// folk religion (type_code == RTYPE_FOLK) when religion_count == 0.
+    #[test]
+    fn p7_folk_only_assigns_to_all_culture_cells() {
+        let g = grid(42, 2000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 0, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let bad: Vec<usize> = (0..g.cell_count())
+            .filter(|&i| g.cells.h[i] >= SEA_LEVEL
+                && r.cells_culture[i] > 0
+                && (r.cells_religion[i] <= 0
+                    || (r.cells_religion[i] as usize) < r.religions.len()
+                        && r.religions[r.cells_religion[i] as usize].type_code != RTYPE_FOLK))
+            .collect();
+        if !bad.is_empty() {
+            eprintln!("P7 cells_with_culture_but_not_folk: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+        }
+        assert_eq!(bad.len(), 0, "P7 folk-assignment broken");
+    }
+
+    /// P8: religion followers accumulator — followers sum should match the
+    /// sum of burg populations on cells of that religion.
+    #[test]
+    fn p8_follower_invariant_holds() {
+        let g = grid(42, 2000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+        );
+
+        let mut sum = vec![0.0f64; r.religions.len()];
+        for b in &states.pack.burgs {
+            if b.id == 0 { continue; }
+            let cell = b.cell as usize;
+            if cell >= g.cell_count() { continue; }
+            let rid = r.cells_religion[cell] as usize;
+            if rid > 0 && rid < sum.len() {
+                sum[rid] += b.population;
+            }
+        }
+        // Skip religion 0 ("no religion") since the impl zeroes it.
+        let mismatches: Vec<_> = (1..r.religions.len())
+            .filter(|&i| (r.religions[i].followers - sum[i]).abs() > 1e-6)
+            .collect();
+        if !mismatches.is_empty() {
+            for i in &mismatches {
+                eprintln!(
+                    "P8 rel {}: stored followers={}, recomputed sum={}",
+                    i, r.religions[*i].followers, sum[*i]
+                );
+            }
+        }
+        assert_eq!(mismatches.len(), 0, "P8 follower invariant broken");
+    }
+
+    /// P9: religion follower count vs cells assigned.
+    /// Every culture-cell with a religion has that religion's burg cells
+    /// attributed. The sum of cultures.culture cell counts should equal
+    /// count of cells where cells_culture > 0 (sanity, not bug).
+    #[test]
+    fn p9_cell_count_invariant() {
+        let g = grid(42, 2000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let mut actual = vec![0u32; r.cultures.len()];
+        for &c in &r.cells_culture {
+            if c > 0 && (c as usize) < actual.len() {
+                actual[c as usize] += 1;
+            }
+        }
+        let mismatches: Vec<_> = (0..r.cultures.len())
+            .filter(|&i| r.cultures[i].cell_count != actual[i])
+            .collect();
+        // exempt culture 0 (Wildlands) — impl zeroes it explicitly.
+        let mismatches: Vec<_> = mismatches.into_iter().filter(|&i| i != 0).collect();
+        if !mismatches.is_empty() {
+            for i in &mismatches {
+                eprintln!("P9 culture {}: stored cell_count={}, actual={}", i, r.cultures[*i].cell_count, actual[*i]);
+            }
+        }
+        assert_eq!(mismatches.len(), 0, "P9 cell_count invariant broken");
+    }
+
+    /// P10: investigate whether culture expansion actually reaches a large
+    /// fraction of populated land cells. FMG assigns to any cell with
+    /// pop>0; the port assigns to any cell with suitability>0. Report the
+    /// coverage ratio — a very low ratio signals that cost paths are
+    /// crushing expansion before fanning out.
+    #[test]
+    fn p10_coverage_ratio() {
+        let mut report = BTreeMap::new();
+        for seed in [0u32, 42, 100, 9999, u32::MAX] {
+            let g = grid(seed, 2000);
+            let states = gen_states::generate_states(&g, seed, 12);
+            let suit = gen_states::compute_suitability(&g);
+            let r = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            let land = (0..g.cell_count())
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL).count();
+            let cult_assigned = (0..g.cell_count())
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_culture[i] > 0).count();
+            let rel_assigned = (0..g.cell_count())
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_religion[i] > 0).count();
+            let ratio = (cult_assigned as f64) / (land.max(1) as f64) * 100.0;
+            let rel_ratio = (rel_assigned as f64) / (land.max(1) as f64) * 100.0;
+            eprintln!(
+                "P10 seed={seed} land={land} cult_assigned={cult_assigned} ({ratio:.1}%) rel_assigned={rel_assigned} ({rel_ratio:.1}%) cultures={} religions={}",
+                r.cultures.len(), r.religions.len()
+            );
+            *report.entry(ratio.round() as i32).or_insert(0u32) += 1;
+        }
+        eprintln!("P10 coverage histogram (rounded%): {:?}", report);
+    }
+
+    /// P11: religion centers must be on populated/land cells (not water)
+    /// since they are seeded on burgs / land cells with suitability > 2.
+    #[test]
+    fn p11_religion_centers_on_land() {
+        let g = grid(42, 2000);
+        let states = gen_states::generate_states(&g, 42, 12);
+        let suit = gen_states::compute_suitability(&g);
+        let r = generate_cultures_religions(
+            &g, 42, 12, 20, &suit, &states.cells_state, &states.pack.burgs,
+        );
+        let mut water_centers = 0;
+        for rel in &r.religions {
+            if rel.id == 0 || rel.type_code == RTYPE_FOLK { continue; }
+            let cell = rel.center_cell as usize;
+            if cell < g.cell_count() && g.cells.h[cell] < SEA_LEVEL {
+                water_centers += 1;
+            }
+        }
+        assert_eq!(water_centers, 0, "P11 religion centers on water");
+    }
+
+    /// P12: Multiple culture_count runs with other-than-default settings —
+    /// ensure color scales independently so diff count breaks determinism
+    /// only via a clean expansion path.
+    #[test]
+    fn p12_per_grid_seed_stable() {
+        for seed in [0u32, 42, 99999, u32::MAX] {
+            let g = grid(seed, 1500);
+            let states = gen_states::generate_states(&g, seed, 12);
+            let suit = gen_states::compute_suitability(&g);
+            let r1 = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            let r2 = generate_cultures_religions(
+                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            );
+            assert_eq!(r1.cells_culture, r2.cells_culture);
+            assert_eq!(r1.cells_religion, r2.cells_religion);
+            // field-by-field Culture/Religion comparison
+            assert_eq!(r1.cultures.len(), r2.cultures.len());
+            for (a, b) in r1.cultures.iter().zip(r2.cultures.iter()) {
+                assert_eq!(a.id, b.id);
+                assert_eq!(a.color, b.color);
+                assert_eq!(a.origin, b.origin);
+                assert_eq!(a.type_code, b.type_code);
+            }
+            assert_eq!(r1.religions.len(), r2.religions.len());
+            for (a, b) in r1.religions.iter().zip(r2.religions.iter()) {
+                assert_eq!(a.id, b.id);
+                assert_eq!(a.color, b.color);
+                assert_eq!(a.type_code, b.type_code);
+            }
+        }
+    }
+
+    /// P13: the doc-comment claim "Culture expansion §1 — seed centers from
+    /// populated cells" requires the populated-cell list to be non-empty for
+    /// the typical case. Verify the populated filter INTERVAL is sane
+    /// (cells with suitability > 0 AND h >= SEA_LEVEL).
+    #[test]
+    fn p13_populated_cells_nonempty_typical() {
+        for seed in [0u32, 1, 42, 100, 9999, u32::MAX] {
+            let g = grid(seed, 1000);
+            let suit = gen_states::compute_suitability(&g);
+            let populated: Vec<usize> = (0..g.cell_count())
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && suit[i] > 0.0)
+                .collect();
+            eprintln!("P13 seed={seed} populated_cells={}", populated.len());
+            // A land cell should exist with positive suitability on typical worlds.
+            assert!(populated.len() > 20, "P13 seed={seed}: only {} populated cells", populated.len());
+        }
+    }
 }
 
 // ===========================================================================
@@ -1179,5 +1562,68 @@ mod tests {
         assert_eq!(back.religions.len(), result.religions.len());
         assert_eq!(back.cells_culture, result.cells_culture);
         assert_eq!(back.cells_religion, result.cells_religion);
+    }
+
+    /// Production regression test: culture cell_count matches actual assignment.
+    /// Promoted from adversarial probe P9.
+    #[test]
+    fn culture_cell_counts_match_actual_assignment() {
+        let grid = test_grid(42, 2000);
+        let states = gen_states::generate_states(&grid, 42, 12);
+        let suitability = gen_states::compute_suitability(&grid);
+        let r = generate_cultures_religions(
+            &grid, 42, 12, 10, &suitability,
+            &states.cells_state, &states.pack.burgs,
+        );
+        let mut actual = vec![0u32; r.cultures.len()];
+        for &c in &r.cells_culture {
+            let id = c as usize;
+            if id < actual.len() {
+                actual[id] += 1;
+            }
+        }
+        for (i, c) in r.cultures.iter().enumerate() {
+            if i == 0 {
+                // Culture 0 (Wildlands) is explicitly zeroed in the implementation.
+                continue;
+            }
+            assert_eq!(
+                c.cell_count, actual[i],
+                "culture {}: stored={}, actual={}",
+                i, c.cell_count, actual[i]
+            );
+        }
+    }
+
+    /// Production regression test: religion followers invariant.
+    /// Promoted from adversarial probe P8.
+    #[test]
+    fn religion_followers_match_burg_population() {
+        let grid = test_grid(42, 2000);
+        let states = gen_states::generate_states(&grid, 42, 12);
+        let suitability = gen_states::compute_suitability(&grid);
+        let r = generate_cultures_religions(
+            &grid, 42, 12, 10, &suitability,
+            &states.cells_state, &states.pack.burgs,
+        );
+        let mut sum = vec![0.0f64; r.religions.len()];
+        for b in &states.pack.burgs {
+            if b.id == 0 {
+                continue;
+            }
+            let cell = b.cell as usize;
+            if cell >= grid.cell_count() {
+                continue;
+            }
+            let rid = r.cells_religion[cell] as usize;
+            if rid > 0 && rid < sum.len() {
+                sum[rid] += b.population;
+            }
+        }
+        // Skip religion 0 ("no religion") since the impl zeroes it.
+        let mismatches: Vec<_> = (1..r.religions.len())
+            .filter(|&i| (r.religions[i].followers - sum[i]).abs() > 1e-6)
+            .collect();
+        assert_eq!(mismatches.len(), 0, "religion followers invariant broken");
     }
 }

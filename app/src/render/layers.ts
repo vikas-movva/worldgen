@@ -27,7 +27,15 @@ import {
 	rgb,
 } from "./palette";
 
-export type LayerName = "terrain" | "biome" | "rivers" | "lakes";
+export type LayerName =
+	| "terrain"
+	| "biome"
+	| "rivers"
+	| "lakes"
+	| "states"
+	| "provinces"
+	| "cultures"
+	| "religions";
 export type LayerState = Record<LayerName, boolean>;
 
 const STYLE = new TextureStyle({
@@ -65,6 +73,10 @@ export class WorldMap {
 		biome: false,
 		rivers: false,
 		lakes: false,
+		states: false,
+		provinces: false,
+		cultures: false,
+		religions: false,
 	};
 	private worldW: number;
 	private worldH: number;
@@ -72,6 +84,39 @@ export class WorldMap {
 	private heightData: Uint8Array | null = null;
 	/** The biome texture data buffer — updated in place by `updateBiome`. */
 	private biomeData: Uint8Array | null = null;
+	/**
+	 * Step 3.4: entity-layer meshes + color buffers. Each mesh shares the
+	 * merged world `geometry` and carries its own 1×N RGBA data texture
+	 * indexed by cell id (texel `cellId` = the per-cell entity color). The
+	 * buffer is filled by `setEntities`/`updateEntities` from the Phase-3
+	 * `pack` + per-cell `state`/`province`/`culture`/`religion` arrays.
+	 * Unassigned cells are transparent (alpha 0) so the terrain shows through.
+	 */
+	private stateMesh: Mesh | null = null;
+	private provinceMesh: Mesh | null = null;
+	private cultureMesh: Mesh | null = null;
+	private religionMesh: Mesh | null = null;
+	private stateData: Uint8Array | null = null;
+	private provinceData: Uint8Array | null = null;
+	private cultureData: Uint8Array | null = null;
+	private religionData: Uint8Array | null = null;
+	/**
+	 * Step 3.4: the entity index arrays for the current grid, stashed so
+	 * `drawSelection` can outline every cell belonging to the selected entity
+	 * (a whole state / culture highlights, not just one cell). Cleared on
+	 * `destroy()` so a dangling re-stroke finds no data and no-ops.
+	 */
+	private entityCells: {
+		state: number[];
+		province: number[];
+		culture: number[];
+		religion: number[];
+	} | null = null;
+	/** Step 3.4: the currently selected entity (for click-to-select highlight). */
+	private selectedEntity: {
+		kind: "state" | "province" | "culture" | "religion";
+		id: number;
+	} | null = null;
 	/**
 	 * Step 2.5.5: the currently selected cell + the grid it was picked on,
 	 * stashed so `fitToScreen` can re-stroke the outline after every camera
@@ -120,8 +165,43 @@ export class WorldMap {
 		});
 		this.biomeMesh = new Mesh({ geometry: this.geometry, texture: biomeTex });
 
+		// Step 3.4: entity layers start transparent (no entities exist until
+		// generateStates / generateCulturesReligions run). Each mesh shares the
+		// world geometry and gets its own initially-transparent data texture;
+		// setEntities fills + uploads it once the pack is available.
+		const transparent = new Uint8Array(texDim * texDim * 4); // alpha 0
+		this.stateData = transparent.slice();
+		this.provinceData = transparent.slice();
+		this.cultureData = transparent.slice();
+		this.religionData = transparent.slice();
+		const stateTex = dataTexture(this.stateData, texDim);
+		const provinceTex = dataTexture(this.provinceData, texDim);
+		const cultureTex = dataTexture(this.cultureData, texDim);
+		const religionTex = dataTexture(this.religionData, texDim);
+		this.textures.push(stateTex, provinceTex, cultureTex, religionTex);
+		this.stateMesh = new Mesh({ geometry: this.geometry, texture: stateTex });
+		this.provinceMesh = new Mesh({
+			geometry: this.geometry,
+			texture: provinceTex,
+		});
+		this.cultureMesh = new Mesh({
+			geometry: this.geometry,
+			texture: cultureTex,
+		});
+		this.religionMesh = new Mesh({
+			geometry: this.geometry,
+			texture: religionTex,
+		});
+
 		this.view = new Container({ isRenderGroup: true });
-		this.view.addChild(this.terrainMesh, this.biomeMesh);
+		this.view.addChild(
+			this.terrainMesh,
+			this.biomeMesh,
+			this.stateMesh,
+			this.provinceMesh,
+			this.cultureMesh,
+			this.religionMesh,
+		);
 		this.applyLayers();
 	}
 
@@ -301,6 +381,52 @@ export class WorldMap {
 	}
 
 	/**
+	 * Step 3.4: click-to-select an ENTITY. Given a picked `cellId`, find the
+	 * owning entity of whichever entity layer is currently "on top" (priority
+	 * religions > cultures > provinces > states), then highlight every cell
+	 * belonging to that entity (not just the clicked cell). If no entity layer
+	 * is visible, this falls back to single-cell selection.
+	 *
+	 * The highlighted-cells set is stashed in `selectedEntity` so `fitToScreen`
+	 * can re-stroke the outline at the new camera scale (the same
+	 * scale-compensation pattern as `drawSelection`).
+	 */
+	setSelectedEntity(grid: Grid, cellId: number): void {
+		if (cellId < 0 || cellId >= grid.mesh.points.length) {
+			this.selectedEntity = null;
+			this.setSelected(grid, -1);
+			return;
+		}
+		const cells = grid.cells;
+		// Priority: most-specific visible layer wins.
+		let kind: "state" | "province" | "culture" | "religion" | null = null;
+		let id = -1;
+		if (this.layers.religions && cells.religion[cellId] > 0) {
+			kind = "religion";
+			id = cells.religion[cellId];
+		} else if (this.layers.cultures && cells.culture[cellId] > 0) {
+			kind = "culture";
+			id = cells.culture[cellId];
+		} else if (this.layers.provinces && cells.province[cellId] >= 0) {
+			kind = "province";
+			id = cells.province[cellId];
+		} else if (this.layers.states && cells.state[cellId] >= 0) {
+			kind = "state";
+			id = cells.state[cellId];
+		}
+		if (!kind || id < 0) {
+			// No entity layer active, or clicked cell is unassigned -> single cell.
+			this.selectedEntity = null;
+			this.setSelected(grid, cellId);
+			return;
+		}
+		this.selectedEntity = { kind, id };
+		this.selectedGrid = grid;
+		this.selectedCellId = cellId;
+		this.drawSelection();
+	}
+
+	/**
 	 * Re-stroke the selection outline with the current camera scale. Computes
 	 * a stroke width in view-local units that renders at a constant ~2px on
 	 * screen: `localWidth = desiredPx / meanScale`. Called from `setSelected`
@@ -319,33 +445,9 @@ export class WorldMap {
 			this.selectionGfx.label = "selection";
 			this.view.addChild(this.selectionGfx);
 		}
-		const cellI = grid.mesh.cells.i as unknown as number[];
-		const cellV = grid.mesh.cells.v as unknown as number[];
-		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
-
-		const lo = cellI[cellId] as number;
-		const hi = cellI[cellId + 1] as number;
-		const k = hi - lo;
-		if (k < 3) {
-			this.selectionStrokeWidth = 0;
-			return;
-		}
-
 		const gfx = this.selectionGfx;
 		gfx.clear();
-		gfx.moveTo(
-			nx(vpts[cellV[lo] as number][0]),
-			ny(vpts[cellV[lo] as number][1]),
-		);
-		for (let r = 1; r < k; r++) {
-			const vid = cellV[lo + r] as number;
-			gfx.lineTo(nx(vpts[vid][0]), ny(vpts[vid][1]));
-		}
-		gfx.closePath();
+
 		// Scale-compensate: stroke width is in view-local units; divide by
 		// the mean of |scaleX|,|scaleY| so the on-screen width is ~2 px.
 		// Clamp to a hairline minimum so a degenerate (near-zero) scale
@@ -359,6 +461,63 @@ export class WorldMap {
 			1 / 4096, // hairline floor; below this strokes flicker out
 		);
 		this.selectionStrokeWidth = localWidth * meanScale; // store on-screen px
+
+		// Which cells to outline: every cell of the selected entity, or just
+		// the clicked cell when no entity is selected.
+		const entity = this.selectedEntity;
+		if (entity && this.entityCells) {
+			const arr =
+				entity.kind === "state"
+					? this.entityCells.state
+					: entity.kind === "province"
+						? this.entityCells.province
+						: entity.kind === "culture"
+							? this.entityCells.culture
+							: this.entityCells.religion;
+			const n = grid.mesh.points.length;
+			let drawn = 0;
+			for (let c = 0; c < n; c++) {
+				if (arr[c] === entity.id) {
+					this.strokeCellOutline(gfx, grid, c, localWidth);
+					drawn++;
+				}
+			}
+			// Fallback: if the entity somehow has no cells, outline the picked one.
+			if (drawn === 0) this.strokeCellOutline(gfx, grid, cellId, localWidth);
+		} else {
+			this.strokeCellOutline(gfx, grid, cellId, localWidth);
+		}
+	}
+
+	/** Stroke the polygon ring of a single cell onto the selection Graphics. */
+	private strokeCellOutline(
+		gfx: Graphics,
+		grid: Grid,
+		cellId: number,
+		localWidth: number,
+	): void {
+		const cellI = grid.mesh.cells.i as unknown as number[];
+		const cellV = grid.mesh.cells.v as unknown as number[];
+		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+
+		const lo = cellI[cellId] as number;
+		const hi = cellI[cellId + 1] as number;
+		const k = hi - lo;
+		if (k < 3) return;
+
+		gfx.moveTo(
+			nx(vpts[cellV[lo] as number][0]),
+			ny(vpts[cellV[lo] as number][1]),
+		);
+		for (let r = 1; r < k; r++) {
+			const vid = cellV[lo + r] as number;
+			gfx.lineTo(nx(vpts[vid][0]), ny(vpts[vid][1]));
+		}
+		gfx.closePath();
 		gfx.stroke({
 			color: 0xffff00,
 			width: localWidth,
@@ -514,6 +673,10 @@ export class WorldMap {
 		if (this.biomeMesh) this.biomeMesh.visible = this.layers.biome;
 		if (this.riverGfx) this.riverGfx.visible = this.layers.rivers;
 		if (this.lakeGfx) this.lakeGfx.visible = this.layers.lakes;
+		if (this.stateMesh) this.stateMesh.visible = this.layers.states;
+		if (this.provinceMesh) this.provinceMesh.visible = this.layers.provinces;
+		if (this.cultureMesh) this.cultureMesh.visible = this.layers.cultures;
+		if (this.religionMesh) this.religionMesh.visible = this.layers.religions;
 	}
 
 	/** Toggle layer visibility. No geometry rebuild -- pure visibility swap. */
@@ -573,6 +736,125 @@ export class WorldMap {
 		return { ...this.layers };
 	}
 
+	/**
+	 * Step 3.4: populate the four entity layers from a Phase-3 result.
+	 *
+	 * `pack` holds the entity color vectors (`states[i].color` etc., packed
+	 * 0xRRGGBB). `cells_state[i]` is the owning entity id for cell `i` (-1 if
+	 * unassigned). We fill each layer's 1×N RGBA buffer — texel `cell` gets
+	 * the color of `pack_X[cells_X[cell]]`, or transparent (alpha 0) if the
+	 * cell has no entity — then `source.update()` uploads it. Unassigned cells
+	 * show the terrain beneath.
+	 *
+	 * This is the entity-layer equivalent of `updateHeight`: O(N) CPU fill +
+	 * one texture upload, NO geometry rebuild. Call `applyLayers()` afterwards
+	 * is not needed — visibility is unchanged; only the texture data updates.
+	 *
+	 * @param grid  the Grid (used for cell count + to stash for selection).
+	 * @param result the combined Phase-3 result (states pack + per-cell arrays
+	 *               + culture/religion vectors + per-cell arrays).
+	 */
+	setEntities(
+		grid: Grid,
+		result: {
+			pack: {
+				states: { color: number }[];
+				provinces: { color: number }[];
+				cultures: { color: number }[];
+				religions: { color: number }[];
+			};
+			cells_state: number[];
+			cells_province: number[];
+			cells_culture: number[];
+			cells_religion: number[];
+		},
+	): void {
+		const n = grid.mesh.points.length;
+		this.entityCells = {
+			state: result.cells_state,
+			province: result.cells_province,
+			culture: result.cells_culture,
+			religion: result.cells_religion,
+		};
+		this.fillEntityBuffer(
+			this.stateData,
+			n,
+			result.pack.states,
+			result.cells_state,
+			-1, // -1 == unassigned state
+		);
+		this.fillEntityBuffer(
+			this.provinceData,
+			n,
+			result.pack.provinces,
+			result.cells_province,
+			-1,
+		);
+		this.fillEntityBuffer(
+			this.cultureData,
+			n,
+			result.pack.cultures,
+			result.cells_culture,
+			0, // 0 == Wildlands (no culture)
+		);
+		this.fillEntityBuffer(
+			this.religionData,
+			n,
+			result.pack.religions,
+			result.cells_religion,
+			0, // 0 == no religion
+		);
+		// Upload all four textures.
+		this.textures[2]?.source.update();
+		this.textures[3]?.source.update();
+		this.textures[4]?.source.update();
+		this.textures[5]?.source.update();
+	}
+
+	clearEntities(): void {
+		if (this.stateData) this.stateData.fill(0);
+		if (this.provinceData) this.provinceData.fill(0);
+		if (this.cultureData) this.cultureData.fill(0);
+		if (this.religionData) this.religionData.fill(0);
+		this.entityCells = null;
+		this.selectedEntity = null;
+		this.textures[2]?.source.update();
+		this.textures[3]?.source.update();
+		this.textures[4]?.source.update();
+		this.textures[5]?.source.update();
+	}
+
+	/**
+	 * Fill one entity layer's 1×N RGBA buffer. For each cell `i` in
+	 * `[0, count)`, look up its entity id `eid = cells[i]`; if `eid` is valid
+	 * (>= 0, != the unassigned sentinel, and within `entities`), write the
+	 * packed `0xRRGGBB` color at texel `i` with alpha 255; otherwise leave the
+	 * texel transparent (alpha 0).
+	 */
+	private fillEntityBuffer(
+		buf: Uint8Array | null,
+		count: number,
+		entities: { color: number }[],
+		cells: number[],
+		unassigned: number,
+	): void {
+		if (!buf) return;
+		const maxId = entities.length - 1;
+		for (let i = 0; i < count; i++) {
+			const eid = cells[i] ?? unassigned;
+			const o = i * 4;
+			if (eid === unassigned || eid < 0 || eid > maxId) {
+				buf[o + 3] = 0; // transparent
+				continue;
+			}
+			const color = entities[eid].color;
+			buf[o + 0] = (color >> 16) & 0xff;
+			buf[o + 1] = (color >> 8) & 0xff;
+			buf[o + 2] = color & 0xff;
+			buf[o + 3] = 255;
+		}
+	}
+
 	destroy(): void {
 		// Detach from parent FIRST so the render-group update list drops this
 		// subtree before we null its renderable data -- otherwise the next
@@ -582,6 +864,10 @@ export class WorldMap {
 		this.view.destroy({ children: true });
 		this.terrainMesh = null;
 		this.biomeMesh = null;
+		this.stateMesh = null;
+		this.provinceMesh = null;
+		this.cultureMesh = null;
+		this.religionMesh = null;
 		if (this.geometry) {
 			this.geometry.destroy();
 			this.geometry = null;
@@ -595,12 +881,20 @@ export class WorldMap {
 		this.textures = [];
 		this.heightData = null;
 		this.biomeData = null;
+		this.stateData = null;
+		this.provinceData = null;
+		this.cultureData = null;
+		this.religionData = null;
 		// Drop the selection refs so a dangling re-stroke (e.g. a queued
 		// `fitToScreen` after destroy) finds no cell and no-ops.
 		this.selectionGfx = null;
 		this.selectedGrid = null;
 		this.selectedCellId = -1;
 		this.selectionStrokeWidth = 0;
+		// Step 3.4: drop entity-layer refs + selection so a dangling re-stroke
+		// finds no data and no-ops.
+		this.entityCells = null;
+		this.selectedEntity = null;
 		// Step 2.5.6: drop the river/lake overlay refs so a dangling
 		// re-stroke (a queued `fitToScreen` after destroy) finds no
 		// drainage and no-ops.

@@ -42,6 +42,7 @@ class FakeWorker {
 
 	/** Reply to the current `lastMessage` with a success payload. */
 	reply(result: unknown, kind?: string) {
+		expect(this.lastMessage).toBeDefined();
 		const req = this.lastMessage!;
 		const evt = {
 			data: { kind: kind ?? req.kind, reqId: req.reqId, ok: true, result },
@@ -69,7 +70,16 @@ beforeEach(() => {
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
+		layerEnabled: {
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
+		},
 		editorTool: "raise",
 		brushRadius: 30,
 		brushStrength: 0.5,
@@ -249,7 +259,7 @@ describe("CellInspector per-cell height edit", () => {
 		// First wire message should be edit_heightmap.
 		const eh = editReq.find((m) => m.kind === "edit_heightmap");
 		expect(eh).toBeTruthy();
-		const ops = eh!.ops as EditOp[];
+		const ops = eh?.ops as EditOp[];
 		expect(ops).toHaveLength(1);
 		expect(ops[0].mode).toBe("Add");
 		expect(ops[0].cells).toEqual([5]);
@@ -309,7 +319,9 @@ describe("CellInspector per-cell height edit", () => {
 		});
 
 		// The store grid should now reflect the spliced h + temp + biome.
-		const cur = useWorldgenStore.getState().grid!;
+		const store = useWorldgenStore.getState();
+		expect(store.grid).toBeDefined();
+		const cur = store.grid!;
 		expect(cur.cells.h[5]).toBe(75);
 		expect(cur.cells.temp[5]).toBe(8);
 		expect(cur.cells.biome[5]).toBe(11);
@@ -356,7 +368,7 @@ describe("CellInspector per-cell height edit", () => {
 		});
 
 		const eh = editReq.find((m) => m.kind === "edit_heightmap");
-		expect(eh).toBeTruthy();
+		expect(eh).toBeDefined();
 		const op = (eh!.ops as EditOp[])[0];
 		expect(op.mode).toBe("Add");
 		expect(op.cells).toEqual([5]);
@@ -407,7 +419,7 @@ describe("CellInspector per-cell height edit", () => {
 		});
 
 		const eh = editReq.find((m) => m.kind === "edit_heightmap");
-		expect(eh).toBeTruthy();
+		expect(eh).toBeDefined();
 		const op = (eh!.ops as EditOp[])[0];
 		// 95 -> 100 (clamped), delta = 5, strength = 0.05.
 		expect(op.strength).toBeCloseTo(0.05, 5);
@@ -496,19 +508,21 @@ describe("CellInspector per-cell height edit", () => {
 		});
 
 		// Reply to edit_heightmap with a thin patch.
-		const editReq = reqLog.find((m) => m.kind === "edit_heightmap")!;
+		const editReq = reqLog.find((m) => m.kind === "edit_heightmap");
+		expect(editReq).toBeDefined();
 		const newH = new Array(10).fill(50);
 		newH[3] = 80;
 		await act(async () => {
-			fake.replyTo(editReq, { h: new Uint8Array(newH) });
+			fake.replyTo(editReq!, { h: new Uint8Array(newH) });
 		});
 
 		// Reply to recompute_temp_biome_local with a single-entry patch.
 		const localReq = reqLog.find(
 			(m) => m.kind === "recompute_temp_biome_local",
-		)!;
+		);
+		expect(localReq).toBeDefined();
 		await act(async () => {
-			fake.replyTo(localReq, {
+			fake.replyTo(localReq!, {
 				temp: new Int8Array([8]),
 				biome: new Uint8Array([11]),
 			});
@@ -556,7 +570,9 @@ describe("CellInspector per-cell height edit", () => {
 		// plus the local h from the edit. This is the path that was previously
 		// untested (Issue 3 in the adversarial review): the debounced `.then`
 		// splice with the full DependentResult.
-		const cur = useWorldgenStore.getState().grid!;
+		const store = useWorldgenStore.getState();
+		expect(store.grid).toBeDefined();
+		const cur = store.grid!;
 		expect(cur.cells.h[3]).toBe(80);
 		expect(cur.cells.temp).toEqual(new Array(10).fill(5));
 		expect(cur.cells.prec).toEqual(new Array(10).fill(50));

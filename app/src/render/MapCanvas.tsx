@@ -13,8 +13,55 @@
 import { Application, Container, Graphics } from "pixi.js";
 import { useEffect, useRef, useState } from "react";
 import type { Grid } from "../core/api";
+import { coreApi } from "../core/api";
 import { useGrid, useWorldgenStore } from "../state/worldgenStore";
 import { attachCamera, WorldMap } from "./layers";
+
+/**
+ * Step 3.4: push the combined Phase-3 entity payload to a `WorldMap`. Builds
+ * the `setEntities` argument by merging the states pack + per-cell arrays from
+ * `statesResult` with the culture/religion vectors + per-cell arrays from
+ * `culturesResult`. No-op if either result is missing (the entity layers stay
+ * transparent). The renderer reads `pack.states[i].color` etc. to color each
+ * cell; unassigned cells render transparent so terrain shows through.
+ */
+function pushEntities(
+	worldMap: WorldMap,
+	grid: Grid,
+	st: {
+		statesResult: {
+			pack: {
+				states: { color: number }[];
+				provinces: { color: number }[];
+				cultures: { color: number }[];
+				religions: { color: number }[];
+			};
+			cells_state: number[];
+			cells_province: number[];
+			cells_burg: number[];
+		} | null;
+		culturesResult: {
+			cultures: { color: number }[];
+			religions: { color: number }[];
+			cells_culture: number[];
+			cells_religion: number[];
+		} | null;
+	},
+): void {
+	if (!st.statesResult || !st.culturesResult) return;
+	worldMap.setEntities(grid, {
+		pack: {
+			states: st.statesResult.pack.states,
+			provinces: st.statesResult.pack.provinces,
+			cultures: st.culturesResult.cultures,
+			religions: st.culturesResult.religions,
+		},
+		cells_state: st.statesResult.cells_state,
+		cells_province: st.statesResult.cells_province,
+		cells_culture: st.culturesResult.cells_culture,
+		cells_religion: st.culturesResult.cells_religion,
+	});
+}
 
 // Dark map background (matches the app theme) so the canvas is visible before
 // any geometry is drawn. The placeholder text is drawn with Pixi primitives so
@@ -81,6 +128,7 @@ export function MapCanvas({
 	onWorldMapChangeRef.current = onWorldMapChange;
 	const worldMapRef = useRef<WorldMap | null>(null);
 	const unsubRef = useRef<(() => void) | null>(null);
+	const cleanupListenersRef = useRef<Array<() => void>>([]);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
 	// Surface a minimal status string for debugging + tests. The component is
@@ -194,9 +242,59 @@ export function MapCanvas({
 				if (st.rivers.length || st.lakes.length) {
 					worldMap.setRiversLakes(grid, st.rivers, st.lakes);
 				}
+				// Step 3.4: push entity layers (states/provinces/cultures/
+				// religions) if the Phase-3 results are already present.
+				pushEntities(worldMap, grid, st);
 				// Step 2.5.4: notify the editor that a new WorldMap is available.
 				onWorldMapChangeRef.current?.(worldMap, app.canvas);
 			};
+
+			// Step 3.4: click-to-select an entity. A genuine click (pointer
+			// down + up without much movement) picks the cell under the cursor
+			// and asks the WorldMap to outline every cell belonging to that
+			// cell's entity (state/culture/province/religion, whichever entity
+			// layer is currently on top). Drags (camera pan) don't trigger it
+			// because we require the press to end within a small pixel radius
+			// of where it started.
+			let downX = 0;
+			let downY = 0;
+			let downT = 0;
+			const onCanvasDown = (e: PointerEvent) => {
+				downX = e.clientX;
+				downY = e.clientY;
+				downT = performance.now();
+			};
+			const onCanvasUp = async (e: PointerEvent) => {
+				const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+				const dt = performance.now() - downT;
+				if (moved > 6 || dt > 600) return; // it was a drag/hold, not a click
+				const wm = worldMapRef.current;
+				const g = useWorldgenStore.getState().grid;
+				if (!wm || !g) return;
+				const rect = app.canvas.getBoundingClientRect();
+				const { x, y } = wm.screenToWorld(
+					e.clientX - rect.left,
+					e.clientY - rect.top,
+				);
+				try {
+					const cellId = await coreApi.pickCell(x, y);
+					wm.setSelectedEntity(g, cellId);
+				} catch {
+					/* pick failed; ignore */
+				}
+			};
+			app.canvas.addEventListener("pointerdown", onCanvasDown);
+			app.canvas.addEventListener("pointerup", onCanvasUp);
+			// Store the removers so cleanup detaches them. Flush any prior
+			// leftover listeners (e.g. from a previous buildMap) first so
+			// regenerate never stacks duplicate pointer handlers.
+			while (cleanupListenersRef.current.length) {
+				cleanupListenersRef.current.pop()?.();
+			}
+			cleanupListenersRef.current.push(() => {
+				app.canvas.removeEventListener("pointerdown", onCanvasDown);
+				app.canvas.removeEventListener("pointerup", onCanvasUp);
+			});
 			const rebuildMap = (grid: Grid | null) => {
 				if (worldMap) {
 					detachCamera?.();
@@ -232,6 +330,16 @@ export function MapCanvas({
 				}
 				if (state.layerEnabled !== prev.layerEnabled)
 					worldMap?.setLayers(state.layerEnabled);
+				// Step 3.4: entity results changed (or first arrived). Push the
+				// combined payload to the WorldMap so the entity layers fill.
+				if (
+					state.statesResult !== prev.statesResult ||
+					state.culturesResult !== prev.culturesResult
+				) {
+					if (worldMap && state.grid) {
+						pushEntities(worldMap, state.grid, state);
+					}
+				}
 			});
 			unsubRef.current = unsub;
 
@@ -290,6 +398,10 @@ export function MapCanvas({
 			cancelled = true;
 			unsubRef.current?.();
 			unsubRef.current = null;
+			// Step 3.4: detach any click-to-select listeners.
+			while (cleanupListenersRef.current.length) {
+				cleanupListenersRef.current.pop()?.();
+			}
 			resizeObserverRef.current?.disconnect();
 			resizeObserverRef.current = null;
 			const wm = worldMapRef.current;

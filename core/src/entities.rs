@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 /// the `Pack` produced by the timeline projector — the base `Pack` is the
 /// immutable, generated-once year-0 truth that the `.world` archive
 /// serializes (Phase 8).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Pack {
     pub states: Vec<State>,
     pub provinces: Vec<Province>,
@@ -89,7 +89,7 @@ pub struct Pack {
 /// flips this to `Some(Y)` on a `Conquer` that strips a state of all cells
 /// (a state with no cell-set after projection is treated as dissolved at the
 /// year of its last lost cell).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct State {
     /// Stable 1-based id (index in `Pack.states`).
     pub id: u32,
@@ -135,7 +135,7 @@ pub struct State {
 /// Phase 3.2 subdivides each state into provinces after frontier expansion.
 /// `dissolved_year == None` means still part of the owning state at the year
 /// projector's current step.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Province {
     /// Stable 1-based id (index in `Pack.provinces`).
     pub id: u32,
@@ -165,7 +165,7 @@ pub struct Province {
 /// mirrors FMG's "navigation culture vs. navigation culture vs. highland
 /// vs. river vs. lake" categories used in the name generator and expansion
 /// rules (numeric code 0..=4).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Culture {
     /// Stable 1-based id (index in `Pack.cultures`).
     pub id: u32,
@@ -195,7 +195,10 @@ pub struct Culture {
 /// parent_id)` and a seeded `follower_fraction` of the parent's followers
 /// reassigned to the child. `followers` is the year-0 count (sum of the
 /// religion's burg populations).
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+/// `expansion_mode` controls spread constraints: "culture" = locked to same
+/// culture, "state" = locked to same state, "global" = unconstrained (FMG
+/// expansion string from `generateReligionName`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Religion {
     /// Stable 1-based id (index in `Pack.religions`).
     pub id: u32,
@@ -213,6 +216,9 @@ pub struct Religion {
     /// FMG religion type code (0 = aggregation, matching the FMG origin
     /// categories used in expansion).
     pub type_code: u8,
+    /// Expansion mode: "culture" | "state" | "global". Controls whether
+    /// expansion stops at culture/state boundaries (FMG hard-return).
+    pub expansion_mode: String,
     pub founded_year: i32,
     pub dissolved_year: Option<i32>,
 }
@@ -231,7 +237,7 @@ pub struct Religion {
 /// marker by this. The `repair_entities` cascade (Step 2.5.4) currently emits
 /// a placeholder `"Burg@cellN"` string when a land→water flip removes a burg;
 /// Phase 3.2 will let it read the real `name` from here.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Burg {
     /// Stable 1-based id (index in `Pack.burgs`).
     pub id: u32,
@@ -266,7 +272,7 @@ pub struct Burg {
 /// marker, and the Phase 5 renderer can place them as point sprites. Phase 3
 /// does *not* generate armies (they are created at `Raise` events); the
 /// year-0 `Pack.armies` is conventionally empty.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Army {
     /// Stable 1-based id (assigned by the Phase 4 event engine when raised).
     pub id: u32,
@@ -548,6 +554,7 @@ mod tests {
                 parent: None,
                 followers: 4200.0,
                 type_code: 0,
+                expansion_mode: "global".into(),
                 founded_year: 0,
                 dissolved_year: None,
             }],

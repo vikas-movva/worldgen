@@ -48,6 +48,7 @@ class FakeWorker {
 	}
 
 	reply(result: unknown, kind?: string) {
+		expect(this.lastMessage).toBeDefined();
 		const req = this.lastMessage!;
 		const evt = {
 			data: { kind: kind ?? req.kind, reqId: req.reqId, ok: true, result },
@@ -61,6 +62,7 @@ class FakeWorker {
 	}
 
 	replyError(msg: string) {
+		expect(this.lastMessage).toBeDefined();
 		const req = this.lastMessage!;
 		const evt = {
 			// The api.ts Res<T> type uses `message` (not `error`) for failures.
@@ -128,7 +130,16 @@ beforeEach(() => {
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
+		layerEnabled: {
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
+		},
 		editorTool: "raise",
 		brushRadius: 30,
 		brushStrength: 0.5,
@@ -394,16 +405,18 @@ describe("HeightmapEditor Reset", () => {
 		});
 
 		// Find the reset_heightmap request and reply with a HeightmapPatch.
-		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap")!;
-		expect(resetReq).toBeTruthy();
+		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap");
+		expect(resetReq).toBeDefined();
 		const patch: HeightmapPatch = { h: new Uint8Array(50).fill(50) };
 
 		await act(async () => {
-			fake.replyTo(resetReq, patch);
+			fake.replyTo(resetReq!, patch);
 		});
 
 		// Verify entity fields are reset in the store grid.
-		const cur = useWorldgenStore.getState().grid!;
+		const store = useWorldgenStore.getState();
+		expect(store.grid).toBeDefined();
+		const cur = store.grid!;
 		expect(cur.cells.state.every((v) => v === -1)).toBe(true);
 		expect(cur.cells.province.every((v) => v === -1)).toBe(true);
 		expect(cur.cells.culture.every((v) => v === -1)).toBe(true);
@@ -437,9 +450,12 @@ describe("HeightmapEditor Reset", () => {
 		expect(resettingBtn.disabled).toBe(true);
 
 		// Reply to complete the reset
-		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap")!;
+		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap");
+		expect(resetReq).toBeDefined();
 		await act(async () => {
-			fake.replyTo(resetReq, { h: new Uint8Array(50).fill(50) });
+			if (resetReq) {
+				fake.replyTo(resetReq, { h: new Uint8Array(50).fill(50) });
+			}
 		});
 
 		// Button should go back to "Reset Heightmap"
@@ -464,10 +480,13 @@ describe("HeightmapEditor Reset", () => {
 			resetBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
 
-		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap")!;
+		const resetReq = fake.messages.find((m) => m.kind === "reset_heightmap");
+		expect(resetReq).toBeDefined();
 		await act(async () => {
-			fake.lastMessage = resetReq;
-			fake.replyError("wasm panic: reset failed");
+			if (resetReq) {
+				fake.lastMessage = resetReq;
+				fake.replyError("wasm panic: reset failed");
+			}
 		});
 
 		// Status div should show the error message
@@ -533,7 +552,9 @@ describe("HeightmapEditor spacebar suppression", () => {
 		const editBefore = fake.messages.filter(
 			(m) => m.kind === "edit_heightmap",
 		).length;
-		const PointerEventCtor = (globalThis as any).PointerEvent ?? MouseEvent;
+		const PointerEventCtor =
+			(globalThis as unknown as { PointerEvent?: typeof PointerEvent })
+				.PointerEvent ?? MouseEvent;
 		act(() => {
 			canvas.dispatchEvent(
 				new PointerEventCtor("pointerdown", {

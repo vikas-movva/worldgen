@@ -20,8 +20,10 @@ import init, {
 	generate_biomes_for_grid,
 	generate_climate,
 	generate_climate_for_grid,
+	generate_cultures_religions,
 	generate_heightmap,
 	generate_mesh,
+	generate_states,
 	generate_world,
 	get_drainage_geometry_h,
 	has_grid_h,
@@ -34,6 +36,7 @@ import init, {
 	reset_heightmap,
 	reset_heightmap_h,
 } from "../core/worldgen_core.js";
+import type { Culture, Pack, Religion } from "../state/types";
 
 let wasmReady: Promise<{ memory: WebAssembly.Memory }> | null = null;
 
@@ -131,7 +134,27 @@ type WorkerRequest =
 			grid?: unknown;
 	  }
 	| { kind: "store_grid"; reqId: number; grid: unknown }
-	| { kind: "get_drainage_geometry"; reqId: number };
+	| { kind: "get_drainage_geometry"; reqId: number }
+	// Phase 3.4: entity layer generation
+	| {
+			kind: "generate_states";
+			reqId: number;
+			seed: number;
+			count: number;
+			/** The Grid to operate on (required; no held-grid shortcut for this). */
+			grid: unknown;
+	  }
+	| {
+			kind: "generate_cultures_religions";
+			reqId: number;
+			seed: number;
+			cultureCount: number;
+			religionCount: number;
+			/** The Grid to operate on (required). */
+			grid: unknown;
+			/** The StatesResult from generate_states (required). */
+			statesResult: unknown;
+	  };
 
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
@@ -235,6 +258,14 @@ type WorkerResponse =
 			ok: true;
 			result: { rivers: RiverGeo[]; lakes: LakeGeo[] };
 	  }
+	// Phase 3.4: entity layer generation responses
+	| { kind: "generate_states"; reqId: number; ok: true; result: StatesResult }
+	| {
+			kind: "generate_cultures_religions";
+			reqId: number;
+			ok: true;
+			result: CulturesResult;
+	  }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 // River + lake geometry (mirrors api.ts RiverGeo/LakeGeo).
@@ -252,6 +283,23 @@ type LakeGeo = {
 	cells: number[];
 	shoreline: number[];
 	closed: boolean;
+};
+
+// Phase 3.4: entity layer generation result types (mirror Rust
+// StatesResult / CulturesResult). The entity types themselves (State,
+// Province, Culture, Religion, Burg, Army, Pack) are imported from
+// state/types.ts to avoid drift between the worker and the rest of the app.
+type StatesResult = {
+	pack: Pack;
+	cells_state: number[];
+	cells_province: number[];
+	cells_burg: number[];
+};
+type CulturesResult = {
+	cultures: Culture[];
+	religions: Religion[];
+	cells_culture: number[];
+	cells_religion: number[];
 };
 
 let nextReqId = 1;
@@ -486,6 +534,44 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				ok: true,
 				result,
 			});
+		} else if (req.kind === "generate_states") {
+			// Phase 3.4: generate states, provinces, and burgs.
+			// Clamp inputs at worker boundary as defense-in-depth (pitfall #1).
+			const seed = req.seed >>> 0;
+			const count = Math.max(0, Math.min(60_000, req.count >>> 0));
+			const result = generate_states(req.grid, seed, count) as StatesResult;
+			// Update held grid's entity arrays if we have one
+			if (heldGrid) {
+				heldGrid.cells.state = Array.from(result.cells_state);
+				heldGrid.cells.province = Array.from(result.cells_province);
+				heldGrid.cells.burg = Array.from(result.cells_burg);
+			}
+			send({ kind: "generate_states", reqId, ok: true, result });
+		} else if (req.kind === "generate_cultures_religions") {
+			// Phase 3.4: generate cultures and religions.
+			// Clamp inputs at worker boundary as defense-in-depth (pitfall #1).
+			const seed = req.seed >>> 0;
+			const cultureCount = Math.max(
+				0,
+				Math.min(60_000, req.cultureCount >>> 0),
+			);
+			const religionCount = Math.max(
+				0,
+				Math.min(10_000, req.religionCount >>> 0),
+			);
+			const result = generate_cultures_religions(
+				req.grid,
+				seed,
+				cultureCount,
+				religionCount,
+				req.statesResult,
+			) as CulturesResult;
+			// Update held grid's culture & religion arrays if we have one
+			if (heldGrid) {
+				heldGrid.cells.culture = Array.from(result.cells_culture);
+				heldGrid.cells.religion = Array.from(result.cells_religion);
+			}
+			send({ kind: "generate_cultures_religions", reqId, ok: true, result });
 		} else {
 			const unknownReq = req as { kind: string };
 			send({

@@ -24,7 +24,16 @@ beforeEach(() => {
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: { terrain: true, biome: false, rivers: false, lakes: false },
+		layerEnabled: {
+			terrain: true,
+			biome: false,
+			rivers: false,
+			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
+		},
 	});
 });
 
@@ -95,6 +104,10 @@ describe("worldgenStore initial state", () => {
 			biome: false,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 	});
 });
@@ -170,6 +183,10 @@ describe("worldgenStore.toggleLayer", () => {
 			biome: true,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 	});
 });
@@ -207,6 +224,10 @@ describe("worldgenStore.clear", () => {
 			biome: true,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 	});
 });

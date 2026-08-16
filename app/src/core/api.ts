@@ -4,6 +4,16 @@
 // Later: generateWorld, projectWorld, editHeightmap, recomputeDependents, generateTimeline.
 
 import CoreWorker from "../workers/core.worker.ts?worker";
+import type {
+	Army,
+	Burg,
+	Culture,
+	Pack,
+	Province,
+	Religion,
+	State,
+} from "../state/types";
+export type { Army, Burg, Culture, Pack, Province, Religion, State };
 
 type Res<T> = { reqId: number; ok: true; result: T } | { reqId: number; ok: false; message: string };
 
@@ -140,6 +150,34 @@ export type DependentResult = {
 };
 
 /**
+ * Step 3.2 result: `pack` (states + provinces + burgs) plus the per-cell
+ * `state`/`province`/`burg` index arrays. The cell arrays mirror what gets
+ * written into `grid.cells.*` and are returned separately so the worker can
+ * splice them into its held Grid without re-serializing the whole Grid back
+ * across the wire. `pack.cultures`/`pack.religions`/`pack.armies` are empty at
+ * this stage (populated by `generateCulturesReligions`).
+ */
+export type StatesResult = {
+	pack: Pack;
+	cells_state: number[];
+	cells_province: number[];
+	cells_burg: number[];
+};
+
+/**
+ * Step 3.3 result: culture + religion entity vectors plus the per-cell
+ * `culture`/`religion` index arrays (mirroring `grid.cells.*`). The renderer
+ * builds its data-texture atlases by indexing `cultures[i].color` /
+ * `religions[i].color` against these cell arrays.
+ */
+export type CulturesResult = {
+	cultures: Culture[];
+	religions: Religion[];
+	cells_culture: number[];
+	cells_religion: number[];
+};
+
+/**
  * Step 2.5.5 (adversarial review Issue 7): shared 12-field dependent-splice.
  * Takes the current store Grid and a `DependentResult` (from
  * `recomputeDependents`), returns a NEW Grid with the recomputed arrays
@@ -199,6 +237,27 @@ export function clampCellCount(n: number): number {
 	const v = Math.floor(Number.isFinite(n) ? n : 0);
 	if (v < 1) return 4; // minimum sane mesh for spade
 	if (v > 60_000) return 60_000; // MVP cap
+	return v >>> 0;
+}
+
+/// Clamp a user-supplied culture count into a safe range. The Rust generator
+/// bounds it by available land cells, but we clamp at the JS boundary to
+/// prevent u32::MAX coercion (pitfall #1: every u32 crossing JS↔WASM needs a
+/// clamp — adversarial review Phase 3.3 L6).
+export function clampCultureCount(n: number): number {
+	const v = Math.floor(Number.isFinite(n) ? n : 0);
+	if (v < 0) return 0;
+	if (v > 60_000) return 60_000; // cannot exceed cell count
+	return v >>> 0;
+}
+
+/// Clamp a user-supplied religion count into a safe range. The Rust generator
+/// bounds it by available burgs/cultures; we clamp at the JS boundary for the
+/// same u32::MAX defense (pitfall #1).
+export function clampReligionCount(n: number): number {
+	const v = Math.floor(Number.isFinite(n) ? n : 0);
+	if (v < 0) return 0;
+	if (v > 10_000) return 10_000; // practical upper bound
 	return v >>> 0;
 }
 
@@ -417,6 +476,53 @@ export const coreApi = {
       rivers: RiverGeo[];
       lakes: LakeGeo[];
     }>;
+  },
+
+  /**
+   * Step 3.2: generate states, provinces, and burgs for an existing Grid
+   * (post-`generateWorld`). Returns a `StatesResult` with the `pack` entity
+   * vectors and per-cell `state`/`province`/`burg` arrays. The worker also
+   * splices the cell arrays into its held Grid so subsequent
+   * `generateCulturesReligions` / `pickCell` calls see them.
+   *
+   * `count` is clamped at the JS boundary (pitfall #1: every u32 crossing
+   * JS↔WASM needs a clamp) to prevent u32::MAX coercion from a stray NaN/
+   * Infinity from a UI control.
+   */
+  generateStates(grid: Grid, seed: number, count: number): Promise<StatesResult> {
+    return call("generate_states", {
+      grid,
+      seed: clampSeed(seed),
+      count: clampCellCount(count),
+    }) as Promise<StatesResult>;
+  },
+
+  /**
+   * Step 3.3: generate cultures and religions for a Grid that already has
+   * states + burgs (from `generateStates`). Returns a `CulturesResult` with
+   * the culture/religion entity vectors and per-cell arrays. The worker
+   * splices the cell arrays into its held Grid.
+   *
+   * `cultureCount` / `religionCount` are clamped at the JS boundary via
+   * `clampCultureCount` / `clampReligionCount` (pitfall #1). `statesResult`
+   * MUST be the full `StatesResult` returned by `generateStates` — the Rust
+   * side deserializes it to read `pack.burgs`/`pack.states` for culture
+   * origins and religion schism parents.
+   */
+  generateCulturesReligions(
+    grid: Grid,
+    seed: number,
+    cultureCount: number,
+    religionCount: number,
+    statesResult: StatesResult,
+  ): Promise<CulturesResult> {
+    return call("generate_cultures_religions", {
+      grid,
+      seed: clampSeed(seed),
+      cultureCount: clampCultureCount(cultureCount),
+      religionCount: clampReligionCount(religionCount),
+      statesResult,
+    }) as Promise<CulturesResult>;
   },
 
   // Placeholders for future phases:

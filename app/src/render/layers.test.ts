@@ -100,6 +100,10 @@ describe("WorldMap construction + layer state", () => {
 			biome: false,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 	});
 
@@ -113,6 +117,10 @@ describe("WorldMap construction + layer state", () => {
 			biome: true,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 		custom.destroy();
 	});
@@ -138,6 +146,10 @@ describe("WorldMap construction + layer state", () => {
 			biome: false,
 			rivers: false,
 			lakes: false,
+			states: false,
+			provinces: false,
+			cultures: false,
+			religions: false,
 		});
 	});
 });
@@ -795,6 +807,10 @@ describe("WorldMap.setSelected (selection outline)", () => {
 				biome: false,
 				rivers: false,
 				lakes: false,
+				states: false,
+				provinces: false,
+				cultures: false,
+				religions: false,
 			});
 			// Toggle rivers on: the overlay Graphics should become visible.
 			wm.setLayers({
