@@ -156,6 +156,27 @@ export function generate_mesh(cell_count, seed) {
 }
 
 /**
+ * Phase 3 Step 3.2: generate states, provinces, and burgs for a fully-built
+ * `Grid` (mesh + heightmap + climate + biomes + drainage). Returns a
+ * `StatesResult` carrying the `Pack` + per-cell index arrays
+ * (`cells_state`, `cells_province`, `cells_burg`). JS splices the cell arrays
+ * into its `grid.cells` and stores the `Pack` separately for the Phase 4
+ * timeline projector.
+ *
+ * `seed` should match the grid's seed for consistency. `count` is the
+ * requested number of states (capitals); actual count may be lower if too
+ * few suitable land cells exist.
+ * @param {any} grid_js
+ * @param {number} seed
+ * @param {number} count
+ * @returns {any}
+ */
+export function generate_states(grid_js, seed, count) {
+    const ret = wasm.generate_states(grid_js, seed, count);
+    return ret;
+}
+
+/**
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.

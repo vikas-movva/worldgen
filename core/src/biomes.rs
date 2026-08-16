@@ -966,10 +966,10 @@ mod tests {
             }
             let lo = m.cells.i[cell] as usize;
             let hi = m.cells.i[cell + 1] as usize;
-            let has_land_nb = (&m.cells.c[lo..hi])
+            let has_land_nb = m.cells.c[lo..hi]
                 .iter()
                 .any(|&nb| h[nb as usize] >= MIN_LAND_HEIGHT);
-            let has_water_nb = (&m.cells.c[lo..hi])
+            let has_water_nb = m.cells.c[lo..hi]
                 .iter()
                 .any(|&nb| h[nb as usize] < MIN_LAND_HEIGHT);
             if has_land_nb && has_water_nb {

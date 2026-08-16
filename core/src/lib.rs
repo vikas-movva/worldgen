@@ -21,6 +21,8 @@ mod rivers;
 /// the Phase 4 timeline projector and a future `pack` worker message kind can
 /// reference `entities::Pack` from `lib.rs`.
 pub(crate) mod entities;
+/// Phase 3 Step 3.2: states + provinces generator (FMG port).
+mod gen_states;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -700,6 +702,24 @@ pub fn generate_world(seed: u32, cell_count: u32, opts_js: JsValue) -> JsValue {
     // Store the grid in Rust-side handle for zero-serde subsequent calls.
     HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
     js
+}
+
+/// Phase 3 Step 3.2: generate states, provinces, and burgs for a fully-built
+/// `Grid` (mesh + heightmap + climate + biomes + drainage). Returns a
+/// `StatesResult` carrying the `Pack` + per-cell index arrays
+/// (`cells_state`, `cells_province`, `cells_burg`). JS splices the cell arrays
+/// into its `grid.cells` and stores the `Pack` separately for the Phase 4
+/// timeline projector.
+///
+/// `seed` should match the grid's seed for consistency. `count` is the
+/// requested number of states (capitals); actual count may be lower if too
+/// few suitable land cells exist.
+#[wasm_bindgen]
+pub fn generate_states(grid_js: JsValue, seed: u32, count: u32) -> JsValue {
+    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
+        .expect("generate_states: failed to deserialize Grid from JsValue");
+    let result = gen_states::generate_states(&grid, seed, count);
+    serde_wasm_bindgen::to_value(&result).expect("generate_states: serde to JsValue")
 }
 
 /// Pure-data inner implementation of `generate_world` — used by the WASM

@@ -97,6 +97,20 @@ export function generate_heightmap(mesh_js: any, seed: number): Uint8Array;
 export function generate_mesh(cell_count: number, seed: number): any;
 
 /**
+ * Phase 3 Step 3.2: generate states, provinces, and burgs for a fully-built
+ * `Grid` (mesh + heightmap + climate + biomes + drainage). Returns a
+ * `StatesResult` carrying the `Pack` + per-cell index arrays
+ * (`cells_state`, `cells_province`, `cells_burg`). JS splices the cell arrays
+ * into its `grid.cells` and stores the `Pack` separately for the Phase 4
+ * timeline projector.
+ *
+ * `seed` should match the grid's seed for consistency. `count` is the
+ * requested number of states (capitals); actual count may be lower if too
+ * few suitable land cells exist.
+ */
+export function generate_states(grid_js: any, seed: number, count: number): any;
+
+/**
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.
@@ -282,6 +296,7 @@ export interface InitOutput {
     readonly generate_climate_for_grid: (a: any, b: any) => any;
     readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
+    readonly generate_states: (a: any, b: number, c: number) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly get_drainage_geometry_h: () => any;
     readonly has_grid_h: () => number;
