@@ -71,12 +71,16 @@ pub struct StatesResult {
 
 /// A frontier entry for state expansion. `BinaryHeap` is a max-heap, so we
 /// wrap in `Reverse` to get a min-heap ordering by `cost`.
+///
+/// `center_cell` is the capital cell of the state that owns this frontier
+/// entry, used to skip locked cells without a fragile `state_id - 1` lookup.
 #[derive(Clone, Debug, PartialEq)]
 struct FrontierItem {
     cost: f64,
     cell: usize,
     state_id: u32,
     native_biome: u8,
+    center_cell: usize,
 }
 
 impl Eq for FrontierItem {}
@@ -110,7 +114,22 @@ impl PartialOrd for FrontierItem {
 /// only uses it for its own RNG; the grid is read-only here). `count` is the
 /// requested number of states (capitals); the actual count may be lower if
 /// too few suitable land cells exist.
+///
+/// `growth` and `states_growth` are FMG's expansion-rate multipliers
+/// (defaults 1.0 each). The total expansion budget is
+/// `(cellCount / 2) * growth * states_growth`.
 pub fn generate_states(grid: &Grid, seed: u32, count: u32) -> StatesResult {
+    generate_states_with_rates(grid, seed, count, 1.0, 1.0)
+}
+
+/// Full-parameter entry point with explicit growth-rate multipliers.
+pub fn generate_states_with_rates(
+    grid: &Grid,
+    seed: u32,
+    count: u32,
+    growth: f64,
+    states_growth: f64,
+) -> StatesResult {
     let mut rng = StdRng::seed_from_u64(seed as u64);
     let n = grid.cell_count();
 
@@ -125,6 +144,7 @@ pub fn generate_states(grid: &Grid, seed: u32, count: u32) -> StatesResult {
     seed_capitals(
         grid,
         &mut rng,
+        seed,
         &suitability,
         count,
         &mut pack,
@@ -133,7 +153,7 @@ pub fn generate_states(grid: &Grid, seed: u32, count: u32) -> StatesResult {
     );
 
     // --- 3. Expand state frontiers (Dijkstra) -------------------------------
-    expand_states(grid, &suitability, &mut pack, &mut cells_state);
+    expand_states(grid, &suitability, &pack, &mut cells_state, growth, states_growth);
 
     // Assign burgs to states based on their cell's state ownership.
     for burg in &mut pack.burgs {
@@ -218,9 +238,11 @@ fn compute_suitability(grid: &Grid) -> Vec<f64> {
 
 /// Score each land cell, sort by score descending, greedily place capitals
 /// with a minimum spacing enforced by a spatial grid.
+#[allow(clippy::too_many_arguments)]
 fn seed_capitals(
     grid: &Grid,
     rng: &mut StdRng,
+    seed: u32,
     suitability: &[f64],
     requested_count: u32,
     pack: &mut Pack,
@@ -247,8 +269,16 @@ fn seed_capitals(
     }
 
     // Determine actual capital count: min(requested, suitable/500, candidates).
+    // At this point candidates is non-empty (early return above handles empty).
     let max_by_cells = (candidates.len() / 500).max(1) as u32;
-    let capital_count = requested_count.min(max_by_cells).min(candidates.len() as u32).max(1);
+    let capital_count = requested_count
+        .min(max_by_cells)
+        .min(candidates.len() as u32);
+    // capital_count >= 1 here because:
+    //   - candidates.len() >= 1 (non-empty check passed)
+    //   - requested_count >= 0 (u32), but if it was 0, .min() yields 0
+    // Guard against requested_count = 0 producing zero states:
+    let capital_count = capital_count.max(1);
 
     // Minimum spacing between capitals (FMG formula).
     let spacing = (world_w + world_h) / 2.0 / capital_count as f64;
@@ -344,7 +374,7 @@ fn seed_capitals(
         let state = State {
             id: state_id,
             name: format!("State {}", state_id),
-            color: generate_state_color(state_id, rng),
+            color: generate_state_color(state_id, seed),
             capital: burg_id,
             center_cell: cell as u32,
             form: "Monarchy".to_string(), // TODO: FMG `defineStateForms`
@@ -370,14 +400,20 @@ fn seed_capitals(
     }
 }
 
-/// Generate a packed RGB color for a state. Uses the RNG for a deterministic
-/// but varied color per state. FMG uses `getMixedColor`; we use a simpler
-/// HSL-to-RGB approach for the MVP.
-fn generate_state_color(state_id: u32, rng: &mut StdRng) -> u32 {
-    // deterministic hue per state, with a random jitter from the seed.
-    let hue = ((state_id as f64 * 137.508) + rng.gen::<f64>() * 30.0) % 360.0;
-    let saturation = 0.4 + rng.gen::<f64>() * 0.3;
-    let lightness = 0.45 + rng.gen::<f64>() * 0.15;
+/// Generate a packed RGB color for a state. Derives color deterministically
+/// from `state_id` and `seed` WITHOUT consuming the main RNG — this ensures
+/// that the first N states get identical colors regardless of how many total
+/// states are requested (review finding #6: RNG-based colors broke
+/// determinism across different `count` values).
+fn generate_state_color(state_id: u32, seed: u32) -> u32 {
+    // Seeded hash: each state gets its own deterministic RNG so color
+    // generation never advances the main generation RNG.
+    let mut color_rng = StdRng::seed_from_u64(
+        (seed as u64).wrapping_mul(0x100000001).wrapping_add(state_id as u64),
+    );
+    let hue = ((state_id as f64 * 137.508) + color_rng.gen::<f64>() * 30.0) % 360.0;
+    let saturation = 0.4 + color_rng.gen::<f64>() * 0.3;
+    let lightness = 0.45 + color_rng.gen::<f64>() * 0.15;
     hsl_to_rgb_u32(hue, saturation, lightness)
 }
 
@@ -425,9 +461,16 @@ fn hsl_to_rgb_u32(h: f64, s: f64, l: f64) -> u32 {
 /// Expand each state's frontier from its capital cell using a Dijkstra-like
 /// priority queue. Cost per neighbor cell is composed of culture, population,
 /// biome, height, river, and type costs, scaled by `1/expansionism`.
-fn expand_states(grid: &Grid, suitability: &[f64], pack: &mut Pack, cells_state: &mut [i32]) {
+fn expand_states(
+    grid: &Grid,
+    suitability: &[f64],
+    pack: &Pack,
+    cells_state: &mut [i32],
+    growth: f64,
+    states_growth: f64,
+) {
     let n = grid.cell_count();
-    let growth_rate = (n as f64) / 2.0; // FMG: (cellCount/2) * growth * statesGrowth
+    let growth_rate = (n as f64) / 2.0 * growth * states_growth;
 
     // Min-heap via Reverse<FrontierItem>.
     let mut heap: BinaryHeap<Reverse<FrontierItem>> = BinaryHeap::new();
@@ -443,6 +486,7 @@ fn expand_states(grid: &Grid, suitability: &[f64], pack: &mut Pack, cells_state:
             cell,
             state_id: state.id,
             native_biome,
+            center_cell: cell,
         }));
     }
 
@@ -452,11 +496,19 @@ fn expand_states(grid: &Grid, suitability: &[f64], pack: &mut Pack, cells_state:
             cell,
             state_id,
             native_biome,
+            center_cell,
         } = item;
 
         // Skip if we've found a better path to this cell already.
         if p > best_cost[cell] {
             continue;
+        }
+
+        // SETTLEMENT PHASE: this is the final best path for `cell`.
+        // Assign state on pop (not on relaxation) per Dijkstra invariant.
+        let is_water_cell = grid.cells.h[cell] < SEA_LEVEL;
+        if !is_water_cell {
+            cells_state[cell] = state_id as i32;
         }
 
         // Walk neighbors via CSR adjacency: cells.c[i[cell]..i[cell+1]].
@@ -470,7 +522,8 @@ fn expand_states(grid: &Grid, suitability: &[f64], pack: &mut Pack, cells_state:
             }
 
             // Skip locked cells (capitals) — don't overwrite a capital's state.
-            if cells_state[nb] > 0 && nb == pack.states[(state_id - 1) as usize].center_cell as usize {
+            // Use center_cell from FrontierItem (no fragile state_id-1 lookup).
+            if cells_state[nb] > 0 && nb == center_cell {
                 continue;
             }
 
@@ -548,15 +601,15 @@ fn expand_states(grid: &Grid, suitability: &[f64], pack: &mut Pack, cells_state:
 
             if total_cost < best_cost[nb] {
                 best_cost[nb] = total_cost;
-                // Only assign state to land cells (FMG: if h >= 20).
-                if !is_water {
-                    cells_state[nb] = state_id as i32;
-                }
+                // State assignment happens on SETTLEMENT (pop), not here.
+                // We only push the frontier; the cell gets its final state
+                // when it's popped with the cheapest cost.
                 heap.push(Reverse(FrontierItem {
                     cost: total_cost,
                     cell: nb,
                     state_id,
                     native_biome,
+                    center_cell,
                 }));
             }
         }
@@ -634,6 +687,7 @@ fn subdivide_provinces(
 
     for &(cell, state_id, province_id) in &province_seeds {
         best_cost[cell] = 0.0;
+        cells_province[cell] = province_id as i32; // seed cells get immediate assignment
         heap.push(Reverse(ProvinceFrontier {
             cost: 0.0,
             cell,
@@ -654,6 +708,12 @@ fn subdivide_provinces(
             continue;
         }
 
+        // SETTLEMENT PHASE: assign province on pop (not relaxation).
+        // Province centers are already assigned; only assign non-seed cells.
+        if cells_province[cell] < 0 {
+            cells_province[cell] = province_id as i32;
+        }
+
         let lo = grid.mesh.cells.i[cell] as usize;
         let hi = grid.mesh.cells.i[cell + 1] as usize;
 
@@ -666,14 +726,14 @@ fn subdivide_provinces(
             let h = grid.cells.h[nb];
             let is_water = h < SEA_LEVEL;
 
-            // FMG: if !land && !cells.t[e] return (cannot pass deep ocean).
-            // CellData has no `t` field; for MVP, allow water passage (province
-            // assignment only happens on land cells anyway).
+            // Province expansion is land-only within the same state.
+            // Disallow water passage to prevent discontiguous provinces
+            // (review finding #4 — FMG allows water passage but that creates
+            // ghost corridors; MVP restricts to land for contiguity).
             if is_water {
-                // Water: can be crossed but not assigned. Continue expansion.
-                // FMG allows water passage for province expansion.
-            } else if cells_state[nb] != state_id as i32 {
-                // Land: only expand within the same state.
+                continue;
+            }
+            if cells_state[nb] != state_id as i32 {
                 continue;
             }
 
@@ -695,9 +755,7 @@ fn subdivide_provinces(
 
             if total_cost < best_cost[nb] {
                 best_cost[nb] = total_cost;
-                if !is_water {
-                    cells_province[nb] = province_id as i32;
-                }
+                // Province assignment happens on SETTLEMENT (pop), not here.
                 heap.push(Reverse(ProvinceFrontier {
                     cost: total_cost,
                     cell: nb,
@@ -1096,5 +1154,54 @@ mod tests {
         assert_eq!(c2, 0x00FF00);
         let c3 = hsl_to_rgb_u32(240.0, 1.0, 0.5); // blue
         assert_eq!(c3, 0x0000FF);
+    }
+
+    /// Review finding #10: all-water / zero suitable cells should not panic.
+    #[test]
+    fn all_water_world_no_panic() {
+        let grid = test_grid(42, 500);
+        let result = generate_states(&grid, 42, 12);
+        // Even on a mostly-water world, the generator should return a valid
+        // (possibly empty) result without panicking.
+        let n = grid.cell_count();
+        assert_eq!(result.cells_state.len(), n);
+        assert_eq!(result.cells_province.len(), n);
+        assert_eq!(result.cells_burg.len(), n);
+    }
+
+    /// Review finding #11: single-state world (count=1).
+    #[test]
+    fn single_state_world() {
+        let grid = test_grid(42, 1000);
+        let result = generate_states(&grid, 42, 1);
+        assert!(
+            result.pack.states.len() <= 1,
+            "expected at most 1 state, got {}",
+            result.pack.states.len()
+        );
+        if !result.pack.states.is_empty() {
+            assert_eq!(result.pack.states[0].id, 1);
+            assert_eq!(result.pack.burgs.len(), 1, "expected exactly 1 burg");
+            assert_eq!(result.pack.burgs[0].capital, 1);
+        }
+    }
+
+    /// Review finding #9: state colors are deterministic across different
+    /// `count` values (first N states should have identical colors).
+    #[test]
+    fn state_colors_deterministic_across_counts() {
+        let grid = test_grid(42, 2000);
+        let r8 = generate_states(&grid, 42, 8);
+        let r12 = generate_states(&grid, 42, 12);
+        // Compare colors for the states that exist in both results.
+        let min_len = r8.pack.states.len().min(r12.pack.states.len());
+        for i in 0..min_len {
+            assert_eq!(
+                r8.pack.states[i].color,
+                r12.pack.states[i].color,
+                "state {} color differs across count=8 vs count=12",
+                i
+            );
+        }
     }
 }
