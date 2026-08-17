@@ -24,6 +24,10 @@ pub(crate) mod entities;
 /// Phase 3 Step 3.2: states + provinces generator (FMG port).
 mod gen_states;
 mod gen_cultures;
+/// Phase 4 Step 4.1: timeline data model (`Event`, `EventType`, `EventKind`,
+/// `EventPayload`) + `WorldAt(year)` projector (`project_world` / `project_delta`).
+/// See `agent/worldgen-implementation-plan.md` §Step 4.1 and design §3.3/§3.4.
+mod timeline;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
