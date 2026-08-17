@@ -266,10 +266,18 @@ export type Timeline = TimelineEvent[];
 /** Phase 4.1: the projected world state at year Y (design §3.4 `WorldAt(Y)`).
  * `cells_*` arrays are `u32` per cell (`0` = unassigned), ready for the
  * renderer's data-texture upload. `pack` carries the entity snapshots with
- * pop-scalar overrides and dissolved flags applied. */
+ * pop-scalar overrides and dissolved flags applied.
+ *
+ * `cells_state` uses the `i32` convention (`-1` = unassigned), state ids are
+ * 1-based. `cells_province` mirrors `cells_state` (provinces are subdivisions
+ * of states; their cell assignments are re-projected alongside states so the
+ * province layer stays consistent with the state layer at year Y).
+ * `cells_culture`/`cells_religion` use 0-based ids (`0` = none). `cells_burg`
+ * uses `i16` (`0` = none). */
 export type WorldAt = {
 	year: number;
 	cells_state: number[];
+	cells_province: number[];
 	cells_culture: number[];
 	cells_religion: number[];
 	cells_burg: number[];

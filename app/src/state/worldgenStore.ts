@@ -12,6 +12,8 @@ import type {
 	Mesh,
 	RiverGeo,
 	StatesResult,
+	Timeline,
+	WorldAt,
 } from "../core/api";
 import type { EntityKind, LayerName } from "../render/layers";
 
@@ -55,6 +57,21 @@ export type WorldgenState = {
 	brushStrength: number;
 	/** Step 2.5.4: currently selected cell (-1 = none). */
 	selectedCellId: number;
+	/** Phase 5: the generated timeline (events) for the current world. */
+	timeline: Timeline | null;
+	/** Phase 5: the era bounds [eraStart, eraEnd]. */
+	eraStart: number;
+	eraEnd: number;
+	/** Phase 5: the current scrub year (0 = year-0 baseline). */
+	currentYear: number;
+	/** Phase 5: whether the timeline playback is active. */
+	isPlaying: boolean;
+	/** Phase 5: playback speed in years/sec. */
+	playbackSpeed: number;
+	/** Phase 5: current scrub request status (for UI feedback). */
+	scrubStatus: "idle" | "loading" | "error";
+	/** Phase 5: the projected WorldAt for the currentYear (or null). */
+	projectedWorld: WorldAt | null;
 };
 
 export type EditorTool =
@@ -106,6 +123,18 @@ export type WorldgenActions = {
 	setStatesResult: (r: StatesResult) => void;
 	/** Step 3.3: store the culture/religion result. */
 	setCulturesResult: (r: CulturesResult) => void;
+	/** Phase 5.1: store the generated timeline + era bounds. */
+	setTimeline: (timeline: Timeline | null, eraStart: number, eraEnd: number) => void;
+	/** Phase 5.1: set the current scrub year (drives projection). */
+	setCurrentYear: (year: number) => void;
+	/** Phase 5.1: set playback state. */
+	setIsPlaying: (playing: boolean) => void;
+	/** Phase 5.1: set playback speed (years/sec). */
+	setPlaybackSpeed: (speed: number) => void;
+	/** Phase 5.1: set scrub request status. */
+	setScrubStatus: (status: "idle" | "loading" | "error") => void;
+	/** Phase 5.1: set the projected WorldAt from the worker. */
+	setProjectedWorld: (world: WorldAt | null) => void;
 	clear: () => void;
 };
 
@@ -134,6 +163,14 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		brushRadius: 15,
 		brushStrength: 0.05,
 		selectedCellId: -1,
+		timeline: null,
+		eraStart: 0,
+		eraEnd: 1000,
+		currentYear: 0,
+		isPlaying: false,
+		playbackSpeed: 5,
+		scrubStatus: "idle",
+		projectedWorld: null,
 		setGrid: (grid) => set({ grid }),
 		setMesh: (mesh) => set({ mesh }),
 		setClimate: (climate) => set({ climate }),
@@ -248,6 +285,14 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		setDrainageGeometry: (rivers, lakes) => set({ rivers, lakes }),
 		setStatesResult: (statesResult) => set({ statesResult }),
 		setCulturesResult: (culturesResult) => set({ culturesResult }),
+		// Phase 5.1: timeline state.
+		setTimeline: (timeline, eraStart, eraEnd) =>
+			set({ timeline, eraStart, eraEnd, currentYear: eraStart, projectedWorld: null }),
+		setCurrentYear: (currentYear) => set({ currentYear }),
+		setIsPlaying: (isPlaying) => set({ isPlaying }),
+		setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed }),
+		setScrubStatus: (scrubStatus) => set({ scrubStatus }),
+		setProjectedWorld: (projectedWorld) => set({ projectedWorld }),
 		clear: () =>
 			set({
 				grid: null,
@@ -259,6 +304,14 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				lakes: [],
 				statesResult: null,
 				culturesResult: null,
+				timeline: null,
+				eraStart: 0,
+				eraEnd: 1000,
+				currentYear: 0,
+				isPlaying: false,
+				playbackSpeed: 5,
+				scrubStatus: "idle",
+				projectedWorld: null,
 			}),
 	}),
 );
@@ -277,3 +330,16 @@ export const selectGrid = (s: WorldgenState): WorldgenState["grid"] => s.grid;
 export const selectMesh = (s: WorldgenState): WorldgenState["mesh"] => s.mesh;
 export const selectClimate = (s: WorldgenState): WorldgenState["climate"] =>
 	s.climate;
+
+// Phase 5.1: timeline selectors.
+export const selectTimeline = (s: WorldgenState): WorldgenState["timeline"] =>
+	s.timeline;
+export const selectCurrentYear = (
+	s: WorldgenState,
+): WorldgenState["currentYear"] => s.currentYear;
+export const selectIsPlaying = (
+	s: WorldgenState,
+): WorldgenState["isPlaying"] => s.isPlaying;
+export const selectProjectedWorld = (
+	s: WorldgenState,
+): WorldgenState["projectedWorld"] => s.projectedWorld;

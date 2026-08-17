@@ -12,6 +12,7 @@ import { CellInspector } from "./ui/CellInspector";
 import { EntityPanel } from "./ui/EntityPanel";
 import { HeightmapEditor } from "./ui/HeightmapEditor";
 import EntityInspector from "./ui/EntityInspector";
+import { Timeline } from "./ui/Timeline";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -461,6 +462,8 @@ function App() {
 					</div>
 				)}
 			</main>
+			{/* Phase 5.1: timeline scrubber at the bottom of the window. */}
+			<Timeline />
 			<footer
 				style={{
 					flex: "0 0 auto",

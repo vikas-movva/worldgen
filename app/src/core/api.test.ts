@@ -1059,6 +1059,7 @@ function makeFakeWorldAt(year: number, cellCount: number): WorldAt {
   return {
     year,
     cells_state: new Array(cellCount).fill(0),
+    cells_province: new Array(cellCount).fill(-1),
     cells_culture: new Array(cellCount).fill(0),
     cells_religion: new Array(cellCount).fill(0),
     cells_burg: new Array(cellCount).fill(0),
