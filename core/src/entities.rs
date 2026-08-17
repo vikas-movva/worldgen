@@ -362,16 +362,20 @@ mod tests {
 
         assert_eq!(back.religions.len(), 1);
         assert_eq!(back.religions[0].parent, pack.religions[0].parent);
-        assert_eq!(back.religions[0].followers.to_bits(),
-                   pack.religions[0].followers.to_bits());
+        assert_eq!(
+            back.religions[0].followers.to_bits(),
+            pack.religions[0].followers.to_bits()
+        );
         assert_eq!(back.religions[0].type_code, pack.religions[0].type_code);
 
         assert_eq!(back.burgs.len(), 1);
         assert_eq!(back.burgs[0].cell, pack.burgs[0].cell);
         assert_eq!(back.burgs[0].capital, pack.burgs[0].capital);
         assert_eq!(back.burgs[0].feature, pack.burgs[0].feature);
-        assert_eq!(back.burgs[0].population.to_bits(),
-                   pack.burgs[0].population.to_bits());
+        assert_eq!(
+            back.burgs[0].population.to_bits(),
+            pack.burgs[0].population.to_bits()
+        );
 
         assert_eq!(back.armies.len(), 1);
         assert_eq!(back.armies[0].size, pack.armies[0].size);

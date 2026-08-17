@@ -1,7 +1,7 @@
 //! Phase 4 Step 4.2 — `Migrate` event module.
 //!
 //! A culture spreads to adjacent cells. Probability is
-//! `ctx.params.migration_prob` per culture per year.
+//! `ctx.timeline.params.migration_prob` per culture per year.
 //!
 //! Extracted from the monolithic `event_engine.rs` (refactor §P4.2-modular).
 
@@ -9,8 +9,8 @@ use crate::event_engine::context::GenContext;
 use crate::event_engine::EventModule;
 use crate::timeline::{EntityType, EventKind, EventPayload, MigratePayload};
 use rand::rngs::StdRng;
-use rand::Rng;
 use rand::seq::SliceRandom;
+use rand::Rng;
 
 /// The migration event module.
 pub struct MigrationModule;
@@ -21,47 +21,48 @@ impl EventModule for MigrationModule {
     }
 
     fn run(&self, ctx: &mut GenContext, rng: &mut StdRng, year: i32) {
-        if ctx.pack.cultures.is_empty() {
+        if ctx.world.pack.cultures.is_empty() {
             return;
         }
 
         // Collect cultures with sufficient cell_count (owned data).
-        let eligible: Vec<(u32, u32)> = ctx
+        let eligible: Vec<u32> = ctx
+            .world
             .pack
             .cultures
             .iter()
             .filter(|c| c.cell_count > 10)
-            .map(|c| (c.id, c.cell_count))
+            .map(|c| c.id)
             .collect();
 
-        for (culture_id, _cell_count) in eligible {
-            if !rng.gen_bool(ctx.params.migration_prob) {
+        for culture_id in eligible {
+            if !rng.gen_bool(ctx.timeline.params.migration_prob) {
                 continue;
             }
 
-            // Find border cells of this culture (cells owned by this culture
-            // that are adjacent to cells with a different owner).
+            // Find border cells of this culture: land cells owned by this
+            // culture that are directly adjacent (mesh topology) to a land
+            // cell owned by a different culture.
             let border_cells: Vec<u32> = ctx
+                .world
                 .cells_culture
                 .iter()
                 .enumerate()
-                .filter_map(|(i, &c)| {
-                    if c as u32 != culture_id {
-                        return None;
-                    }
+                .filter(|(i, &c)| c as u32 == culture_id && ctx.is_land(*i as u32))
+                .filter_map(|(i, _)| {
                     let cell = i as u32;
-                    if !ctx.is_land(cell) {
-                        return None;
+                    let has_foreign = ctx.neighbors_of_cell(cell).iter().any(|&nb| {
+                        let ni = nb as usize;
+                        ni < ctx.cell_count()
+                            && ctx.is_land(nb)
+                            && ctx.world.cells_culture[ni] != 0
+                            && ctx.world.cells_culture[ni] != culture_id
+                    });
+                    if has_foreign {
+                        Some(cell)
+                    } else {
+                        None
                     }
-                    let w = 20;
-                    let start = (i as usize).saturating_sub(w / 2);
-                    let end = ((i as usize) + w / 2 + 1).min(ctx.cell_count());
-                    for j in start..end {
-                        if j != i && ctx.cells_culture[j] != c && ctx.is_land(j as u32) {
-                            return Some(cell);
-                        }
-                    }
-                    None
                 })
                 .collect();
 
@@ -70,20 +71,16 @@ impl EventModule for MigrationModule {
             }
 
             let &target_cell = border_cells.choose(rng).unwrap();
-            let current_culture = ctx.cells_culture[target_cell as usize];
 
-            // Find adjacent cells with a different culture.
-            let w = 20;
-            let start = (target_cell as usize).saturating_sub(w / 2);
-            let end = ((target_cell as usize) + w / 2 + 1).min(ctx.cell_count());
+            // Neighboring cultures of the chosen border cell (the possible
+            // migration targets), via the mesh topology.
             let mut target_ids: Vec<u32> = Vec::new();
-            for j in start..end {
-                if j != target_cell as usize && ctx.is_land(j as u32) {
-                    let nc = ctx.cells_culture[j];
-                    if nc != current_culture && nc != 0 {
-                        if !target_ids.contains(&nc) {
-                            target_ids.push(nc);
-                        }
+            for nb in ctx.neighbors_of_cell(target_cell) {
+                let ni = nb as usize;
+                if ni < ctx.cell_count() && ctx.is_land(nb) {
+                    let nc = ctx.world.cells_culture[ni];
+                    if nc != 0 && nc != culture_id && !target_ids.contains(&nc) {
+                        target_ids.push(nc);
                     }
                 }
             }
@@ -93,26 +90,35 @@ impl EventModule for MigrationModule {
             }
 
             let target_id = *target_ids.choose(rng).unwrap();
-            let fraction = ctx.params.migration_fraction * rng.gen_range(0.5..=1.0);
+            let fraction = ctx.timeline.params.migration_fraction * rng.gen_range(0.5..=1.0);
 
-            // Transfer some cells to the target culture.
-            let n_transfer = ((ctx.cell_count() as f64 * fraction) as usize).min(border_cells.len());
-            let cells_to_transfer: Vec<u32> = (0..n_transfer)
+            // Transfer up to `fraction` of the culture's distinct border cells
+            // to the target culture. Pick with replacement, then de-duplicate
+            // so the event lists and the `cell_count` accounting reflect the
+            // actual distinct cells moved.
+            let n_requested =
+                ((ctx.cell_count() as f64 * fraction) as usize).min(border_cells.len());
+            let mut cells_to_transfer: Vec<u32> = (0..n_requested)
                 .filter_map(|_| border_cells.choose(rng).copied())
                 .collect();
+            cells_to_transfer.sort_unstable();
+            cells_to_transfer.dedup();
+            let moved = cells_to_transfer.len() as u32;
+
+            if moved == 0 {
+                continue;
+            }
 
             for &cell in &cells_to_transfer {
-                ctx.cells_culture[cell as usize] = target_id;
+                ctx.world.cells_culture[cell as usize] = target_id;
             }
 
-            // Update the cultures' cell_count.
+            // Update the cultures' cell_count to match the distinct cells moved.
             if let Some(src) = ctx.find_culture_mut(culture_id) {
-                let lost = cells_to_transfer.len() as u32;
-                src.cell_count = src.cell_count.saturating_sub(lost);
+                src.cell_count = src.cell_count.saturating_sub(moved);
             }
             if let Some(dst) = ctx.find_culture_mut(target_id) {
-                let gained = cells_to_transfer.len() as u32;
-                dst.cell_count += gained;
+                dst.cell_count = dst.cell_count.saturating_add(moved);
             }
 
             ctx.push_event(

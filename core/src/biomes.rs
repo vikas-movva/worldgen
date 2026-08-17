@@ -63,30 +63,79 @@ pub struct BiomeDef {
 /// for the renderer (color/habitability/icon-density) in later phases.
 #[allow(dead_code)]
 pub const BIOMES: [BiomeDef; 13] = [
-    BiomeDef { id: 0, name: "Marine" },
-    BiomeDef { id: 1, name: "Hot desert" },
-    BiomeDef { id: 2, name: "Cold desert" },
-    BiomeDef { id: 3, name: "Savanna" },
-    BiomeDef { id: 4, name: "Grassland" },
-    BiomeDef { id: 5, name: "Tropical seasonal forest" },
-    BiomeDef { id: 6, name: "Temperate deciduous forest" },
-    BiomeDef { id: 7, name: "Tropical rainforest" },
-    BiomeDef { id: 8, name: "Temperate rainforest" },
-    BiomeDef { id: 9, name: "Taiga" },
-    BiomeDef { id: 10, name: "Tundra" },
-    BiomeDef { id: 11, name: "Glacier" },
-    BiomeDef { id: 12, name: "Wetland" },
+    BiomeDef {
+        id: 0,
+        name: "Marine",
+    },
+    BiomeDef {
+        id: 1,
+        name: "Hot desert",
+    },
+    BiomeDef {
+        id: 2,
+        name: "Cold desert",
+    },
+    BiomeDef {
+        id: 3,
+        name: "Savanna",
+    },
+    BiomeDef {
+        id: 4,
+        name: "Grassland",
+    },
+    BiomeDef {
+        id: 5,
+        name: "Tropical seasonal forest",
+    },
+    BiomeDef {
+        id: 6,
+        name: "Temperate deciduous forest",
+    },
+    BiomeDef {
+        id: 7,
+        name: "Tropical rainforest",
+    },
+    BiomeDef {
+        id: 8,
+        name: "Temperate rainforest",
+    },
+    BiomeDef {
+        id: 9,
+        name: "Taiga",
+    },
+    BiomeDef {
+        id: 10,
+        name: "Tundra",
+    },
+    BiomeDef {
+        id: 11,
+        name: "Glacier",
+    },
+    BiomeDef {
+        id: 12,
+        name: "Wetland",
+    },
 ];
 
 /// FMG `biomesMatrix`: rows = moistureBand (0..4, dry→wet), cols =
 /// temperatureBand (0..25, cold→hot, since `band = 20 - temp`). Indexed
 /// `biomesMatrix[moistureBand][temperatureBand]`. Verbatim from FMG.
 const BIOMES_MATRIX: [[u8; 26]; 5] = [
-    [1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 10],
-    [3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 9, 9, 9, 9, 10, 10, 10],
-    [5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 9, 9, 9, 9, 9, 10, 10, 10],
-    [5, 6, 6, 6, 6, 6, 6, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 10, 10, 10],
-    [7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10, 10],
+    [
+        1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 10,
+    ],
+    [
+        3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 9, 9, 9, 9, 10, 10, 10,
+    ],
+    [
+        5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 9, 9, 9, 9, 9, 10, 10, 10,
+    ],
+    [
+        5, 6, 6, 6, 6, 6, 6, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 10, 10, 10,
+    ],
+    [
+        7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10, 10,
+    ],
 ];
 
 /// `rn(v, d)` — FMG `utils/numberUtils.ts`: round to `d` decimal places via
@@ -325,9 +374,9 @@ mod tests {
     #![allow(clippy::needless_range_loop)]
 
     use super::*;
-    use crate::mesh;
-    use crate::heightmap;
     use crate::climate;
+    use crate::heightmap;
+    use crate::mesh;
 
     fn fixture(cell_count: u32, seed: u32) -> (Mesh, Vec<u8>, Vec<i8>, Vec<u8>) {
         let m = mesh::build(cell_count, seed);
@@ -464,7 +513,7 @@ mod tests {
         assert!(is_wetland(41.0, 10.0, 20));
         assert!(is_wetland(100.0, 20.0, 24));
         assert!(!is_wetland(40.0, 10.0, 20)); // boundary: moisture must be > 40
-        // At height=25: near-coast (height < 25) is FALSE, but off-coast (height > 24) is TRUE
+                                              // At height=25: near-coast (height < 25) is FALSE, but off-coast (height > 24) is TRUE
         assert!(is_wetland(41.0, 10.0, 25)); // off-coast branch fires!
 
         // Off coast: moisture > 24 && 24 < height < 60
@@ -570,7 +619,10 @@ mod tests {
         let (m, h, t, p) = fixture(3000, 42);
         let b = generate_biomes(&m, &h, &t, &p);
         for (i, &biome) in b.iter().enumerate() {
-            assert!((0..=12).contains(&biome), "biome {biome} at cell {i} out of [0,12]");
+            assert!(
+                (0..=12).contains(&biome),
+                "biome {biome} at cell {i} out of [0,12]"
+            );
         }
     }
 
@@ -588,7 +640,10 @@ mod tests {
         // should appear on a typical map.
         assert!(seen[0], "Marine (0) must appear");
         let land_biomes = seen[1..].iter().filter(|&&x| x).count();
-        assert!(land_biomes >= 3, "expected >= 3 land biomes, got {land_biomes}");
+        assert!(
+            land_biomes >= 3,
+            "expected >= 3 land biomes, got {land_biomes}"
+        );
     }
 
     // ── Step 2.5.2: recompute_biome_local tests ─────────────────────────────
@@ -638,8 +693,14 @@ mod tests {
         let full = generate_biomes(&m, &h, &t, &p);
         for i in 0..m.points.len() {
             if cell_ids.contains(&(i as u32)) {
-                assert_eq!(grid.cells.biome[i], full[i], "cell {i} not recomputed correctly");
-                assert!((0..=12).contains(&grid.cells.biome[i]), "cell {i} biome out of range");
+                assert_eq!(
+                    grid.cells.biome[i], full[i],
+                    "cell {i} not recomputed correctly"
+                );
+                assert!(
+                    (0..=12).contains(&grid.cells.biome[i]),
+                    "cell {i} biome out of range"
+                );
             } else {
                 assert_eq!(grid.cells.biome[i], 255, "cell {i} was wrongly modified");
             }
@@ -689,9 +750,15 @@ mod tests {
         // Ensure the cell has SOME precipitation from the grid.
         recompute_biome_local(&mut grid, &[target as u32]);
         let biome_after = grid.cells.biome[target];
-        assert!((0..=12).contains(&biome_after), "recomputed biome out of range: {biome_after}");
+        assert!(
+            (0..=12).contains(&biome_after),
+            "recomputed biome out of range: {biome_after}"
+        );
         // It should be a land biome (h >= 20 now).
-        assert!(biome_after >= 1 || grid.cells.h[target] < MIN_LAND_HEIGHT, "raised land cell should have a land biome, got {biome_after}");
+        assert!(
+            biome_after >= 1 || grid.cells.h[target] < MIN_LAND_HEIGHT,
+            "raised land cell should have a land biome, got {biome_after}"
+        );
     }
 
     /// `recompute_biome_local` is deterministic: same grid + same cell_ids →
@@ -716,7 +783,10 @@ mod tests {
         recompute_biome_local(&mut grid_a, &cell_ids);
         recompute_biome_local(&mut grid_b, &cell_ids);
 
-        assert_eq!(grid_a.cells.biome, grid_b.cells.biome, "recompute_biome_local not deterministic");
+        assert_eq!(
+            grid_a.cells.biome, grid_b.cells.biome,
+            "recompute_biome_local not deterministic"
+        );
     }
 
     /// Water cells (h < 20) are always Marine (0), even when listed.
@@ -734,7 +804,11 @@ mod tests {
 
         for i in 0..m.points.len() {
             if h[i] < MIN_LAND_HEIGHT {
-                assert_eq!(grid.cells.biome[i], 0, "water cell {i} should be Marine, got {}", grid.cells.biome[i]);
+                assert_eq!(
+                    grid.cells.biome[i], 0,
+                    "water cell {i} should be Marine, got {}",
+                    grid.cells.biome[i]
+                );
             }
         }
     }
@@ -765,8 +839,14 @@ mod tests {
         recompute_biome_local(&mut grid, &cell_ids);
 
         // No panic; valid cells were recomputed.
-        assert!((0..=12).contains(&grid.cells.biome[0]), "cell 0 biome out of range");
-        assert!((0..=12).contains(&grid.cells.biome[5]), "cell 5 biome out of range");
+        assert!(
+            (0..=12).contains(&grid.cells.biome[0]),
+            "cell 0 biome out of range"
+        );
+        assert!(
+            (0..=12).contains(&grid.cells.biome[5]),
+            "cell 5 biome out of range"
+        );
     }
 
     /// `recompute_biome_local` actually READS `grid.cells.prec` (via the
@@ -932,7 +1012,10 @@ mod tests {
         }
         // (a) We must observe at least one divergence across the seed set,
         // otherwise the contract-under-test isn't being exercised.
-        assert!(saw_divergence, "no biome divergence observed across seeds {seeds:?}");
+        assert!(
+            saw_divergence,
+            "no biome divergence observed across seeds {seeds:?}"
+        );
         // (b) Every observed divergence must be attributable to a prec change
         // in the edited cell or one of its land neighbors. An unattributed
         // divergence would indicate a logic bug, not the stale-prec Tier-1
@@ -978,7 +1061,10 @@ mod tests {
                 break;
             }
         }
-        assert!(found, "fixture (2000, 42) has no land cell with both a land and water neighbor");
+        assert!(
+            found,
+            "fixture (2000, 42) has no land cell with both a land and water neighbor"
+        );
 
         // Construct a grid where the water neighbor's prec is high (255) and
         // the land neighbor's prec is low (0); if the local helper wrongly

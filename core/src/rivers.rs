@@ -121,7 +121,8 @@ pub fn compute_drainage(mesh: &Mesh, h: &[u8], temp: &[i8], prec: &[u8]) -> Drai
     let mut fl = vec![0u16; n];
     let mut r = vec![0u16; n];
     let mut conf = vec![0u16; n];
-    let mut rivers_data: std::collections::BTreeMap<u32, Vec<i32>> = std::collections::BTreeMap::new();
+    let mut rivers_data: std::collections::BTreeMap<u32, Vec<i32>> =
+        std::collections::BTreeMap::new();
     let mut river_parents: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
     let mut river_next: u32 = 1;
 
@@ -140,7 +141,15 @@ pub fn compute_drainage(mesh: &Mesh, h: &[u8], temp: &[i8], prec: &[u8]) -> Drai
     );
 
     // 5. define_rivers (drop short rivers, write ids back, build RiverGeo).
-    let rivers = define_rivers(mesh, &h_eff, &fl, &mut r, &mut conf, rivers_data, river_parents);
+    let rivers = define_rivers(
+        mesh,
+        &h_eff,
+        &fl,
+        &mut r,
+        &mut conf,
+        rivers_data,
+        river_parents,
+    );
 
     DrainageResult {
         h_eff,
@@ -202,7 +211,9 @@ fn resolve_depressions(mesh: &Mesh, h_eff: &mut [f64]) -> Vec<LakeGeo> {
     land.sort_by(|&a, &b| {
         let ha = h_eff[a as usize];
         let hb = h_eff[b as usize];
-        ha.partial_cmp(&hb).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
+        ha.partial_cmp(&hb)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
     });
 
     // Detect cells that BECOME lake cells (water raised above SEA_LEVEL by
@@ -290,7 +301,8 @@ fn build_lake_geometries(mesh: &Mesh, h_eff: &[f64], lake_cells: &[u32]) -> Vec<
         let mut queue: Vec<usize> = vec![start];
         visited[start] = true;
         let mut cells: Vec<u32> = Vec::new();
-        let mut shoreline_set: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut shoreline_set: std::collections::BTreeSet<usize> =
+            std::collections::BTreeSet::new();
         while let Some(q) = queue.pop() {
             cells.push(q as u32);
             let lo = i[q] as usize;
@@ -486,7 +498,10 @@ fn drain_water(
         let cell_flux = fl[cell] as u32;
         if cell_flux >= MIN_FLUX_TO_FORM_RIVER && r[cell] == 0 {
             r[cell] = *river_next as u16;
-            rivers_data.entry(*river_next).or_default().push(cell as i32);
+            rivers_data
+                .entry(*river_next)
+                .or_default()
+                .push(cell as i32);
             *river_next += 1;
         }
 
@@ -625,8 +640,12 @@ fn define_rivers(
     // threshold. This matches FMG's behavior (`cells.r = new Uint16Array(...)`).
     let n = r.len();
     let saved_r = r.to_vec();
-    for v in r.iter_mut() { *v = 0; }
-    for v in conf.iter_mut() { *v = 0; }
+    for v in r.iter_mut() {
+        *v = 0;
+    }
+    for v in conf.iter_mut() {
+        *v = 0;
+    }
 
     let mut rivers: Vec<RiverGeo> = Vec::new();
     for (river_id, cells) in rivers_data.iter() {
@@ -651,12 +670,27 @@ fn define_rivers(
             r[cu] = *river_id as u16;
         }
         // Build RiverGeo.
-        let source = cells.iter().copied().find(|&c| c >= 0 && h_eff[c as usize] >= sea).unwrap_or(-1);
-        let mouth = cells.iter().rev().copied().find(|&c| c >= 0 && h_eff[c as usize] >= sea).unwrap_or(-1);
-        let discharge = if mouth >= 0 { fl[mouth as usize] as f64 } else { 0.0 };
+        let source = cells
+            .iter()
+            .copied()
+            .find(|&c| c >= 0 && h_eff[c as usize] >= sea)
+            .unwrap_or(-1);
+        let mouth = cells
+            .iter()
+            .rev()
+            .copied()
+            .find(|&c| c >= 0 && h_eff[c as usize] >= sea)
+            .unwrap_or(-1);
+        let discharge = if mouth >= 0 {
+            fl[mouth as usize] as f64
+        } else {
+            0.0
+        };
         let mut points: Vec<[f64; 2]> = Vec::with_capacity(cells.len());
         for &c_id in cells {
-            if c_id < 0 || c_id as usize >= n { continue; }
+            if c_id < 0 || c_id as usize >= n {
+                continue;
+            }
             let cu = c_id as usize;
             if h_eff[cu] >= sea {
                 points.push(mesh.points[cu]);
@@ -688,9 +722,7 @@ mod tests {
     /// border cells (b=1). rivers.rs only reads `mesh.cells.i`, `mesh.cells.c`,
     /// `mesh.cells.b`, and `mesh.points`.
     fn chain_mesh(n: usize) -> Mesh {
-        let points: Vec<[f64; 2]> = (0..n)
-            .map(|i| [100.0 + i as f64 * 10.0, 100.0])
-            .collect();
+        let points: Vec<[f64; 2]> = (0..n).map(|i| [100.0 + i as f64 * 10.0, 100.0]).collect();
 
         let mut v: Vec<u32> = Vec::new();
         let mut c: Vec<u32> = Vec::new();
@@ -749,8 +781,10 @@ mod tests {
             let neighbors = if n == 3 {
                 vec![((cell + 1) % n) as u32, ((cell + 2) % n) as u32]
             } else {
-                vec![((cell as i32 - 1).rem_euclid(n as i32)) as u32,
-                     ((cell + 1) % n) as u32]
+                vec![
+                    ((cell as i32 - 1).rem_euclid(n as i32)) as u32,
+                    ((cell + 1) % n) as u32,
+                ]
             };
             for (j, &nb) in neighbors.iter().enumerate() {
                 v.push((cell * 2 + j) as u32);
@@ -797,7 +831,10 @@ mod tests {
         let eff = alter_heights(&mesh, &h, &temp);
         // Single cell with no neighbors: mean_t = 0.
         // eff = 50 + 10/100 + 0/10000 = 50.1
-        assert!((eff[0] - 50.1).abs() < 1e-9, "land cell should get temp bonus");
+        assert!(
+            (eff[0] - 50.1).abs() < 1e-9,
+            "land cell should get temp bonus"
+        );
     }
 
     #[test]
@@ -874,8 +911,8 @@ mod tests {
         let mesh = ring_mesh(n);
         let mut h_eff = vec![50.0; n];
         h_eff[0] = 15.0; // lake surface
-        h_eff[2] = 5.0;  // lower water body
-        // Cell 0's shoreline neighbors in the ring: cells 1 and 5.
+        h_eff[2] = 5.0; // lower water body
+                        // Cell 0's shoreline neighbors in the ring: cells 1 and 5.
         let lakes = vec![LakeGeo {
             id: 1,
             height: 15.0,
@@ -885,7 +922,10 @@ mod tests {
         }];
         let result = detect_close_lakes(&mesh, &h_eff, lakes);
         assert_eq!(result.len(), 1);
-        assert!(!result[0].closed, "lake should be open (reachable lower water)");
+        assert!(
+            !result[0].closed,
+            "lake should be open (reachable lower water)"
+        );
     }
 
     // ---- compute_drainage integration tests --------------------------------
@@ -936,7 +976,12 @@ mod tests {
         assert!(result.fl.iter().any(|&f| f > 0), "should have nonzero flux");
         // Rivers that survive define_rivers must have >= 3 cells.
         for riv in &result.rivers {
-            assert!(riv.cells.len() >= 3, "river {} has only {} cells", riv.id, riv.cells.len());
+            assert!(
+                riv.cells.len() >= 3,
+                "river {} has only {} cells",
+                riv.id,
+                riv.cells.len()
+            );
         }
     }
 
@@ -953,7 +998,10 @@ mod tests {
             result.rivers.iter().map(|r| r.id as u16).collect();
         for &rid in result.r.iter() {
             if rid != 0 {
-                assert!(declared_ids.contains(&rid), "cell references river id {rid} not in declared rivers");
+                assert!(
+                    declared_ids.contains(&rid),
+                    "cell references river id {rid} not in declared rivers"
+                );
             }
         }
     }
@@ -971,8 +1019,14 @@ mod tests {
         let result = compute_drainage(&mesh, &h, &temp, &prec);
         // With low precip, no rivers form (flux < 30).
         // h_eff should preserve the slope since there are no depressions.
-        assert!((result.h_eff[0] - 90.0).abs() < 1.0, "cell 0 h_eff should be ~90");
-        assert!((result.h_eff[5] - 40.0).abs() < 1.0, "cell 5 h_eff should be ~40");
+        assert!(
+            (result.h_eff[0] - 90.0).abs() < 1.0,
+            "cell 0 h_eff should be ~90"
+        );
+        assert!(
+            (result.h_eff[5] - 40.0).abs() < 1.0,
+            "cell 5 h_eff should be ~40"
+        );
     }
 
     #[test]

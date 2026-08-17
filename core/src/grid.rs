@@ -123,7 +123,7 @@ mod tests {
     fn simple_mesh() -> Mesh {
         let points = vec![[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]];
         let v = vec![0, 1, 1, 2]; // vertex ids (not used by Grid tests)
-        // 3 cells in a chain: cell 0 neighbors [1], cell 1 neighbors [0,2], cell 2 neighbors [1]
+                                  // 3 cells in a chain: cell 0 neighbors [1], cell 1 neighbors [0,2], cell 2 neighbors [1]
         let c = vec![1, 0, 2, 1]; // CSR: cell 0:[1], cell 1:[0,2], cell 2:[1]
         let i = vec![0, 1, 3, 4]; // offsets: 0..1, 1..3, 3..4
         let b = vec![0, 0, 0];

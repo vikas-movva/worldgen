@@ -4,35 +4,35 @@
 //! Real generation modules (mesh, heightmap, climate, biomes, ...) land in
 //! later phases.
 
-use std::cell::RefCell;
 use serde::Serialize;
+use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
-pub mod mesh;
-mod heightmap;
-mod heightmap_edit;
-mod grid;
-mod climate;
 mod biomes;
-mod rivers;
+mod climate;
 /// Phase 3 Step 3.1: anthropological-layer entity data model + `Pack` holder.
 /// Types-only — no generators (Step 3.2/3.3 add `gen_states.rs` /
 /// `gen_cultures.rs` / `gen_religions.rs`), no rendering, no RNG. Exposed so
 /// the Phase 4 timeline projector and a future `pack` worker message kind can
 /// reference `entities::Pack` from `lib.rs`.
 pub(crate) mod entities;
-/// Phase 3 Step 3.2: states + provinces generator (FMG port).
-mod gen_states;
-mod gen_cultures;
-/// Phase 4 Step 4.1: timeline data model (`Event`, `EventType`, `EventKind`,
-/// `EventPayload`) + `WorldAt(year)` projector (`project_world` / `project_delta`).
-/// See `agent/worldgen-implementation-plan.md` §Step 4.1 and design §3.3/§3.4.
-mod timeline;
 /// Phase 4 Step 4.2: event generation engine — deterministic timeline
 /// generation (succession, war, plague, golden age, schism, found/expand,
 /// migration) producing a chronologically-sorted `Timeline`.
 /// See `agent/worldgen-implementation-plan.md` §Step 4.2.
 mod event_engine;
+mod gen_cultures;
+/// Phase 3 Step 3.2: states + provinces generator (FMG port).
+mod gen_states;
+mod grid;
+mod heightmap;
+mod heightmap_edit;
+pub mod mesh;
+mod rivers;
+/// Phase 4 Step 4.1: timeline data model (`Event`, `EventType`, `EventKind`,
+/// `EventPayload`) + `WorldAt(year)` projector (`project_world` / `project_delta`).
+/// See `agent/worldgen-implementation-plan.md` §Step 4.1 and design §3.3/§3.4.
+mod timeline;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -63,8 +63,8 @@ thread_local! {
 /// this call — JS should not mutate its copy.
 #[wasm_bindgen]
 pub fn store_grid_h(grid_js: JsValue) {
-    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
-        .expect("store_grid_h: failed to deserialize Grid");
+    let grid: grid::Grid =
+        serde_wasm_bindgen::from_value(grid_js).expect("store_grid_h: failed to deserialize Grid");
     HELD_GRID.with(|g| *g.borrow_mut() = Some(grid));
 }
 
@@ -132,7 +132,11 @@ pub fn build_grid_with_heightmap(mesh_js: JsValue, seed: u32) -> JsValue {
 /// `{ temp: Int8Array, prec: Uint8Array }`. Port of FMG `calculateTemperatures`
 /// + `generatePrecipitation` (see `climate.rs`).
 #[wasm_bindgen]
-pub fn generate_climate(mesh_js: JsValue, heightmap: js_sys::Uint8Array, opts_js: JsValue) -> JsValue {
+pub fn generate_climate(
+    mesh_js: JsValue,
+    heightmap: js_sys::Uint8Array,
+    opts_js: JsValue,
+) -> JsValue {
     climate::generate_climate_js(mesh_js, heightmap, opts_js)
 }
 
@@ -149,8 +153,8 @@ pub fn generate_climate(mesh_js: JsValue, heightmap: js_sys::Uint8Array, opts_js
 pub fn generate_climate_for_grid(grid_js: JsValue, opts_js: JsValue) -> JsValue {
     let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
         .expect("generate_climate_for_grid: failed to deserialize Grid from JsValue");
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
     let (temp, prec) = climate::generate_climate(&grid.mesh, &grid.cells.h, &opts);
     grid.cells.temp = temp;
     grid.cells.prec = prec;
@@ -222,8 +226,8 @@ pub fn edit_heightmap_h(ops_js: JsValue) -> js_sys::Uint8Array {
 /// Exposed as `pick_cell(grid, x, y)` to JS.
 #[wasm_bindgen]
 pub fn pick_cell(grid_js: JsValue, x: f64, y: f64) -> i32 {
-    let grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
-        .expect("pick_cell: failed to deserialize Grid");
+    let grid: grid::Grid =
+        serde_wasm_bindgen::from_value(grid_js).expect("pick_cell: failed to deserialize Grid");
     match heightmap::pick_cell(&grid.mesh, x, y) {
         Some(id) => id as i32,
         None => -1,
@@ -298,13 +302,17 @@ pub fn reset_heightmap_h() -> js_sys::Uint8Array {
 ///
 /// Exposed as `recompute_temp_biome_local(grid, cellIds, opts)` to JS.
 #[wasm_bindgen]
-pub fn recompute_temp_biome_local(grid_js: JsValue, cell_ids_js: JsValue, opts_js: JsValue) -> JsValue {
+pub fn recompute_temp_biome_local(
+    grid_js: JsValue,
+    cell_ids_js: JsValue,
+    opts_js: JsValue,
+) -> JsValue {
     let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
         .expect("recompute_temp_biome_local: failed to deserialize Grid");
     let cell_ids: Vec<u32> = serde_wasm_bindgen::from_value(cell_ids_js)
         .expect("recompute_temp_biome_local: failed to deserialize cellIds");
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
 
     // Temp first (biome depends on temp).
     let coords = climate::calculate_map_coordinates(&opts);
@@ -338,12 +346,14 @@ pub fn recompute_temp_biome_local(grid_js: JsValue, cell_ids_js: JsValue, opts_j
 pub fn recompute_temp_biome_local_h(cell_ids_js: JsValue, opts_js: JsValue) -> JsValue {
     let cell_ids: Vec<u32> = serde_wasm_bindgen::from_value(cell_ids_js)
         .expect("recompute_temp_biome_local_h: failed to deserialize cellIds");
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
 
     HELD_GRID.with(|g| {
         let mut guard = g.borrow_mut();
-        let grid = guard.as_mut().expect("recompute_temp_biome_local_h: no held grid");
+        let grid = guard
+            .as_mut()
+            .expect("recompute_temp_biome_local_h: no held grid");
 
         // Temp first (biome depends on temp).
         let coords = climate::calculate_map_coordinates(&opts);
@@ -391,8 +401,8 @@ pub fn recompute_temp_biome_local_h(cell_ids_js: JsValue, opts_js: JsValue) -> J
 pub fn recompute_dependents(grid_js: JsValue, opts_js: JsValue) -> JsValue {
     let mut grid: grid::Grid = serde_wasm_bindgen::from_value(grid_js)
         .expect("recompute_dependents: failed to deserialize Grid");
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
     let result = recompute_dependents_inner(&mut grid, &opts);
     serde_wasm_bindgen::to_value(&result).expect("recompute_dependents: serde to JsValue")
 }
@@ -405,11 +415,13 @@ pub fn recompute_dependents(grid_js: JsValue, opts_js: JsValue) -> JsValue {
 /// Exposed as `recompute_dependents_h(opts)` to JS.
 #[wasm_bindgen]
 pub fn recompute_dependents_h(opts_js: JsValue) -> JsValue {
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
     HELD_GRID.with(|g| {
         let mut guard = g.borrow_mut();
-        let grid = guard.as_mut().expect("recompute_dependents_h: no held grid");
+        let grid = guard
+            .as_mut()
+            .expect("recompute_dependents_h: no held grid");
         let result = recompute_dependents_inner(grid, &opts);
         serde_wasm_bindgen::to_value(&result).expect("recompute_dependents_h: serde to JsValue")
     })
@@ -437,45 +449,128 @@ pub fn recompute_dependents_h(opts_js: JsValue) -> JsValue {
 /// Exposed as `recompute_dependents_h2(opts)` to JS.
 #[wasm_bindgen]
 pub fn recompute_dependents_h2(opts_js: JsValue) -> JsValue {
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
     HELD_GRID.with(|g| {
         let mut guard = g.borrow_mut();
-        let grid = guard.as_mut().expect("recompute_dependents_h2: no held grid");
+        let grid = guard
+            .as_mut()
+            .expect("recompute_dependents_h2: no held grid");
         let result = recompute_dependents_inner(grid, &opts);
 
-    let obj = js_sys::Object::new();
+        let obj = js_sys::Object::new();
 
-    // 12 numeric arrays as zero-copy TypedArrays (~385ms serde eliminated).
-    js_sys::Reflect::set(&obj, &"temp".into(), &js_sys::Int8Array::from(result.temp.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"prec".into(), &js_sys::Uint8Array::from(result.prec.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"biome".into(), &js_sys::Uint8Array::from(result.biome.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"state".into(), &js_sys::Int32Array::from(result.state.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"province".into(), &js_sys::Int32Array::from(result.province.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"culture".into(), &js_sys::Int32Array::from(result.culture.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"religion".into(), &js_sys::Int32Array::from(result.religion.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"burg".into(), &js_sys::Int16Array::from(result.burg.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"fl".into(), &js_sys::Uint16Array::from(result.fl.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"r".into(), &js_sys::Uint16Array::from(result.r.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"conf".into(), &js_sys::Uint16Array::from(result.conf.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"coastline".into(), &js_sys::Uint8Array::from(result.coastline.as_slice())).unwrap();
+        // 12 numeric arrays as zero-copy TypedArrays (~385ms serde eliminated).
+        js_sys::Reflect::set(
+            &obj,
+            &"temp".into(),
+            &js_sys::Int8Array::from(result.temp.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"prec".into(),
+            &js_sys::Uint8Array::from(result.prec.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"biome".into(),
+            &js_sys::Uint8Array::from(result.biome.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"state".into(),
+            &js_sys::Int32Array::from(result.state.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"province".into(),
+            &js_sys::Int32Array::from(result.province.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"culture".into(),
+            &js_sys::Int32Array::from(result.culture.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"religion".into(),
+            &js_sys::Int32Array::from(result.religion.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"burg".into(),
+            &js_sys::Int16Array::from(result.burg.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"fl".into(),
+            &js_sys::Uint16Array::from(result.fl.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"r".into(),
+            &js_sys::Uint16Array::from(result.r.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"conf".into(),
+            &js_sys::Uint16Array::from(result.conf.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"coastline".into(),
+            &js_sys::Uint8Array::from(result.coastline.as_slice()),
+        )
+        .unwrap();
 
-    // 4 small collections via serde (tiny relative to 60k-element arrays).
-    // dissolved_states is a Vec<u32> but typically very small (< 10 entries),
-    // so serde-encoded JS array is fine.
-    let small = DependentResultSmall {
-        removed_burgs: result.removed_burgs,
-        dissolved_states: result.dissolved_states.clone(),
-        rivers: result.rivers,
-        lakes: result.lakes,
-    };
-    let small_js = serde_wasm_bindgen::to_value(&small).expect("recompute_dependents_h2: serde small collections");
-    js_sys::Reflect::set(&obj, &"removed_burgs".into(), &js_sys::Reflect::get(&small_js, &"removed_burgs".into()).unwrap()).unwrap();
-    js_sys::Reflect::set(&obj, &"dissolved_states".into(), &js_sys::Uint32Array::from(result.dissolved_states.as_slice())).unwrap();
-    js_sys::Reflect::set(&obj, &"rivers".into(), &js_sys::Reflect::get(&small_js, &"rivers".into()).unwrap()).unwrap();
-    js_sys::Reflect::set(&obj, &"lakes".into(), &js_sys::Reflect::get(&small_js, &"lakes".into()).unwrap()).unwrap();
+        // 4 small collections via serde (tiny relative to 60k-element arrays).
+        // dissolved_states is a Vec<u32> but typically very small (< 10 entries),
+        // so serde-encoded JS array is fine.
+        let small = DependentResultSmall {
+            removed_burgs: result.removed_burgs,
+            dissolved_states: result.dissolved_states.clone(),
+            rivers: result.rivers,
+            lakes: result.lakes,
+        };
+        let small_js = serde_wasm_bindgen::to_value(&small)
+            .expect("recompute_dependents_h2: serde small collections");
+        js_sys::Reflect::set(
+            &obj,
+            &"removed_burgs".into(),
+            &js_sys::Reflect::get(&small_js, &"removed_burgs".into()).unwrap(),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"dissolved_states".into(),
+            &js_sys::Uint32Array::from(result.dissolved_states.as_slice()),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"rivers".into(),
+            &js_sys::Reflect::get(&small_js, &"rivers".into()).unwrap(),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &obj,
+            &"lakes".into(),
+            &js_sys::Reflect::get(&small_js, &"lakes".into()).unwrap(),
+        )
+        .unwrap();
 
-    obj.into()
+        obj.into()
     })
 }
 
@@ -512,7 +607,9 @@ struct DrainageGeometry {
 pub fn get_drainage_geometry_h() -> JsValue {
     HELD_GRID.with(|g| {
         let guard = g.borrow();
-        let grid = guard.as_ref().expect("get_drainage_geometry_h: no held grid");
+        let grid = guard
+            .as_ref()
+            .expect("get_drainage_geometry_h: no held grid");
         let drainage = rivers::compute_drainage(
             &grid.mesh,
             &grid.cells.h,
@@ -552,7 +649,10 @@ struct DependentResultSmall {
 /// can read them; `h` is left untouched (the user's edited heightmap is the
 /// source of truth) but the drainage module computes a derived `h_eff` for
 /// depression resolution. Returns the [`grid::DependentResult`].
-pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::ClimateOpts) -> grid::DependentResult {
+pub fn recompute_dependents_inner(
+    grid: &mut grid::Grid,
+    opts: &climate::ClimateOpts,
+) -> grid::DependentResult {
     // 1. Drainage: rivers + lakes + per-cell flux / river-id / confluence.
     //    Produces `h_eff` (depression-resolved), `fl`, `r`, `conf`, and the
     //    RiverGeo / LakeGeo lists. We write `fl`/`r`/`conf` back into
@@ -583,7 +683,12 @@ pub fn recompute_dependents_inner(grid: &mut grid::Grid, opts: &climate::Climate
     grid.cells.prec = prec.clone();
 
     // 4. Biomes full re-pass — reads the fresh temp + prec.
-    let biome = biomes::generate_biomes(&grid.mesh, &grid.cells.h, &grid.cells.temp, &grid.cells.prec);
+    let biome = biomes::generate_biomes(
+        &grid.mesh,
+        &grid.cells.h,
+        &grid.cells.temp,
+        &grid.cells.prec,
+    );
     grid.cells.biome = biome.clone();
 
     // 5. Entity repair cascade. Phase 3 will generate Burgs/States/Cultures;
@@ -705,8 +810,8 @@ fn repair_entities(cells: &mut grid::CellData) -> (Vec<String>, Vec<u32>) {
 /// subsequent `_h` calls can operate without serde round-trips.
 #[wasm_bindgen]
 pub fn generate_world(seed: u32, cell_count: u32, opts_js: JsValue) -> JsValue {
-    let opts: climate::ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| climate::ClimateOpts::default());
+    let opts: climate::ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| climate::ClimateOpts::default());
     let grid = generate_world_inner(seed, cell_count, &opts);
     let js = serde_wasm_bindgen::to_value(&grid).expect("generate_world: grid serde to JsValue");
     // Store the grid in Rust-side handle for zero-serde subsequent calls.
@@ -791,8 +896,8 @@ pub fn project_world(
 ) -> JsValue {
     let pack: entities::Pack =
         serde_wasm_bindgen::from_value(pack_js).expect("project_world: failed to deserialize Pack");
-    let timeline: timeline::Timeline =
-        serde_wasm_bindgen::from_value(timeline_js).expect("project_world: failed to deserialize Timeline");
+    let timeline: timeline::Timeline = serde_wasm_bindgen::from_value(timeline_js)
+        .expect("project_world: failed to deserialize Timeline");
 
     let cs: Vec<i32> = cells_state.to_vec();
     let cc: Vec<i32> = cells_culture.to_vec();
@@ -817,10 +922,10 @@ pub fn project_delta(
     prev_year: i32,
     target_year: i32,
 ) -> JsValue {
-    let mut world: timeline::WorldAt =
-        serde_wasm_bindgen::from_value(world_js).expect("project_delta: failed to deserialize WorldAt");
-    let timeline: timeline::Timeline =
-        serde_wasm_bindgen::from_value(timeline_js).expect("project_delta: failed to deserialize Timeline");
+    let mut world: timeline::WorldAt = serde_wasm_bindgen::from_value(world_js)
+        .expect("project_delta: failed to deserialize WorldAt");
+    let timeline: timeline::Timeline = serde_wasm_bindgen::from_value(timeline_js)
+        .expect("project_delta: failed to deserialize Timeline");
 
     timeline::project_delta(&mut world, &timeline, prev_year, target_year);
     serde_wasm_bindgen::to_value(&world).expect("project_delta: WorldAt serde to JsValue")
@@ -838,7 +943,15 @@ pub fn project_world_inner(
     timeline: &timeline::Timeline,
     target_year: i32,
 ) -> timeline::WorldAt {
-    timeline::project_world(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, target_year)
+    timeline::project_world(
+        pack,
+        cells_state,
+        cells_culture,
+        cells_religion,
+        cells_burg,
+        timeline,
+        target_year,
+    )
 }
 
 /// Phase 4.1: inner (test-callable) incremental projection. Mutates `world`
@@ -883,12 +996,13 @@ pub fn generate_timeline(
     cells_religion: js_sys::Int32Array,
     cells_burg: js_sys::Int16Array,
     cells_h: js_sys::Uint8Array,
+    cells_province: js_sys::Int32Array,
     mesh_js: JsValue,
     seed: u64,
     params_js: JsValue,
 ) -> JsValue {
-    let pack: entities::Pack =
-        serde_wasm_bindgen::from_value(pack_js).expect("generate_timeline: failed to deserialize Pack");
+    let pack: entities::Pack = serde_wasm_bindgen::from_value(pack_js)
+        .expect("generate_timeline: failed to deserialize Pack");
     let params: event_engine::TimelineParams = serde_wasm_bindgen::from_value(params_js)
         .unwrap_or_else(|_| event_engine::TimelineParams::default());
 
@@ -897,6 +1011,7 @@ pub fn generate_timeline(
     let cr: Vec<i32> = cells_religion.to_vec();
     let cb: Vec<i16> = cells_burg.to_vec();
     let ch: Vec<u8> = cells_h.to_vec();
+    let cp: Vec<i32> = cells_province.to_vec();
 
     // `mesh_js` is the Mesh (or its cells topology) — extract the `Cells` CSR
     // adjacency. If absent or invalid, the engine falls back to the grid.
@@ -909,7 +1024,16 @@ pub fn generate_timeline(
     };
 
     let timeline = event_engine::generate_timeline(
-        &pack, &cs, &cc, &cr, &cb, &ch, cells.as_ref(), seed, &params,
+        &pack,
+        &cs,
+        &cc,
+        &cr,
+        &cb,
+        &ch,
+        &cp,
+        cells.as_ref(),
+        seed,
+        &params,
     );
     serde_wasm_bindgen::to_value(&timeline).expect("generate_timeline: Timeline serde to JsValue")
 }
@@ -923,13 +1047,22 @@ pub fn generate_timeline_inner(
     cells_religion: &[i32],
     cells_burg: &[i16],
     cells_h: &[u8],
+    cells_province: &[i32],
     cells: Option<&mesh::Cells>,
     seed: u64,
     params: &event_engine::TimelineParams,
 ) -> timeline::Timeline {
     event_engine::generate_timeline(
-        pack, cells_state, cells_culture, cells_religion, cells_burg, cells_h,
-        cells, seed, params,
+        pack,
+        cells_state,
+        cells_culture,
+        cells_religion,
+        cells_burg,
+        cells_h,
+        cells_province,
+        cells,
+        seed,
+        params,
     )
 }
 
@@ -954,12 +1087,22 @@ pub fn generate_world_inner(seed: u32, cell_count: u32, opts: &climate::ClimateO
     grid.cells.prec = prec;
 
     // 1.4 — biomes: populate cells.biome
-    let biome = biomes::generate_biomes(&grid.mesh, &grid.cells.h, &grid.cells.temp, &grid.cells.prec);
+    let biome = biomes::generate_biomes(
+        &grid.mesh,
+        &grid.cells.h,
+        &grid.cells.temp,
+        &grid.cells.prec,
+    );
     grid.cells.biome = biome;
 
     // 2.5.3 — drainage: populate fl, r, conf. Fresh worlds must have rivers
     // from initial generation, not only after the first heightmap edit recompute.
-    let drainage = rivers::compute_drainage(&grid.mesh, &grid.cells.h, &grid.cells.temp, &grid.cells.prec);
+    let drainage = rivers::compute_drainage(
+        &grid.mesh,
+        &grid.cells.h,
+        &grid.cells.temp,
+        &grid.cells.prec,
+    );
     grid.cells.fl = drainage.fl;
     grid.cells.r = drainage.r;
     grid.cells.conf = drainage.conf;
@@ -974,10 +1117,10 @@ pub fn generate_world_inner(seed: u32, cell_count: u32, opts: &climate::ClimateO
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::biomes;
+    use crate::climate;
     use crate::grid::Grid;
     use crate::heightmap;
-    use crate::climate;
-    use crate::biomes;
     use rand::{Rng, SeedableRng};
 
     #[test]
@@ -1014,7 +1157,11 @@ mod tests {
         let grid = generate_world_inner(seed, n as u32, &opts);
         for i in 0..n {
             if grid.cells.h[i] >= 20 {
-                assert!((1..=12).contains(&grid.cells.biome[i]), "land cell {i} biome out of 1..=12: {}", grid.cells.biome[i]);
+                assert!(
+                    (1..=12).contains(&grid.cells.biome[i]),
+                    "land cell {i} biome out of 1..=12: {}",
+                    grid.cells.biome[i]
+                );
             }
         }
     }
@@ -1060,13 +1207,23 @@ mod tests {
             let (t, p) = climate::generate_climate(&g_h.mesh, &g_h.cells.h, &opts);
             g_h.cells.temp = t;
             g_h.cells.prec = p;
-            let b = biomes::generate_biomes(&g_h.mesh, &g_h.cells.h, &g_h.cells.temp, &g_h.cells.prec);
+            let b =
+                biomes::generate_biomes(&g_h.mesh, &g_h.cells.h, &g_h.cells.temp, &g_h.cells.prec);
             g_h.cells.biome = b;
 
             assert_eq!(&world.cells.h, &g_h.cells.h, "h mismatch seed={seed} n={n}");
-            assert_eq!(&world.cells.temp, &g_h.cells.temp, "temp mismatch seed={seed} n={n}");
-            assert_eq!(&world.cells.prec, &g_h.cells.prec, "prec mismatch seed={seed} n={n}");
-            assert_eq!(&world.cells.biome, &g_h.cells.biome, "biome mismatch seed={seed} n={n}");
+            assert_eq!(
+                &world.cells.temp, &g_h.cells.temp,
+                "temp mismatch seed={seed} n={n}"
+            );
+            assert_eq!(
+                &world.cells.prec, &g_h.cells.prec,
+                "prec mismatch seed={seed} n={n}"
+            );
+            assert_eq!(
+                &world.cells.biome, &g_h.cells.biome,
+                "biome mismatch seed={seed} n={n}"
+            );
         }
     }
 
@@ -1143,13 +1300,21 @@ mod tests {
         let opts = climate::ClimateOpts::default();
         let grid = generate_world_inner(seed, n, &opts);
         for i in 0..n as usize {
-            assert!((0..=100).contains(&grid.cells.h[i]), "h[{i}] = {} out of 0..=100", grid.cells.h[i]);
+            assert!(
+                (0..=100).contains(&grid.cells.h[i]),
+                "h[{i}] = {} out of 0..=100",
+                grid.cells.h[i]
+            );
             assert!(
                 (-128..=127).contains(&grid.cells.temp[i]),
                 "temp[{i}] = {} out of i8 range",
                 grid.cells.temp[i]
             );
-            assert!((0..=255).contains(&grid.cells.prec[i]), "prec[{i}] = {} out of 0..=255", grid.cells.prec[i]);
+            assert!(
+                (0..=255).contains(&grid.cells.prec[i]),
+                "prec[{i}] = {} out of 0..=255",
+                grid.cells.prec[i]
+            );
             assert!(
                 (0..=12).contains(&grid.cells.biome[i]),
                 "biome[{i}] = {} out of 0..=12",
@@ -1175,7 +1340,10 @@ mod tests {
             .zip(b.cells.h.iter())
             .filter(|(x, y)| x != y)
             .count();
-        assert!(diff > 0, "two distinct seeds produced byte-identical heightmaps");
+        assert!(
+            diff > 0,
+            "two distinct seeds produced byte-identical heightmaps"
+        );
     }
 
     /// Step 1.5: the pipeline must scale to the requested cell count. The
@@ -1231,7 +1399,11 @@ mod tests {
         let grid = generate_world_inner(42, n, &opts);
         let cells = &grid.mesh.cells;
         assert_eq!(cells.i.len(), n as usize + 1, "cells.i must be length N+1");
-        assert_eq!(cells.i.last().copied().unwrap() as usize, cells.v.len(), "i[N] must equal v.len()");
+        assert_eq!(
+            cells.i.last().copied().unwrap() as usize,
+            cells.v.len(),
+            "i[N] must equal v.len()"
+        );
         assert_eq!(cells.v.len(), cells.c.len(), "v and c must share length");
         let nv = grid.mesh.vertices.p.len();
         for cell in 0..n as usize {
@@ -1240,7 +1412,10 @@ mod tests {
             assert!(hi > lo, "cell {cell}: empty vertex/neighbor slice");
             assert!(hi - lo >= 3, "cell {cell}: polygon must have ≥3 vertices");
             for k in lo..hi {
-                assert!(cells.v[k] < nv as u32, "cell {cell}: vertex id out of range");
+                assert!(
+                    cells.v[k] < nv as u32,
+                    "cell {cell}: vertex id out of range"
+                );
                 assert!(cells.c[k] < n, "cell {cell}: neighbor id out of range");
             }
         }
@@ -1273,16 +1448,40 @@ mod tests {
         assert_eq!(result.conf.len(), n, "conf len");
         assert_eq!(result.coastline.len(), n, "coastline len");
         for i in 0..n {
-            assert!((-128..=127).contains(&result.temp[i]), "temp[{i}] out of i8 range");
-            assert!((0..=255).contains(&result.prec[i]), "prec[{i}] out of u8 range");
-            assert!((0..=12).contains(&result.biome[i]), "biome[{i}] out of 0..=12");
-            assert_eq!(result.state[i], -1, "state[{i}] should be -1 (no entities yet)");
+            assert!(
+                (-128..=127).contains(&result.temp[i]),
+                "temp[{i}] out of i8 range"
+            );
+            assert!(
+                (0..=255).contains(&result.prec[i]),
+                "prec[{i}] out of u8 range"
+            );
+            assert!(
+                (0..=12).contains(&result.biome[i]),
+                "biome[{i}] out of 0..=12"
+            );
+            assert_eq!(
+                result.state[i], -1,
+                "state[{i}] should be -1 (no entities yet)"
+            );
             assert_eq!(result.province[i], -1, "province[{i}] should be -1");
-            assert_eq!(result.burg[i], 0, "burg[{i}] should be 0 (unassigned — 0 is the burg 'none' sentinel)");
-            assert!(result.coastline[i] == 0 || result.coastline[i] == 1, "coastline[{i}] must be 0 or 1");
+            assert_eq!(
+                result.burg[i], 0,
+                "burg[{i}] should be 0 (unassigned — 0 is the burg 'none' sentinel)"
+            );
+            assert!(
+                result.coastline[i] == 0 || result.coastline[i] == 1,
+                "coastline[{i}] must be 0 or 1"
+            );
         }
-        assert!(result.removed_burgs.is_empty(), "removed_burgs should be empty");
-        assert!(result.dissolved_states.is_empty(), "dissolved_states should be empty");
+        assert!(
+            result.removed_burgs.is_empty(),
+            "removed_burgs should be empty"
+        );
+        assert!(
+            result.dissolved_states.is_empty(),
+            "dissolved_states should be empty"
+        );
     }
 
     /// Timing test: measure pure Rust `recompute_dependents_inner` compute time
@@ -1311,7 +1510,10 @@ mod tests {
             sorted[sorted.len() / 2]
         };
         println!("Pure Rust recompute_dependents_inner @ 60k: {median}ms median");
-        assert!(median < 1000, "compute should be under 1000ms at 60k (debug), got {median}ms");
+        assert!(
+            median < 1000,
+            "compute should be under 1000ms at 60k (debug), got {median}ms"
+        );
     }
 
     /// Fresh worlds must have drainage: `generate_world_inner` now calls
@@ -1343,8 +1545,14 @@ mod tests {
                 any_river_cells = true;
             }
         }
-        assert!(any_flux, "no cells with nonzero flux across 3 seeds at n=4000");
-        assert!(any_river_cells, "no cells with river id across 3 seeds at n=4000");
+        assert!(
+            any_flux,
+            "no cells with nonzero flux across 3 seeds at n=4000"
+        );
+        assert!(
+            any_river_cells,
+            "no cells with river id across 3 seeds at n=4000"
+        );
     }
 
     /// River rerouting after heightmap edit: lowering a swath of cells to water
@@ -1361,7 +1569,8 @@ mod tests {
 
         // Baseline: rivers on the original grid.
         let result_before = recompute_dependents_inner(&mut grid, &opts);
-        let rivers_before: Vec<(u32, Vec<i32>, f64)> = result_before.rivers
+        let rivers_before: Vec<(u32, Vec<i32>, f64)> = result_before
+            .rivers
             .iter()
             .map(|r| (r.id, r.cells.clone(), r.discharge))
             .collect();
@@ -1394,7 +1603,8 @@ mod tests {
 
         // Recompute after the edit.
         let result_after = recompute_dependents_inner(&mut grid, &opts);
-        let rivers_after: Vec<(u32, Vec<i32>, f64)> = result_after.rivers
+        let rivers_after: Vec<(u32, Vec<i32>, f64)> = result_after
+            .rivers
             .iter()
             .map(|r| (r.id, r.cells.clone(), r.discharge))
             .collect();
@@ -1402,18 +1612,19 @@ mod tests {
         // Assert that rivers changed: either the count differs, or at least one
         // river's path (cells) or discharge differs.
         let count_changed = rivers_before.len() != rivers_after.len();
-        let paths_changed = rivers_before.iter().zip(rivers_after.iter())
+        let paths_changed = rivers_before
+            .iter()
+            .zip(rivers_after.iter())
             .any(|((_, c1, d1), (_, c2, d2))| c1 != c2 || d1 != d2);
         // Also check that the specific flooded cells lost their river ids.
         let flood_start = mid.saturating_sub(50);
         let flood_end = (mid + 50).min(n_us);
-        let any_flooded_cell_lost_river = (flood_start..flood_end)
-            .any(|i| {
-                // Before the edit, if this cell was on a river, after flooding
-                // it should not be (it's water now). We check result.r to see
-                // if the river id changed.
-                result_after.r[i] == 0 && result_before.r[i] != 0
-            });
+        let any_flooded_cell_lost_river = (flood_start..flood_end).any(|i| {
+            // Before the edit, if this cell was on a river, after flooding
+            // it should not be (it's water now). We check result.r to see
+            // if the river id changed.
+            result_after.r[i] == 0 && result_before.r[i] != 0
+        });
 
         assert!(
             count_changed || paths_changed || any_flooded_cell_lost_river,
@@ -1439,16 +1650,25 @@ mod tests {
         let sea = climate::SEA_LEVEL;
         for cell in 0..n {
             if grid.cells.h[cell] < sea {
-                assert_eq!(result.coastline[cell], 0, "water cell {cell} should have coastline=0");
+                assert_eq!(
+                    result.coastline[cell], 0,
+                    "water cell {cell} should have coastline=0"
+                );
             } else {
                 // Land cell: check if it has a water neighbor.
                 let lo = i[cell] as usize;
                 let hi = i[cell + 1] as usize;
                 let has_water_neighbor = (lo..hi).any(|k| grid.cells.h[c[k] as usize] < sea);
                 if has_water_neighbor {
-                    assert_eq!(result.coastline[cell], 1, "land cell {cell} with water neighbor should have coastline=1");
+                    assert_eq!(
+                        result.coastline[cell], 1,
+                        "land cell {cell} with water neighbor should have coastline=1"
+                    );
                 } else {
-                    assert_eq!(result.coastline[cell], 0, "interior land cell {cell} should have coastline=0");
+                    assert_eq!(
+                        result.coastline[cell], 0,
+                        "interior land cell {cell} should have coastline=0"
+                    );
                 }
             }
         }
@@ -1475,13 +1695,21 @@ mod tests {
         for (a, b) in r1.rivers.iter().zip(r2.rivers.iter()) {
             assert_eq!(a.id, b.id, "river id differs");
             assert_eq!(a.cells, b.cells, "river cells differ for id={}", a.id);
-            assert_eq!(a.discharge, b.discharge, "river discharge differs for id={}", a.id);
+            assert_eq!(
+                a.discharge, b.discharge,
+                "river discharge differs for id={}",
+                a.id
+            );
         }
         for (a, b) in r1.lakes.iter().zip(r2.lakes.iter()) {
             assert_eq!(a.id, b.id, "lake id differs");
             assert_eq!(a.cells, b.cells, "lake cells differ for id={}", a.id);
             assert_eq!(a.height, b.height, "lake height differs for id={}", a.id);
-            assert_eq!(a.closed, b.closed, "lake closed flag differs for id={}", a.id);
+            assert_eq!(
+                a.closed, b.closed,
+                "lake closed flag differs for id={}",
+                a.id
+            );
         }
     }
 
@@ -1523,7 +1751,10 @@ mod tests {
         let _ = recompute_dependents_inner(&mut grid, &opts);
         // After recompute, the grid is valid — check that the biome for the pit
         // cell is still in range (the depression-fill shouldn't corrupt data).
-        assert!((0..=12).contains(&grid.cells.biome[mid]), "pit cell biome out of range after recompute");
+        assert!(
+            (0..=12).contains(&grid.cells.biome[mid]),
+            "pit cell biome out of range after recompute"
+        );
     }
 
     /// River appearance: a typical world with precipitation should produce at
@@ -1543,13 +1774,21 @@ mod tests {
                 any_rivers = true;
                 // Each river must have >= 3 cells (define_rivers drops shorter).
                 for r in &result.rivers {
-                    assert!(r.cells.len() >= 3, "river {} has only {} cells", r.id, r.cells.len());
+                    assert!(
+                        r.cells.len() >= 3,
+                        "river {} has only {} cells",
+                        r.id,
+                        r.cells.len()
+                    );
                     assert!(r.discharge > 0.0, "river {} has zero discharge", r.id);
                 }
                 break;
             }
         }
-        assert!(any_rivers, "no rivers produced across 5 seeds at n=4000 — drain_water may be broken");
+        assert!(
+            any_rivers,
+            "no rivers produced across 5 seeds at n=4000 — drain_water may be broken"
+        );
     }
 
     /// Biome shift on edit: raising a land cell above the snow line should
@@ -1595,7 +1834,10 @@ mod tests {
             .expect("no mid-height land cell found");
         grid.cells.h[target] = 10; // below sea level
         let result = recompute_dependents_inner(&mut grid, &opts);
-        assert_eq!(result.biome[target], 0, "cell lowered to h=10 should be Marine (0)");
+        assert_eq!(
+            result.biome[target], 0,
+            "cell lowered to h=10 should be Marine (0)"
+        );
     }
 
     /// Step 2.5.4: entity repair cascade. Lowering a land cell to water must
@@ -1625,11 +1867,26 @@ mod tests {
         let result = recompute_dependents_inner(&mut grid, &opts);
 
         // All entity indices should be cleared on the water cell.
-        assert_eq!(grid.cells.state[target], -1, "state should be -1 after land→water flip");
-        assert_eq!(grid.cells.province[target], -1, "province should be -1 after land→water flip");
-        assert_eq!(grid.cells.culture[target], -1, "culture should be -1 after land→water flip");
-        assert_eq!(grid.cells.religion[target], -1, "religion should be -1 after land→water flip");
-        assert_eq!(grid.cells.burg[target], 0, "burg should be 0 after land→water flip");
+        assert_eq!(
+            grid.cells.state[target], -1,
+            "state should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.province[target], -1,
+            "province should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.culture[target], -1,
+            "culture should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.religion[target], -1,
+            "religion should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.burg[target], 0,
+            "burg should be 0 after land→water flip"
+        );
 
         // The result mirrors the grid state.
         assert_eq!(result.state[target], -1, "result.state should be -1");
@@ -1638,7 +1895,10 @@ mod tests {
 
         // The burg removal should be reported.
         assert!(
-            result.removed_burgs.iter().any(|n| n.contains(&format!("cell{}", target))),
+            result
+                .removed_burgs
+                .iter()
+                .any(|n| n.contains(&format!("cell{}", target))),
             "removed_burgs should mention cell {}: got {:?}",
             target,
             result.removed_burgs
@@ -1667,9 +1927,18 @@ mod tests {
         let _result = recompute_dependents_inner(&mut grid, &opts);
 
         // No auto-action: entities should STILL be unassigned.
-        assert_eq!(grid.cells.state[target], -1, "water→land should not auto-assign state");
-        assert_eq!(grid.cells.province[target], -1, "water→land should not auto-assign province");
-        assert_eq!(grid.cells.burg[target], 0, "water→land should not auto-assign burg");
+        assert_eq!(
+            grid.cells.state[target], -1,
+            "water→land should not auto-assign state"
+        );
+        assert_eq!(
+            grid.cells.province[target], -1,
+            "water→land should not auto-assign province"
+        );
+        assert_eq!(
+            grid.cells.burg[target], 0,
+            "water→land should not auto-assign burg"
+        );
     }
 
     /// Step 2.5.4: `reset_heightmap` regenerates `cells.h` from the grid seed,
@@ -1689,7 +1958,10 @@ mod tests {
             .find(|&i| grid.cells.h[i] >= 25 && grid.cells.h[i] <= 40)
             .expect("no mid-height land cell found");
         grid.cells.h[target] = 95;
-        assert_ne!(grid.cells.h[target], original_h[target], "edit should change h");
+        assert_ne!(
+            grid.cells.h[target], original_h[target],
+            "edit should change h"
+        );
 
         // Simulate entity assignment (Phase 3 would do this).
         grid.cells.state[target] = 5;
@@ -1705,7 +1977,10 @@ mod tests {
         grid.cells.burg = vec![0i16; n_cells];
 
         // Heightmap matches the original baseline.
-        assert_eq!(grid.cells.h, original_h, "reset should restore the original h");
+        assert_eq!(
+            grid.cells.h, original_h,
+            "reset should restore the original h"
+        );
         // Entity indices are cleared.
         assert_eq!(grid.cells.state[target], -1, "reset should clear state");
         assert_eq!(grid.cells.burg[target], 0, "reset should clear burg");
@@ -1737,11 +2012,26 @@ mod tests {
         let _result = recompute_dependents_inner(&mut grid, &opts);
 
         // All five should be cleared on the water cell.
-        assert_eq!(grid.cells.state[target], -1, "state should be -1 after land→water flip");
-        assert_eq!(grid.cells.province[target], -1, "province should be -1 after land→water flip");
-        assert_eq!(grid.cells.culture[target], -1, "culture should be -1 after land→water flip");
-        assert_eq!(grid.cells.religion[target], -1, "religion should be -1 after land→water flip");
-        assert_eq!(grid.cells.burg[target], 0, "burg should be 0 after land→water flip");
+        assert_eq!(
+            grid.cells.state[target], -1,
+            "state should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.province[target], -1,
+            "province should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.culture[target], -1,
+            "culture should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.religion[target], -1,
+            "religion should be -1 after land→water flip"
+        );
+        assert_eq!(
+            grid.cells.burg[target], 0,
+            "burg should be 0 after land→water flip"
+        );
     }
 
     /// `repair_entities` reports removed burgs with the correct placeholder format.
@@ -1768,11 +2058,19 @@ mod tests {
         let result = recompute_dependents_inner(&mut grid, &opts);
 
         // removed_burgs should have 3 entries, each mentioning the cell id.
-        assert_eq!(result.removed_burgs.len(), 3, "should report 3 removed burgs");
+        assert_eq!(
+            result.removed_burgs.len(),
+            3,
+            "should report 3 removed burgs"
+        );
         for &t in &targets {
             let expected = format!("Burg@cell{}", t);
             let found = result.removed_burgs.iter().any(|s| s == &expected);
-            assert!(found, "removed_burgs should contain '{}', got {:?}", expected, result.removed_burgs);
+            assert!(
+                found,
+                "removed_burgs should contain '{}', got {:?}",
+                expected, result.removed_burgs
+            );
         }
     }
 
@@ -1791,9 +2089,7 @@ mod tests {
             mesh.points
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, &[px, py])| {
-                    ((px - x).powi(2) + (py - y).powi(2)) as i64
-                })
+                .min_by_key(|(_, &[px, py])| ((px - x).powi(2) + (py - y).powi(2)) as i64)
                 .map(|(i, _)| i as u32)
                 .unwrap()
         };
@@ -1889,7 +2185,10 @@ mod tests {
         grid.cells.burg = vec![0i16; n_cells];
 
         // Heightmap matches original.
-        assert_eq!(grid.cells.h, original_h, "reset should restore the original h");
+        assert_eq!(
+            grid.cells.h, original_h,
+            "reset should restore the original h"
+        );
 
         // All entity indices cleared everywhere.
         for i in 0..n_cells {
@@ -1925,8 +2224,7 @@ mod tests {
         for (x, y) in test_points {
             // Direct call on the cloned mesh (simulates the serde path which
             // deserializes the grid then calls heightmap::pick_cell).
-            let direct = crate::heightmap::pick_cell(&mesh, x, y)
-                .expect("pick_cell returned None");
+            let direct = crate::heightmap::pick_cell(&mesh, x, y).expect("pick_cell returned None");
 
             // Held-grid call (no grid arg — reads from HELD_GRID).
             let held = HELD_GRID.with(|g| {
@@ -1936,7 +2234,10 @@ mod tests {
                     .expect("pick_cell_h returned None")
             });
 
-            assert_eq!(held, direct, "pick_cell_h diverges from pick_cell at ({x}, {y})");
+            assert_eq!(
+                held, direct,
+                "pick_cell_h diverges from pick_cell at ({x}, {y})"
+            );
         }
 
         // Clean up.
@@ -1966,32 +2267,90 @@ mod tests {
         });
 
         // Results should be byte-identical.
-        assert_eq!(result_held.temp, result_serde.temp, "temp differs between held/serde");
-        assert_eq!(result_held.prec, result_serde.prec, "prec differs between held/serde");
-        assert_eq!(result_held.biome, result_serde.biome, "biome differs between held/serde");
-        assert_eq!(result_held.state, result_serde.state, "state differs between held/serde");
-        assert_eq!(result_held.province, result_serde.province, "province differs between held/serde");
-        assert_eq!(result_held.culture, result_serde.culture, "culture differs between held/serde");
-        assert_eq!(result_held.religion, result_serde.religion, "religion differs between held/serde");
-        assert_eq!(result_held.burg, result_serde.burg, "burg differs between held/serde");
-        assert_eq!(result_held.fl, result_serde.fl, "fl differs between held/serde");
-        assert_eq!(result_held.r, result_serde.r, "r differs between held/serde");
-        assert_eq!(result_held.conf, result_serde.conf, "conf differs between held/serde");
-        assert_eq!(result_held.coastline, result_serde.coastline, "coastline differs between held/serde");
-        assert_eq!(result_held.removed_burgs, result_serde.removed_burgs, "removed_burgs differs");
-        assert_eq!(result_held.dissolved_states, result_serde.dissolved_states, "dissolved_states differs");
-        assert_eq!(result_held.rivers.len(), result_serde.rivers.len(), "river count differs");
+        assert_eq!(
+            result_held.temp, result_serde.temp,
+            "temp differs between held/serde"
+        );
+        assert_eq!(
+            result_held.prec, result_serde.prec,
+            "prec differs between held/serde"
+        );
+        assert_eq!(
+            result_held.biome, result_serde.biome,
+            "biome differs between held/serde"
+        );
+        assert_eq!(
+            result_held.state, result_serde.state,
+            "state differs between held/serde"
+        );
+        assert_eq!(
+            result_held.province, result_serde.province,
+            "province differs between held/serde"
+        );
+        assert_eq!(
+            result_held.culture, result_serde.culture,
+            "culture differs between held/serde"
+        );
+        assert_eq!(
+            result_held.religion, result_serde.religion,
+            "religion differs between held/serde"
+        );
+        assert_eq!(
+            result_held.burg, result_serde.burg,
+            "burg differs between held/serde"
+        );
+        assert_eq!(
+            result_held.fl, result_serde.fl,
+            "fl differs between held/serde"
+        );
+        assert_eq!(
+            result_held.r, result_serde.r,
+            "r differs between held/serde"
+        );
+        assert_eq!(
+            result_held.conf, result_serde.conf,
+            "conf differs between held/serde"
+        );
+        assert_eq!(
+            result_held.coastline, result_serde.coastline,
+            "coastline differs between held/serde"
+        );
+        assert_eq!(
+            result_held.removed_burgs, result_serde.removed_burgs,
+            "removed_burgs differs"
+        );
+        assert_eq!(
+            result_held.dissolved_states, result_serde.dissolved_states,
+            "dissolved_states differs"
+        );
+        assert_eq!(
+            result_held.rivers.len(),
+            result_serde.rivers.len(),
+            "river count differs"
+        );
         for (a, b) in result_held.rivers.iter().zip(result_serde.rivers.iter()) {
             assert_eq!(a.id, b.id, "river id differs");
             assert_eq!(a.cells, b.cells, "river cells differs for id={}", a.id);
-            assert_eq!(a.discharge, b.discharge, "river discharge differs for id={}", a.id);
+            assert_eq!(
+                a.discharge, b.discharge,
+                "river discharge differs for id={}",
+                a.id
+            );
         }
-        assert_eq!(result_held.lakes.len(), result_serde.lakes.len(), "lake count differs");
+        assert_eq!(
+            result_held.lakes.len(),
+            result_serde.lakes.len(),
+            "lake count differs"
+        );
         for (a, b) in result_held.lakes.iter().zip(result_serde.lakes.iter()) {
             assert_eq!(a.id, b.id, "lake id differs");
             assert_eq!(a.cells, b.cells, "lake cells differs for id={}", a.id);
             assert_eq!(a.height, b.height, "lake height differs for id={}", a.id);
-            assert_eq!(a.closed, b.closed, "lake closed flag differs for id={}", a.id);
+            assert_eq!(
+                a.closed, b.closed,
+                "lake closed flag differs for id={}",
+                a.id
+            );
         }
 
         // Clean up.

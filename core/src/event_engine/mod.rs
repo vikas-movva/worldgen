@@ -28,29 +28,29 @@
 pub mod context;
 pub mod params;
 
-pub use context::GenContext;
+pub use context::{GenContext, GenMap, GenTimeline, GenWorld};
 pub use params::TimelineParams;
 
 use crate::entities::Pack;
+use crate::event_engine::found_expand::FoundExpandModule;
+use crate::event_engine::golden_age::GoldenAgeModule;
+use crate::event_engine::migration::MigrationModule;
+use crate::event_engine::plague::PlagueModule;
+use crate::event_engine::schism::SchismModule;
+use crate::event_engine::succession::SuccessionModule;
+use crate::event_engine::war::WarModule;
 use crate::mesh::Cells;
 use crate::timeline::Timeline;
 use rand::SeedableRng;
-use crate::event_engine::succession::SuccessionModule;
-use crate::event_engine::war::WarModule;
-use crate::event_engine::plague::PlagueModule;
-use crate::event_engine::golden_age::GoldenAgeModule;
-use crate::event_engine::schism::SchismModule;
-use crate::event_engine::found_expand::FoundExpandModule;
-use crate::event_engine::migration::MigrationModule;
 
 // Re-export entity module types for external consumers.
 pub mod found_expand;
-pub mod war;
-pub mod plague;
 pub mod golden_age;
-pub mod schism;
 pub mod migration;
+pub mod plague;
+pub mod schism;
 pub mod succession;
+pub mod war;
 
 use rand::rngs::StdRng;
 
@@ -58,8 +58,9 @@ use rand::rngs::StdRng;
 ///
 /// Each module is invoked once per year (for every `year` in `[era_start, era_end)`)
 /// by the engine loop in [`generate_timeline`]. The module may emit zero or more
-/// `Event`s into `ctx.events` and may mutate `ctx` (entity fields, cell arrays)
-/// so that later modules in the same year see updated state.
+/// `Event`s into `ctx.timeline` (via `ctx.push_event`) and may mutate `ctx`
+/// (the `world` entity fields / cell arrays, the `map`, and the `timeline`
+/// parameters) so that later modules in the same year see updated state.
 ///
 /// Modules must be **pure** with respect to their external inputs: given the same
 /// `GenContext` state (including the same RNG state at call time), the module
@@ -72,8 +73,10 @@ pub trait EventModule {
 
     /// Run this module for the given year.
     ///
-    /// `ctx` is the shared mutable working context (Pack + cell arrays + event sink).
-    /// `rng` is the per-year reseeded `StdRng`. `year` is the current in-universe year.
+    /// `ctx` is the shared mutable working context — owned [`GenWorld`] /
+    /// [`GenMap`] / [`GenTimeline`] components coordinated by [`GenContext`].
+    /// `rng` is the per-year reseeded `StdRng`. `year` is the current
+    /// in-universe year.
     fn run(&self, ctx: &mut GenContext, rng: &mut StdRng, year: i32);
 }
 
@@ -92,6 +95,67 @@ pub fn default_modules() -> Vec<Box<dyn EventModule>> {
         Box::new(MigrationModule),
         Box::new(SuccessionModule),
     ]
+}
+
+/// Construct a minimal, topologically-valid square-grid [`Cells`] for `n`
+/// cells. Each cell gets the 4-directional (N/S/W/E) neighbors it would have
+/// on an `√n × √n` grid, matching the legacy grid-adjacency assumption.
+///
+/// This is used only as a behavior-preserving fallback when a caller (a
+/// synthetic test, or a WASM call with no mesh geometry) supplies no Voronoi
+/// topology: [`GenMap::topology`] is a concrete [`Cells`], never `None`, so a
+/// missing mesh resolves to this square-grid topology instead of an `Option`.
+pub(crate) fn square_grid_topology(n: usize) -> Cells {
+    let side = (n as f64).sqrt() as usize;
+    let mut c: Vec<u32> = Vec::new();
+    let mut i: Vec<u32> = vec![0u32; n + 1];
+    let mut b: Vec<u8> = vec![0u8; n];
+    for (cell, i_end) in i.iter_mut().skip(1).enumerate() {
+        let cell = cell as usize;
+        let r = cell / side;
+        let col = cell % side;
+        // North
+        if r > 0 {
+            c.push(((r - 1) * side + col) as u32);
+        }
+        // South
+        if r + 1 < side && (r + 1) * side + col < n {
+            c.push(((r + 1) * side + col) as u32);
+        }
+        // West
+        if col > 0 {
+            c.push((r * side + (col - 1)) as u32);
+        }
+        // East
+        if col + 1 < side && r * side + (col + 1) < n {
+            c.push((r * side + (col + 1)) as u32);
+        }
+        // Mark boundary cells (touching the rect edge) as border cells, to
+        // mirror the real mesh so consumers that read `b` get a sane value.
+        if r == 0 || r + 1 == side || col == 0 || col + 1 == side {
+            b[cell] = 1;
+        }
+        *i_end = c.len() as u32;
+    }
+    Cells {
+        c,
+        i,
+        b,
+        v: Vec::new(),
+        spacing: Vec::new(),
+        cells_x: side as u32,
+        cells_y: side as u32,
+    }
+}
+
+/// Build a [`GenMap`] from a heightmap plus an optional real mesh topology,
+/// falling back to a minimal square-grid topology when no mesh is supplied.
+fn make_map(heights: Vec<u8>, cells: Option<&Cells>) -> GenMap {
+    let topology = match cells {
+        Some(c) => c.clone(),
+        None => square_grid_topology(heights.len()),
+    };
+    GenMap { heights, topology }
 }
 
 /// Generate a deterministic `Timeline` (sorted by `(year, id)`) from a year-0
@@ -115,6 +179,7 @@ pub fn generate_timeline(
     cells_religion: &[i32],
     cells_burg: &[i16],
     cells_h: &[u8],
+    cells_province: &[i32],
     cells: Option<&Cells>,
     seed: u64,
     params: &TimelineParams,
@@ -126,6 +191,7 @@ pub fn generate_timeline(
         cells_religion,
         cells_burg,
         cells_h,
+        cells_province,
         cells,
         seed,
         params,
@@ -143,6 +209,7 @@ pub fn generate_timeline_with_modules(
     cells_religion: &[i32],
     cells_burg: &[i16],
     cells_h: &[u8],
+    cells_province: &[i32],
     cells: Option<&Cells>,
     seed: u64,
     params: &TimelineParams,
@@ -153,20 +220,33 @@ pub fn generate_timeline_with_modules(
     let rng_seed = if params.rng_override != 0 {
         params.rng_override
     } else {
-        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x6A09E667)
+        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(0x6A09E667)
     };
 
     // Normalize cell arrays: i32 (-1 = unassigned) → u32 (0 = unassigned),
     // i16 (0 = none) → u32 (0 = none).
     let n = cells_state.len();
-    let cells_state_u32: Vec<u32> =
-        cells_state.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-    let cells_culture_u32: Vec<u32> =
-        cells_culture.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-    let cells_religion_u32: Vec<u32> =
-        cells_religion.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-    let cells_burg_u32: Vec<u32> =
-        cells_burg.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
+    let cells_state_u32: Vec<u32> = cells_state
+        .iter()
+        .map(|&v| if v < 0 { 0 } else { v as u32 })
+        .collect();
+    let cells_culture_u32: Vec<u32> = cells_culture
+        .iter()
+        .map(|&v| if v < 0 { 0 } else { v as u32 })
+        .collect();
+    let cells_religion_u32: Vec<u32> = cells_religion
+        .iter()
+        .map(|&v| if v < 0 { 0 } else { v as u32 })
+        .collect();
+    let cells_burg_u32: Vec<u32> = cells_burg
+        .iter()
+        .map(|&v| if v < 0 { 0 } else { v as u32 })
+        .collect();
+    let cells_province_u32: Vec<u32> = cells_province
+        .iter()
+        .map(|&v| if v < 0 { 0 } else { v as u32 })
+        .collect();
 
     let cells_h_vec = if cells_h.len() == n {
         cells_h.to_vec()
@@ -174,23 +254,27 @@ pub fn generate_timeline_with_modules(
         vec![0u8; n]
     };
 
+    let cells_province_vec = if cells_province_u32.len() == n {
+        cells_province_u32
+    } else {
+        vec![0u32; n]
+    };
+
     let mut ctx = GenContext {
-        pack: pack.clone(),
-        cells_state: cells_state_u32,
-        cells_culture: cells_culture_u32,
-        cells_religion: cells_religion_u32,
-        cells_burg: cells_burg_u32,
-        era_start: params.era_start,
-        era_end: params.era_end,
-        params: params.clone(),
-        events: Vec::new(),
-        next_id: 1,
-        cells_h: cells_h_vec,
-        cells: cells.cloned(),
+        world: GenWorld {
+            pack: pack.clone(),
+            cells_state: cells_state_u32,
+            cells_culture: cells_culture_u32,
+            cells_religion: cells_religion_u32,
+            cells_burg: cells_burg_u32,
+            cells_province: cells_province_vec,
+        },
+        map: make_map(cells_h_vec, cells),
+        timeline: GenTimeline::new(params.era_start, params.era_end, params.clone(), 1),
     };
     // the order registered (found → war → plague → golden_age → schism →
     // migration → succession), matching the plan's dependency order.
-    for year in ctx.era_start..ctx.era_end {
+    for year in ctx.timeline.era_start..ctx.timeline.era_end {
         // Re-derive the RNG state for this year from the seed so that the
         // per-year draw is deterministic and independent of the number of
         // events generated in prior years. This ensures that adding or
@@ -206,11 +290,10 @@ pub fn generate_timeline_with_modules(
 
     // Sort by (year, id) for the canonical order. Even though we generate
     // in year order, sorting defensively guarantees the contract.
-    ctx.events.sort_by(|a, b| {
-        a.year.cmp(&b.year).then(a.id.cmp(&b.id))
-    });
+    let mut events = ctx.timeline.into_events();
+    events.sort_by(|a, b| a.year.cmp(&b.year).then(a.id.cmp(&b.id)));
 
-    ctx.events
+    events
 }
 
 /// Inner (test-callable) version of `generate_timeline` that takes already-
@@ -223,6 +306,7 @@ pub fn generate_timeline_inner(
     cells_religion: &[u32],
     cells_burg: &[u32],
     cells_h: &[u8],
+    cells_province: &[u32],
     cells: Option<&Cells>,
     seed: u64,
     params: &TimelineParams,
@@ -234,6 +318,7 @@ pub fn generate_timeline_inner(
         cells_religion,
         cells_burg,
         cells_h,
+        cells_province,
         cells,
         seed,
         params,
@@ -249,6 +334,7 @@ pub fn generate_timeline_with_modules_inner(
     cells_religion: &[u32],
     cells_burg: &[u32],
     cells_h: &[u8],
+    cells_province: &[u32],
     cells: Option<&Cells>,
     seed: u64,
     params: &TimelineParams,
@@ -264,25 +350,24 @@ pub fn generate_timeline_with_modules_inner(
     let rng_seed = if params.rng_override != 0 {
         params.rng_override
     } else {
-        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x6A09E667)
+        seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(0x6A09E667)
     };
 
     let mut ctx = GenContext {
-        pack: pack.clone(),
-        cells_state: cells_state.to_vec(),
-        cells_culture: cells_culture.to_vec(),
-        cells_religion: cells_religion.to_vec(),
-        cells_burg: cells_burg.to_vec(),
-        era_start: params.era_start,
-        era_end: params.era_end,
-        params: params.clone(),
-        events: Vec::new(),
-        next_id: 1,
-        cells_h: cells_h_vec,
-        cells: cells.cloned(),
+        world: GenWorld {
+            pack: pack.clone(),
+            cells_state: cells_state.to_vec(),
+            cells_culture: cells_culture.to_vec(),
+            cells_religion: cells_religion.to_vec(),
+            cells_burg: cells_burg.to_vec(),
+            cells_province: cells_province.to_vec(),
+        },
+        map: make_map(cells_h_vec, cells),
+        timeline: GenTimeline::new(params.era_start, params.era_end, params.clone(), 1),
     };
 
-    for year in ctx.era_start..ctx.era_end {
+    for year in ctx.timeline.era_start..ctx.timeline.era_end {
         let year_seed = rng_seed.wrapping_add((year as u64).wrapping_mul(0x100000003));
         let mut year_rng = StdRng::seed_from_u64(year_seed);
 
@@ -291,11 +376,10 @@ pub fn generate_timeline_with_modules_inner(
         }
     }
 
-    ctx.events.sort_by(|a, b| {
-        a.year.cmp(&b.year).then(a.id.cmp(&b.id))
-    });
+    let mut events = ctx.timeline.into_events();
+    events.sort_by(|a, b| a.year.cmp(&b.year).then(a.id.cmp(&b.id)));
 
-    ctx.events
+    events
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +394,386 @@ pub fn generate_timeline_with_modules_inner(
 mod tests {
     use super::*;
     use crate::entities::{Burg, Culture, Religion, State};
+    use crate::timeline::{project_world_u32, EntityType, EventKind, EventPayload};
+    use rand::SeedableRng;
+
+    /// The legacy 4-directional square-grid adjacency that the removed
+    /// `neighbors_of_cell_grid` fallback produced. `square_grid_topology` must
+    /// reproduce exactly this neighbor set so the no-mesh path stays
+    /// behavior-preserving across the refactor.
+    fn legacy_grid_neighbors(n: usize, cell: u32) -> Vec<u32> {
+        if cell as usize >= n {
+            return Vec::new();
+        }
+        let side = (n as f64).sqrt() as u32;
+        if side == 0 {
+            return Vec::new();
+        }
+        let r = cell / side;
+        let c = cell % side;
+        let mut neighbors = Vec::with_capacity(4);
+        if r > 0 {
+            neighbors.push((r - 1) * side + c);
+        }
+        if r + 1 < side && (r + 1) * side + c < n as u32 {
+            neighbors.push((r + 1) * side + c);
+        }
+        if c > 0 {
+            neighbors.push(r * side + (c - 1));
+        }
+        if c + 1 < side && r * side + (c + 1) < n as u32 {
+            neighbors.push(r * side + (c + 1));
+        }
+        neighbors
+    }
+
+    /// The square-grid topology fallback must exactly reproduce the legacy
+    /// 4-directional adjacency for square counts (and others), so a timeline
+    /// generated with `cells: None` is byte-identical before/after the refactor.
+    #[test]
+    fn square_grid_topology_matches_legacy_neighbors() {
+        for n in [4usize, 9, 16, 25, 36, 100, 2500] {
+            let topo = square_grid_topology(n);
+            for cell in 0..n {
+                let expected = legacy_grid_neighbors(n, cell as u32);
+                let got: Vec<u32> = topo.neighbors_of_cell(cell).to_vec();
+                assert_eq!(
+                    got, expected,
+                    "n={n} cell={cell}: square-grid topology diverges from legacy adjacency"
+                );
+            }
+        }
+    }
+
+    /// Run the engine's modules over a synthetic world, returning both the
+    /// sorted timeline AND the final working [`GenWorld`] so tests can compare
+    /// the emitted timeline against the throwaway working context (Phase 0
+    /// invariant: the timeline must fully determine the projected world).
+    ///
+    /// Mirrors `generate_timeline_with_modules_inner` but retains the context.
+    #[allow(clippy::too_many_arguments)]
+    fn run_and_capture(
+        pack: &Pack,
+        cells_state: &[u32],
+        cells_culture: &[u32],
+        cells_religion: &[u32],
+        cells_burg: &[u32],
+        cells_h: &[u8],
+        cells_province: &[u32],
+        cells: Option<&Cells>,
+        seed: u64,
+        params: &TimelineParams,
+        modules: &[Box<dyn EventModule>],
+    ) -> (Timeline, GenWorld) {
+        let n = cells_state.len();
+        let cells_h_vec = if cells_h.len() == n {
+            cells_h.to_vec()
+        } else {
+            vec![0u8; n]
+        };
+
+        let rng_seed = if params.rng_override != 0 {
+            params.rng_override
+        } else {
+            seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(0x6A09E667)
+        };
+
+        let mut ctx = GenContext {
+            world: GenWorld {
+                pack: pack.clone(),
+                cells_state: cells_state.to_vec(),
+                cells_culture: cells_culture.to_vec(),
+                cells_religion: cells_religion.to_vec(),
+                cells_burg: cells_burg.to_vec(),
+                cells_province: cells_province.to_vec(),
+            },
+            map: make_map(cells_h_vec, cells),
+            timeline: GenTimeline::new(params.era_start, params.era_end, params.clone(), 1),
+        };
+
+        for year in ctx.timeline.era_start..ctx.timeline.era_end {
+            let year_seed = rng_seed.wrapping_add((year as u64).wrapping_mul(0x100000003));
+            let mut year_rng = StdRng::seed_from_u64(year_seed);
+            for module in modules {
+                module.run(&mut ctx, &mut year_rng, year);
+            }
+        }
+
+        let mut events = ctx.timeline.into_events();
+        events.sort_by(|a, b| a.year.cmp(&b.year).then(a.id.cmp(&b.id)));
+        (events, ctx.world)
+    }
+
+    /// Phase 0 invariant: projecting the emitted timeline from the year-0 base
+    /// must reproduce the final working `GenWorld` exactly (cells, pack entity
+    /// fields like dissolved flags / cell_count / pops, founded burgs, spawned
+    /// religions). If any module mutates the working context without an event
+    /// that fully replays the change, this test fails.
+    #[test]
+    fn projected_world_matches_working_context() {
+        let pack = make_pack(3, 3, 2, 3);
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 3);
+        let u32_norm = |v: i32| if v < 0 { 0 } else { v as u32 };
+        let cs_u: Vec<u32> = cs.iter().map(|&v| u32_norm(v)).collect();
+        let cc_u: Vec<u32> = cc.iter().map(|&v| u32_norm(v)).collect();
+        let cr_u: Vec<u32> = cr.iter().map(|&v| u32_norm(v)).collect();
+        let cb_u: Vec<u32> = cb
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cp_u: Vec<u32> = cp.iter().map(|&v| u32_norm(v)).collect();
+
+        // A handful of seeds/params so the round-trip is exercised across
+        // wars (province cessions + dissolution), burffounding (capital rule),
+        // migration (cell_count + dedup), schism (child religion), and pops.
+        let variants: Vec<TimelineParams> = vec![
+            TimelineParams {
+                era_end: 200,
+                ..TimelineParams::default()
+            },
+            TimelineParams {
+                era_end: 150,
+                war_rate: 0.3,
+                found_rate: 0.2,
+                ..TimelineParams::default()
+            },
+            TimelineParams {
+                era_end: 120,
+                migration_prob: 0.2,
+                schism_prob: 0.1,
+                ..TimelineParams::default()
+            },
+        ];
+
+        for seed in [1u64, 7, 42, 123] {
+            for params in &variants {
+                let (timeline, world) = run_and_capture(
+                    &pack,
+                    &cs_u,
+                    &cc_u,
+                    &cr_u,
+                    &cb_u,
+                    &ch,
+                    &cp_u,
+                    None,
+                    seed,
+                    params,
+                    &default_modules(),
+                );
+
+                let projected = project_world_u32(
+                    &pack,
+                    &cs_u,
+                    &cc_u,
+                    &cr_u,
+                    &cb_u,
+                    &timeline,
+                    params.era_end - 1,
+                );
+
+                assert_eq!(
+                    projected.cells_state, world.cells_state,
+                    "seed={seed} params: cells_state diverged"
+                );
+                assert_eq!(
+                    projected.cells_culture, world.cells_culture,
+                    "seed={seed}: cells_culture diverged"
+                );
+                assert_eq!(
+                    projected.cells_religion, world.cells_religion,
+                    "seed={seed}: cells_religion diverged"
+                );
+                assert_eq!(
+                    projected.cells_burg, world.cells_burg,
+                    "seed={seed}: cells_burg diverged"
+                );
+                assert_eq!(
+                    projected.pack.states, world.pack.states,
+                    "seed={seed}: state entities diverged (dissolved_year / pops)"
+                );
+                assert_eq!(
+                    projected.pack.cultures, world.pack.cultures,
+                    "seed={seed}: culture entities diverged (cell_count)"
+                );
+                assert_eq!(
+                    projected.pack.religions, world.pack.religions,
+                    "seed={seed}: religion entities diverged (scisms)"
+                );
+                assert_eq!(
+                    projected.pack.burgs, world.pack.burgs,
+                    "seed={seed}: burg entities diverged (foundings)"
+                );
+            }
+        }
+    }
+
+    /// Migration transfers must never list duplicate cells; each moved cell is
+    /// distinct and the culture `cell_count` bookkeeping uses the distinct
+    /// count, so the invariant `sum(cell_count) == #non-zero culture cells` is
+    /// conserved across the run.
+    #[test]
+    fn migration_transfers_are_distinct_and_consistent() {
+        // Self-consistent culture fixture: `cells_culture` determines each
+        // culture's `cell_count` (as a real world would), with 3 land cultures.
+        let n = 300usize;
+        let mut cells_culture_raw: Vec<i32> = vec![0i32; n];
+        // Culture 1 -> [0,100), culture 2 -> [100,200), culture 3 -> [200,300).
+        for (i, c) in cells_culture_raw.iter_mut().enumerate() {
+            *c = match i {
+                0..=99 => 1,
+                100..=199 => 2,
+                _ => 3,
+            };
+        }
+        let culture_counts = [100u32, 100, 100];
+
+        let mut pack = make_pack(3, 3, 0, 3);
+        for (i, c) in pack.cultures.iter_mut().enumerate() {
+            c.cell_count = culture_counts[i];
+        }
+        // Give every culture at least one burg-controlled origin cell so
+        // migration borders are meaningful; all cells are land.
+        let cs: Vec<i32> = (0..n).map(|i| ((i % 3) + 1) as i32).collect();
+        let cs_u: Vec<u32> = cs
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cc_u: Vec<u32> = cells_culture_raw
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cr_u: Vec<u32> = vec![0u32; n];
+        let cb_u: Vec<u32> = vec![0u32; n];
+        let ch: Vec<u8> = vec![50u8; n]; // all land
+        let cp_u: Vec<u32> = (0..n as u32).collect(); // each cell its own province
+
+        let params = TimelineParams {
+            era_end: 120,
+            migration_prob: 0.4,
+            migration_fraction: 0.3,
+            ..TimelineParams::default()
+        };
+
+        let (timeline, world) = run_and_capture(
+            &pack,
+            &cs_u,
+            &cc_u,
+            &cr_u,
+            &cb_u,
+            &ch,
+            &cp_u,
+            None,
+            99,
+            &params,
+            &default_modules(),
+        );
+
+        // No Migrate payload may contain duplicate cells, and every listed
+        // cell must be in range.
+        for ev in &timeline {
+            if let EventPayload::Migrate { payload } = &ev.payload {
+                let mut cells = payload.cells.clone();
+                cells.sort_unstable();
+                let before = cells.len();
+                cells.dedup();
+                assert_eq!(
+                    cells.len(),
+                    before,
+                    "Migrate payload contains duplicate cells: {:?}",
+                    payload.cells
+                );
+                for &c in &cells {
+                    assert!(
+                        (c as usize) < world.cells_culture.len(),
+                        "Migrate cell {c} out of range"
+                    );
+                }
+            }
+        }
+
+        // The invariant must be conserved: the sum of all culture cell_count
+        // equals the number of non-zero culture cells at the end.
+        let total_cell_count: u32 = world.pack.cultures.iter().map(|c| c.cell_count).sum();
+        let non_zero = world.cells_culture.iter().filter(|&&c| c != 0).count() as u32;
+        assert_eq!(
+            total_cell_count, non_zero,
+            "culture cell_count bookkeeping drifted (sum {total_cell_count} vs {non_zero} non-zero cells)"
+        );
+    }
+
+    /// Every generated event must target an existing entity, carry a unique
+    /// id, be sorted by (year, id), and stay within the configured era.
+    #[test]
+    fn every_event_is_well_formed() {
+        let pack = make_pack(3, 3, 2, 3);
+        let (cs, cc, cr, cb, ch, cp) = make_cells(150, 3);
+        let norm = |v: i32| if v < 0 { 0 } else { v as u32 };
+        let cs_u: Vec<u32> = cs.iter().map(|&v| norm(v)).collect();
+        let cc_u: Vec<u32> = cc.iter().map(|&v| norm(v)).collect();
+        let cr_u: Vec<u32> = cr.iter().map(|&v| norm(v)).collect();
+        let cb_u: Vec<u32> = cb
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cp_u: Vec<u32> = cp.iter().map(|&v| norm(v)).collect();
+
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..TimelineParams::default()
+        };
+        let (timeline, world) = run_and_capture(
+            &pack,
+            &cs_u,
+            &cc_u,
+            &cr_u,
+            &cb_u,
+            &ch,
+            &cp_u,
+            None,
+            1234,
+            &params,
+            &default_modules(),
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        let mut prev: Option<(i32, u64)> = None;
+        for ev in &timeline {
+            assert!(
+                ev.year >= params.era_start && ev.year < params.era_end,
+                "event outside era"
+            );
+            assert!(seen.insert(ev.id), "duplicate event id {}", ev.id);
+            if let Some(p) = prev {
+                assert!(
+                    (p.0, p.1) <= (ev.year, ev.id),
+                    "timeline not sorted by (year, id)"
+                );
+            }
+            prev = Some((ev.year, ev.id));
+
+            // IDs referenced by the event must exist as entities.
+            match ev.entity_type {
+                EntityType::State => assert!(
+                    world.pack.states.iter().any(|s| s.id == ev.entity_id),
+                    "State event {ev:?} targets missing entity {}",
+                    ev.entity_id
+                ),
+                EntityType::Burg => assert!(
+                    world.pack.burgs.iter().any(|b| b.id == ev.entity_id),
+                    "Burg event {ev:?} targets missing entity {}",
+                    ev.entity_id
+                ),
+                EntityType::Religion => assert!(
+                    world.pack.religions.iter().any(|r| r.id == ev.entity_id),
+                    "Religion event {ev:?} targets missing entity {}",
+                    ev.entity_id
+                ),
+                _ => {}
+            }
+        }
+    }
 
     /// Build a minimal Pack with N states, for use in unit tests.
     fn make_pack(n_states: usize, n_cultures: usize, n_religions: usize, n_burgs: usize) -> Pack {
@@ -392,26 +856,55 @@ mod tests {
     }
 
     /// Build cell arrays for `n` cells with `n_states` states owning them round-robin.
-    fn make_cells(n: usize, n_states: usize) -> (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i16>, Vec<u8>) {
+    fn make_cells(
+        n: usize,
+        n_states: usize,
+    ) -> (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i16>, Vec<u8>, Vec<i32>) {
         let cells_state: Vec<i32> = (0..n).map(|i| ((i % n_states) + 1) as i32).collect();
         let cells_culture: Vec<i32> = vec![1i32; n];
         let cells_religion: Vec<i32> = vec![1i32; n];
-        let cells_burg: Vec<i16> = (0..n).map(|i| if i % 100 == 0 { 1i16 } else { 0i16 }).collect();
+        let cells_burg: Vec<i16> = (0..n)
+            .map(|i| if i % 100 == 0 { 1i16 } else { 0i16 })
+            .collect();
         let cells_h: Vec<u8> = vec![50u8; n]; // all land
-        (cells_state, cells_culture, cells_religion, cells_burg, cells_h)
+        let cells_province: Vec<i32> = (0..n as i32).collect(); // each cell its own province
+        (
+            cells_state,
+            cells_culture,
+            cells_religion,
+            cells_burg,
+            cells_h,
+            cells_province,
+        )
     }
 
     /// Generate a real Pack from a grid for integration tests.
     /// Returns the pack, the year-0 cell arrays, the heightmap, and the
     /// mesh's `Cells` topology (so `neighbors_of_cell` uses the real graph).
-    fn generate_real_pack(seed: u32, n: u32) -> (Pack, Vec<i32>, Vec<i32>, Vec<i32>, Vec<i16>, Vec<u8>, Option<crate::mesh::Cells>) {
+    fn generate_real_pack(
+        seed: u32,
+        n: u32,
+    ) -> (
+        Pack,
+        Vec<i32>,
+        Vec<i32>,
+        Vec<i32>,
+        Vec<i16>,
+        Vec<u8>,
+        Vec<i32>,
+        Option<crate::mesh::Cells>,
+    ) {
         let opts = crate::climate::ClimateOpts::default();
         let grid = crate::generate_world_inner(seed, n, &opts);
 
         let states_result = crate::gen_states::generate_states(&grid, seed, n.min(20) as u32);
         let suitability = crate::gen_states::compute_suitability(&grid);
         let cultures_result = crate::gen_cultures::generate_cultures_religions(
-            &grid, seed, 5, 3, &suitability,
+            &grid,
+            seed,
+            5,
+            3,
+            &suitability,
             &states_result.cells_state,
             &states_result.pack.burgs,
         );
@@ -431,6 +924,7 @@ mod tests {
             cultures_result.cells_religion,
             states_result.cells_burg,
             grid.cells.h.clone(),
+            grid.cells.province.clone(),
             Some(grid.mesh.cells.clone()),
         )
     }
@@ -440,11 +934,15 @@ mod tests {
     #[test]
     fn timeline_is_deterministic_same_seed() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
 
-        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
-        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
+        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         assert_eq!(t1, t2, "same seed must produce identical timeline");
     }
@@ -452,11 +950,15 @@ mod tests {
     #[test]
     fn timeline_differs_with_different_seed() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
 
-        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
-        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 43, &params);
+        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
+        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 43, &params);
 
         assert_ne!(t1, t2, "different seed should produce different timeline");
     }
@@ -464,12 +966,20 @@ mod tests {
     #[test]
     fn timeline_differs_with_different_era_bounds() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let p1 = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
-        let p2 = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let p1 = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
+        let p2 = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &p1);
-        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &p2);
+        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &p1);
+        let t2 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &p2);
 
         assert!(t2.len() >= t1.len(), "longer era should produce >= events");
     }
@@ -479,11 +989,18 @@ mod tests {
     #[test]
     fn timeline_is_non_empty_for_default_world() {
         let pack = make_pack(8, 4, 3, 8);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 8);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 8);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
-        assert!(!timeline.is_empty(), "default world must produce a non-empty timeline");
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
+        assert!(
+            !timeline.is_empty(),
+            "default world must produce a non-empty timeline"
+        );
     }
 
     // === Event ID uniqueness + sorting ===
@@ -491,10 +1008,14 @@ mod tests {
     #[test]
     fn all_event_ids_are_unique() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         let mut ids: Vec<u64> = timeline.iter().map(|e| e.id).collect();
         let original = ids.clone();
@@ -506,10 +1027,14 @@ mod tests {
     #[test]
     fn timeline_is_sorted_by_year_then_id() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         for window in timeline.windows(2) {
             let a = &window[0];
@@ -518,7 +1043,11 @@ mod tests {
             assert!(
                 ord.is_lt(),
                 "timeline not sorted: event {} (year={}, id={}) comes before (year={}, id={})",
-                a.id, a.year, a.id, b.year, b.id
+                a.id,
+                a.year,
+                a.id,
+                b.year,
+                b.id
             );
         }
     }
@@ -528,16 +1057,23 @@ mod tests {
     #[test]
     fn all_events_within_era_bounds() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         for ev in &timeline {
             assert!(
                 ev.year >= params.era_start && ev.year < params.era_end,
                 "event {} year {} outside era [{}, {})",
-                ev.id, ev.year, params.era_start, params.era_end
+                ev.id,
+                ev.year,
+                params.era_start,
+                params.era_end
             );
         }
     }
@@ -547,22 +1083,38 @@ mod tests {
     #[test]
     fn no_event_references_missing_entity() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         assert!(!timeline.is_empty(), "need events to check");
 
         // Project the timeline forward to the end year and verify the
         // projection succeeds (no panics from missing entities).
-        let w = crate::timeline::project_world(&pack, &cs, &cc, &cr, &cb, &timeline, params.era_end - 1);
+        let w = crate::timeline::project_world(
+            &pack,
+            &cs,
+            &cc,
+            &cr,
+            &cb,
+            &timeline,
+            params.era_end - 1,
+        );
 
         // Verify projected cells only reference valid state ids (0 = unassigned,
         // or ids that exist in the base pack).
         let max_base_state: u32 = pack.states.iter().map(|s| s.id).max().unwrap_or(0);
         for &s in &w.cells_state {
-            assert!(s == 0 || s <= max_base_state + 1000, "projected state id {} out of range", s);
+            assert!(
+                s == 0 || s <= max_base_state + 1000,
+                "projected state id {} out of range",
+                s
+            );
         }
     }
 
@@ -571,13 +1123,21 @@ mod tests {
     #[test]
     fn all_narratives_are_none() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         for ev in &timeline {
-            assert!(ev.narrative.is_none(), "event {} narrative must be None (Phase 7 sets it)", ev.id);
+            assert!(
+                ev.narrative.is_none(),
+                "event {} narrative must be None (Phase 7 sets it)",
+                ev.id
+            );
         }
     }
 
@@ -586,73 +1146,121 @@ mod tests {
     #[test]
     fn produces_found_events_when_states_exist() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_found = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::Found);
+        let has_found = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::Found);
         assert!(has_found, "should produce Found events when states exist");
     }
 
     #[test]
     fn produces_war_events_when_multiple_states() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_war = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::War);
-        assert!(has_war, "should produce War events when multiple states exist");
+        let has_war = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::War);
+        assert!(
+            has_war,
+            "should produce War events when multiple states exist"
+        );
     }
 
     #[test]
     fn produces_schism_events_when_religions_exist() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_schism = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::Schism);
-        assert!(has_schism, "should produce Schism events when religions exist");
+        let has_schism = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::Schism);
+        assert!(
+            has_schism,
+            "should produce Schism events when religions exist"
+        );
     }
 
     #[test]
     fn produces_plague_events_with_sufficient_pop() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_plague = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::Plague);
-        assert!(has_plague, "should produce Plague events with sufficient population");
+        let has_plague = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::Plague);
+        assert!(
+            has_plague,
+            "should produce Plague events with sufficient population"
+        );
     }
 
     #[test]
     fn produces_golden_age_events() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_golden_age = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::GoldenAge);
+        let has_golden_age = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::GoldenAge);
         assert!(has_golden_age, "should produce GoldenAge events");
     }
 
     #[test]
     fn produces_succession_events_for_aged_states() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 200, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 200,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let has_succession = timeline.iter().any(|e| e.kind == crate::timeline::EventKind::Succession);
-        assert!(has_succession, "should produce Succession events for aged states");
+        let has_succession = timeline
+            .iter()
+            .any(|e| e.kind == crate::timeline::EventKind::Succession);
+        assert!(
+            has_succession,
+            "should produce Succession events for aged states"
+        );
     }
 
     // === Event rate bounds ===
@@ -660,14 +1268,22 @@ mod tests {
     #[test]
     fn event_count_within_bounds_for_small_world() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 100, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 100,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
         // 5 states * 100 years * 7 modules * ~0.05 avg rate = ~35 max events.
         // Allow generous slack: < 500 events for a small test world.
-        assert!(timeline.len() < 500, "event count {} exceeds sanity bound for 100-cell world", timeline.len());
+        assert!(
+            timeline.len() < 500,
+            "event count {} exceeds sanity bound for 100-cell world",
+            timeline.len()
+        );
     }
 
     // === Projection round-trip: events must be projectable ===
@@ -675,12 +1291,24 @@ mod tests {
     #[test]
     fn generated_timeline_projects_cleanly() {
         let pack = make_pack(5, 3, 2, 5);
-        let (cs, cc, cr, cb, ch) = make_cells(100, 5);
-        let params = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(100, 5);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
 
-        let w0 = crate::timeline::project_world(&pack, &cs, &cc, &cr, &cb, &timeline, params.era_end - 1);
+        let w0 = crate::timeline::project_world(
+            &pack,
+            &cs,
+            &cc,
+            &cr,
+            &cb,
+            &timeline,
+            params.era_end - 1,
+        );
         assert_eq!(w0.year, params.era_end - 1);
         assert_eq!(w0.cells_state.len(), 100);
     }
@@ -690,16 +1318,38 @@ mod tests {
     #[test]
     fn inner_matches_public_api() {
         let pack = make_pack(3, 2, 1, 3);
-        let (cs, cc, cr, cb, ch) = make_cells(50, 3);
-        let params = TimelineParams { era_start: 0, era_end: 30, ..Default::default() };
+        let (cs, cc, cr, cb, ch, cp) = make_cells(50, 3);
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 30,
+            ..Default::default()
+        };
 
-        let cs_u32: Vec<u32> = cs.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-        let cc_u32: Vec<u32> = cc.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-        let cr_u32: Vec<u32> = cr.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
-        let cb_u32: Vec<u32> = cb.iter().map(|&v| if v < 0 { 0 } else { v as u32 }).collect();
+        let cs_u32: Vec<u32> = cs
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cc_u32: Vec<u32> = cc
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cr_u32: Vec<u32> = cr
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cb_u32: Vec<u32> = cb
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
+        let cp_u32: Vec<u32> = cp
+            .iter()
+            .map(|&v| if v < 0 { 0 } else { v as u32 })
+            .collect();
 
-        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
-        let t2 = generate_timeline_inner(&pack, &cs_u32, &cc_u32, &cr_u32, &cb_u32, &ch, None, 42, &params);
+        let t1 = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
+        let t2 = generate_timeline_inner(
+            &pack, &cs_u32, &cc_u32, &cr_u32, &cb_u32, &ch, &cp_u32, None, 42, &params,
+        );
 
         assert_eq!(t1, t2, "inner must match public API output");
     }
@@ -714,9 +1364,14 @@ mod tests {
         let cr = vec![-1i32; 10];
         let cb = vec![0i16; 10];
         let ch = vec![50u8; 10];
-        let params = TimelineParams { era_start: 0, era_end: 50, ..Default::default() };
+        let cp = vec![-1i32; 10];
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 50,
+            ..Default::default()
+        };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, None, 42, &params);
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 42, &params);
         assert!(timeline.is_empty(), "empty pack should produce no events");
     }
 
@@ -724,14 +1379,25 @@ mod tests {
 
     #[test]
     fn timeline_from_real_generated_world() {
-        let (pack, cs, cc, cr, cb, ch, topo) = generate_real_pack(42, 500);
+        let (pack, cs, cc, cr, cb, ch, cp, topo) = generate_real_pack(42, 500);
         let params = TimelineParams {
             era_start: 0,
             era_end: 100,
             ..Default::default()
         };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, topo.as_ref(), 42, &params);
+        let timeline = generate_timeline(
+            &pack,
+            &cs,
+            &cc,
+            &cr,
+            &cb,
+            &ch,
+            &cp,
+            topo.as_ref(),
+            42,
+            &params,
+        );
         assert!(!timeline.is_empty(), "real world should produce events");
 
         for window in timeline.windows(2) {
@@ -750,17 +1416,108 @@ mod tests {
 
     #[test]
     fn real_world_event_rate_within_bounds() {
-        let (pack, cs, cc, cr, cb, ch, topo) = generate_real_pack(42, 200);
+        let (pack, cs, cc, cr, cb, ch, cp, topo) = generate_real_pack(42, 200);
         let params = TimelineParams {
             era_start: 0,
             era_end: 100,
             ..Default::default()
         };
 
-        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, topo.as_ref(), 42, &params);
+        let timeline = generate_timeline(
+            &pack,
+            &cs,
+            &cc,
+            &cr,
+            &cb,
+            &ch,
+            &cp,
+            topo.as_ref(),
+            42,
+            &params,
+        );
 
         // At 200 cells with ~10 states over 100 years, we expect maybe
         // 50-150 events. Assert < 1000 as a generous upper bound.
-        assert!(timeline.len() < 1000, "event count {} exceeds bound for 200-cell real world", timeline.len());
+        assert!(
+            timeline.len() < 1000,
+            "event count {} exceeds bound for 200-cell real world",
+            timeline.len()
+        );
+    }
+
+    /// Ad-hoc verification: war victory must transfer the entire province of
+    /// the disputed cell, not just the single contested cell. We build a
+    /// 100-cell grid (10x10 for the grid fallback) with 2 states owning
+    /// contiguous halves and a single province spanning the border. With
+    /// war_rate=1.0, any successful war must transfer all cells of the
+    /// conquered province.
+    #[test]
+    fn war_victory_transfers_entire_province() {
+        let n = 100usize;
+        let pack = make_pack(2, 1, 1, 2);
+
+        // 10x10 grid: cells 0-49 = state 1, cells 50-99 = state 2.
+        // Province: cells 40-49 = province 20 (state 1 border cells that
+        // state 2 will attack). All other cells = their own province.
+        let mut cs: Vec<i32> = Vec::with_capacity(n);
+        let mut cp: Vec<i32> = Vec::with_capacity(n);
+        for i in 0..n {
+            cs.push(if i < 50 { 1 } else { 2 });
+            // Province 20 covers cells 40..=49 (the border cells of state 1).
+            // All other cells get unique provinces.
+            cp.push(if (40..=49).contains(&i) {
+                20
+            } else {
+                (i + 1) as i32
+            });
+        }
+
+        let cc: Vec<i32> = vec![1; n];
+        let cr: Vec<i32> = vec![1; n];
+        let cb: Vec<i16> = (0..n)
+            .map(|i| if i % 50 == 0 { 1i16 } else { 0i16 })
+            .collect();
+        let ch: Vec<u8> = vec![50u8; n]; // all land
+
+        let params = TimelineParams {
+            era_start: 0,
+            era_end: 1,
+            war_rate: 1.0,
+            ..Default::default()
+        };
+
+        let timeline = generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, &cp, None, 999, &params);
+
+        // Find War events with victories (conquered_cells non-empty).
+        let war_victories: Vec<_> = timeline
+            .iter()
+            .filter(|e| e.kind == EventKind::War)
+            .filter_map(|e| {
+                if let EventPayload::War { outcome, .. } = &e.payload {
+                    if !outcome.conquered_cells.is_empty() {
+                        Some(outcome.conquered_cells.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            !war_victories.is_empty(),
+            "expected at least one victorious war event"
+        );
+
+        // On victory, conquered_cells should contain MULTIPLE cells (the entire
+        // province of the disputed cell), not just one.
+        let province_conquest = war_victories.iter().any(|cells| cells.len() > 1);
+
+        assert!(
+            province_conquest,
+            "expected a war victory transferring >1 cell (province cession), \
+             but all victorious wars transferred exactly 1 cell"
+        );
     }
 }

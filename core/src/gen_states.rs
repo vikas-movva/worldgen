@@ -154,7 +154,14 @@ pub fn generate_states_with_rates(
     );
 
     // --- 3. Expand state frontiers (Dijkstra) -------------------------------
-    expand_states(grid, &suitability, &pack, &mut cells_state, growth, states_growth);
+    expand_states(
+        grid,
+        &suitability,
+        &pack,
+        &mut cells_state,
+        growth,
+        states_growth,
+    );
 
     // --- 3b. Seed additional town burgs (FMG `generateTowns`) ----------------
     // Run after state expansion so towns inherit their cell's state ownership.
@@ -367,7 +374,7 @@ fn seed_capitals(
             name: format!("Capital {}", burg_id),
             cell: cell as u32,
             state: state_id,
-            culture: 0, // TODO Phase 3.3
+            culture: 0,  // TODO Phase 3.3
             religion: 0, // TODO Phase 3.3
             population: define_population(rng, suitability, cell, true, 1.0), // FMG: pop = s/5, capital x1.5
             feature: 0, // TODO: no feature field on CellData yet (Phase 2.5.3 uses LakeGeo)
@@ -482,10 +489,7 @@ fn generate_towns(
             (cell, score)
         })
         .collect();
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let town_count = compute_town_count(populated.len(), n as u32, None);
     if town_count == 0 {
@@ -569,8 +573,8 @@ fn generate_towns(
             id: burg_id,
             name: format!("Town {}", burg_id),
             cell: cell as u32,
-            state: 0, // assigned below from cells_state
-            culture: 0, // TODO Phase 3.3
+            state: 0,    // assigned below from cells_state
+            culture: 0,  // TODO Phase 3.3
             religion: 0, // TODO Phase 3.3
             population,
             feature: 0,
@@ -580,7 +584,11 @@ fn generate_towns(
         };
         pack.burgs.push(burg);
 
-        debug_assert!(burg_id <= i16::MAX as u32, "burg id {} exceeds i16::MAX", burg_id);
+        debug_assert!(
+            burg_id <= i16::MAX as u32,
+            "burg id {} exceeds i16::MAX",
+            burg_id
+        );
         cells_burg[cell] = burg_id as i16;
     }
 }
@@ -619,7 +627,9 @@ fn generate_state_color(state_id: u32, seed: u32) -> u32 {
     // Seeded hash: each state gets its own deterministic RNG so color
     // generation never advances the main generation RNG.
     let mut color_rng = StdRng::seed_from_u64(
-        (seed as u64).wrapping_mul(0x100000001).wrapping_add(state_id as u64),
+        (seed as u64)
+            .wrapping_mul(0x100000001)
+            .wrapping_add(state_id as u64),
     );
     let hue = ((state_id as f64 * 137.508) + color_rng.gen::<f64>() * 30.0) % 360.0;
     let saturation = 0.4 + color_rng.gen::<f64>() * 0.3;
@@ -800,9 +810,13 @@ fn expand_states(
                 0.0 // inland
             };
 
-            let cell_cost =
-                (culture_cost + population_cost + biome_cost + height_cost + river_cost + type_cost)
-                    .max(0.0);
+            let cell_cost = (culture_cost
+                + population_cost
+                + biome_cost
+                + height_cost
+                + river_cost
+                + type_cost)
+                .max(0.0);
             let total_cost = p + 10.0 + cell_cost / 1.0; // expansionism = 1.0
 
             if total_cost > growth_rate {
@@ -865,9 +879,7 @@ fn subdivide_provinces(
     for state in states {
         // Gather this state's land cells (deterministic: by cell index).
         let land_cells: Vec<usize> = (0..n)
-            .filter(|&i| {
-                cells_state[i] == state.id as i32 && grid.cells.h[i] >= SEA_LEVEL
-            })
+            .filter(|&i| cells_state[i] == state.id as i32 && grid.cells.h[i] >= SEA_LEVEL)
             .collect();
         if land_cells.is_empty() {
             continue;
@@ -876,8 +888,7 @@ fn subdivide_provinces(
         // Target province count scales with state area. Clamp to at least 1
         // (a state with a single land cell still gets exactly 1 province) and
         // at most the number of land cells available.
-        let target = ((land_cells.len() as f64 / 40.0).ceil() as usize)
-            .clamp(1, land_cells.len());
+        let target = ((land_cells.len() as f64 / 40.0).ceil() as usize).clamp(1, land_cells.len());
 
         // Seed #0 is the state capital cell.
         let mut seeds: Vec<usize> = Vec::new();
@@ -887,8 +898,7 @@ fn subdivide_provinces(
         // Greedy spacing: add land cells that are far enough from every
         // existing seed. minSpacing shrinks as we need more seeds so we
         // always reach `target` (fallback below fills any shortfall).
-        let min_spacing =
-            ((world_w + world_h) / 2.0 / target as f64).max(1.0);
+        let min_spacing = ((world_w + world_h) / 2.0 / target as f64).max(1.0);
         for &c in &land_cells {
             if seeds.len() >= target {
                 break;
@@ -1054,11 +1064,7 @@ impl PartialOrd for ProvinceFrontier {
 
 /// Reassign border cells to the province of the majority of their neighbors
 /// (FMG `generateProvinces` justification pass).
-fn justify_province_shapes(
-    grid: &Grid,
-    cells_state: &[i32],
-    cells_province: &mut [i32],
-) {
+fn justify_province_shapes(grid: &Grid, cells_state: &[i32], cells_province: &mut [i32]) {
     let n = grid.cell_count();
 
     // Collect all cells that have a province assignment.
@@ -1245,7 +1251,10 @@ mod tests {
         let grid = test_grid(42, 1000);
         let r1 = generate_states(&grid, 42, 12);
         let r2 = generate_states(&grid, 42, 12);
-        assert_eq!(r1.cells_state, r2.cells_state, "cells_state not deterministic");
+        assert_eq!(
+            r1.cells_state, r2.cells_state,
+            "cells_state not deterministic"
+        );
         assert_eq!(
             r1.cells_province, r2.cells_province,
             "cells_province not deterministic"
@@ -1271,7 +1280,11 @@ mod tests {
         let r2 = generate_states(&grid, 99, 12);
         // State assignment should differ (colors, names derived from RNG).
         assert!(
-            r1.pack.states.iter().zip(r2.pack.states.iter()).any(|(a, b)| a.color != b.color),
+            r1.pack
+                .states
+                .iter()
+                .zip(r2.pack.states.iter())
+                .any(|(a, b)| a.color != b.color),
             "different seed produced identical state colors"
         );
     }
@@ -1315,11 +1328,7 @@ mod tests {
         let result = generate_states(&grid, 42, 12);
         for burg in &result.pack.burgs {
             let cell = burg.cell as usize;
-            assert!(
-                cell < grid.cell_count(),
-                "burg cell {} out of bounds",
-                cell
-            );
+            assert!(cell < grid.cell_count(), "burg cell {} out of bounds", cell);
             assert!(
                 grid.cells.h[cell] >= SEA_LEVEL,
                 "burg {} on water cell {} (h={})",
@@ -1442,7 +1451,10 @@ mod tests {
             // by generate_towns — assert the capital is burg #1 and is marked
             // capital.
             assert!(!result.pack.burgs.is_empty(), "expected at least 1 burg");
-            assert_eq!(result.pack.burgs[0].capital, 1, "expected first burg to be a capital");
+            assert_eq!(
+                result.pack.burgs[0].capital, 1,
+                "expected first burg to be a capital"
+            );
             assert_eq!(result.pack.burgs[0].id, 1);
         }
     }
@@ -1458,8 +1470,7 @@ mod tests {
         let min_len = r8.pack.states.len().min(r12.pack.states.len());
         for i in 0..min_len {
             assert_eq!(
-                r8.pack.states[i].color,
-                r12.pack.states[i].color,
+                r8.pack.states[i].color, r12.pack.states[i].color,
                 "state {} color differs across count=8 vs count=12",
                 i
             );
@@ -1508,7 +1519,12 @@ mod tests {
     fn towns_assigned_to_states() {
         let grid = test_grid(42, 10_000);
         let result = generate_states(&grid, 42, 12);
-        let towns: Vec<_> = result.pack.burgs.iter().filter(|b| b.capital == 0).collect();
+        let towns: Vec<_> = result
+            .pack
+            .burgs
+            .iter()
+            .filter(|b| b.capital == 0)
+            .collect();
         if towns.is_empty() {
             return; // small world — skip
         }
@@ -1543,12 +1559,20 @@ mod tests {
         let grid = test_grid(42, 10_000);
         let r1 = generate_states(&grid, 42, 12);
         let r2 = generate_states(&grid, 42, 12);
-        assert_eq!(r1.pack.burgs.len(), r2.pack.burgs.len(), "burg count differs");
+        assert_eq!(
+            r1.pack.burgs.len(),
+            r2.pack.burgs.len(),
+            "burg count differs"
+        );
         for (a, b) in r1.pack.burgs.iter().zip(r2.pack.burgs.iter()) {
             assert_eq!(a.id, b.id, "burg id mismatch");
             assert_eq!(a.cell, b.cell, "burg cell mismatch");
             assert_eq!(a.capital, b.capital, "burg capital mismatch");
-            assert_eq!(a.population.to_bits(), b.population.to_bits(), "pop mismatch");
+            assert_eq!(
+                a.population.to_bits(),
+                b.population.to_bits(),
+                "pop mismatch"
+            );
         }
         assert_eq!(r1.cells_burg, r2.cells_burg);
     }

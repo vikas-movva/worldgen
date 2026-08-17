@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::entities::{Pack, State, Culture, Religion, Burg, Army};
+use crate::entities::{Army, Burg, Culture, Pack, Religion, State};
 
 // ---------------------------------------------------------------------------//
 // EntityType — which kind of entity an `Event` targets.
@@ -126,32 +126,53 @@ pub struct MigratePayload {
 #[serde(tag = "kind", content = "data")]
 pub enum EventPayload {
     None,
-    /// `Found`/`Raze`: the cell id.
-    Found { cell: u32 },
+    /// `Found`/`Raze`: the cell id, plus the founding population (thousands)
+    /// for a `Burg` so the projector can re-create the burg entity exactly.
+    Found {
+        cell: u32,
+        population: f64,
+    },
     /// `Succession`/`CivilWar`: the heir's name (optional narrative seed).
-    Succession { heir_name: Option<String> },
+    Succession {
+        heir_name: Option<String>,
+    },
     /// `War` / `Treaty`: war outcome.
     War {
         opponent_state_id: u32,
         outcome: WarOutcome,
     },
     /// `Conquer`: cells reassigned from loser → winner.
-    Conquer { payload: ConquerPayload },
+    Conquer {
+        payload: ConquerPayload,
+    },
     /// `Schism`: child religion spawn.
-    Schism { payload: SchismPayload },
+    Schism {
+        payload: SchismPayload,
+    },
     /// `Plague` / `GoldenAge` / `Migrate`: population scalar (0..1) applied to
     /// the entity's `rural_pop` + `urban_pop`.
-    PopScalar { factor: f64 },
+    PopScalar {
+        factor: f64,
+    },
     /// `Migrate`: cells + target entity for culture/religion spread.
-    Migrate { payload: MigratePayload },
+    Migrate {
+        payload: MigratePayload,
+    },
     /// `Raise`: army size + deployment cell.
-    Raise { army_size: u32, cell: u32 },
+    Raise {
+        army_size: u32,
+        cell: u32,
+    },
     /// `March`: destination cell.
-    March { cell: u32 },
+    March {
+        cell: u32,
+    },
     /// `Disband`: no extra data.
     Disband,
     /// `Raze`: the cell a burg is destroyed on.
-    Raze { cell: u32 },
+    Raze {
+        cell: u32,
+    },
     /// `Dissolve`: no extra data — entity is removed at/after this year.
     Dissolve,
     /// Fallback for payloads the projector doesn't know yet (forward compat).
@@ -186,6 +207,14 @@ pub struct Event {
     /// offline; client fills it in on "Polish with LLM".
     pub narrative: Option<String>,
 }
+
+/// Floor applied to a `State`'s `rural_pop` / `urban_pop` (thousands) after a
+/// `Plague` or `GoldenAge` scalar is applied, so repeated events can never
+/// drive a population to zero, negative, or `NaN`. Both the event modules and
+/// the projector clamp with this same value so the projected world matches the
+/// generator's working context exactly. Value is deliberately small (1 = 1,000
+/// people) so it only matters after many compounding plagues.
+pub(crate) const POP_FLOOR: f64 = 1.0;
 
 /// A chronologically-sorted `Event[]` (design §3.3 `timeline`).
 pub type Timeline = Vec<Event>;
@@ -235,7 +264,10 @@ impl WorldAt {
     /// `Pack`'s entity membership (used when only a `Pack` is available, no
     /// base cell arrays). Cells not covered by any entity get `0`.
     #[allow(dead_code)]
-    pub fn cells_from_pack(pack: &Pack, cell_count: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+    pub fn cells_from_pack(
+        pack: &Pack,
+        cell_count: usize,
+    ) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
         let mut cells_state = vec![0u32; cell_count];
         let mut cells_culture = vec![0u32; cell_count];
         let mut cells_religion = vec![0u32; cell_count];
@@ -271,7 +303,11 @@ impl WorldAt {
 
 #[inline]
 fn i32_to_u32_cell(v: i32) -> u32 {
-    if v < 0 { 0 } else { v as u32 }
+    if v < 0 {
+        0
+    } else {
+        v as u32
+    }
 }
 
 /// Convert the four year-0 `i32` cell arrays from `StatesResult` / `CulturesResult`
@@ -326,7 +362,8 @@ pub fn project_world(
     timeline: &Timeline,
     target_year: i32,
 ) -> WorldAt {
-    let (cs, cc, cr, cb) = convert_base_cells(cells_state, cells_culture, cells_religion, cells_burg);
+    let (cs, cc, cr, cb) =
+        convert_base_cells(cells_state, cells_culture, cells_religion, cells_burg);
     project_world_u32(pack, &cs, &cc, &cr, &cb, timeline, target_year)
 }
 
@@ -395,10 +432,45 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
     match ev.kind {
         EventKind::Found => {
             // A state/burg is founded at entity_id; mark the cell owned.
-            if let EventPayload::Found { cell } = &ev.payload {
+            if let EventPayload::Found { cell, population } = &ev.payload {
                 match ev.entity_type {
                     EntityType::State => set_cell(&mut world.cells_state, *cell, ev.entity_id),
-                    EntityType::Burg => set_cell(&mut world.cells_burg, *cell, ev.entity_id),
+                    EntityType::Burg => {
+                        set_cell(&mut world.cells_burg, *cell, ev.entity_id);
+                        // Re-create the burg entity so the projected Pack
+                        // matches the generator's working context exactly.
+                        // `state`/`culture` are derivable from the projected
+                        // cells/state — deterministic because both the working
+                        // context and the projection replay the same history.
+                        if world.pack.burgs.iter().all(|b| b.id != ev.entity_id) {
+                            let owner = world
+                                .cells_state
+                                .get(*cell as usize)
+                                .copied()
+                                .filter(|&s| s != 0)
+                                .unwrap_or(0);
+                            let culture = find_state(&world.pack, owner)
+                                .map(|s| s.culture)
+                                .unwrap_or(0);
+                            // The first burg of a state is its capital; both
+                            // the generator and the projector derive this with
+                            // the same rule so they stay in lockstep.
+                            let first_burg = !world.pack.burgs.iter().any(|b| b.state == owner);
+                            world.pack.burgs.push(Burg {
+                                id: ev.entity_id,
+                                name: format!("Burg{}", ev.entity_id),
+                                cell: *cell,
+                                state: owner,
+                                culture,
+                                religion: 0,
+                                population: *population,
+                                feature: 1,
+                                capital: if first_burg { 1 } else { 0 },
+                                founded_year: ev.year,
+                                dissolved_year: None,
+                            });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -433,7 +505,7 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
                 if let Some(rel) = find_religion(&world.pack, ev.entity_id) {
                     let child = Religion {
                         id: payload.child_religion_id,
-                        name: format!("{}_schism", rel.name),
+                        name: format!("{}-ism", rel.name),
                         color: rel.color, // parent color; renderer tints children
                         center_cell: rel.center_cell,
                         parent: Some(rel.id),
@@ -452,7 +524,8 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
             }
         }
         EventKind::Plague | EventKind::GoldenAge => {
-            // Scale pops for the target entity.
+            // Scale pops for the target entity, clamping so a value can never
+            // fall below the shared `POP_FLOOR` (mirrors the generator).
             let factor = match &ev.payload {
                 EventPayload::PopScalar { factor } => *factor,
                 _ => 1.0,
@@ -460,23 +533,23 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
             match ev.entity_type {
                 EntityType::State => {
                     if let Some(s) = find_state_mut(&mut world.pack, ev.entity_id) {
-                        s.rural_pop *= factor;
-                        s.urban_pop *= factor;
+                        s.rural_pop = (s.rural_pop * factor).max(POP_FLOOR);
+                        s.urban_pop = (s.urban_pop * factor).max(POP_FLOOR);
                     }
                 }
                 EntityType::Burg => {
                     if let Some(b) = find_burg_mut(&mut world.pack, ev.entity_id) {
-                        b.population *= factor;
+                        b.population = (b.population * factor).max(POP_FLOOR);
                     }
                 }
                 EntityType::Pop => {
                     // Aggregate: scale every burg + state pop.
                     for s in &mut world.pack.states {
-                        s.rural_pop *= factor;
-                        s.urban_pop *= factor;
+                        s.rural_pop = (s.rural_pop * factor).max(POP_FLOOR);
+                        s.urban_pop = (s.urban_pop * factor).max(POP_FLOOR);
                     }
                     for b in &mut world.pack.burgs {
-                        b.population *= factor;
+                        b.population = (b.population * factor).max(POP_FLOOR);
                     }
                 }
                 _ => {}
@@ -486,9 +559,25 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
             if let EventPayload::Migrate { payload } = &ev.payload {
                 for &cell in &payload.cells {
                     match ev.entity_type {
-                        EntityType::Culture => set_cell(&mut world.cells_culture, cell, payload.target_id),
-                        EntityType::Religion => set_cell(&mut world.cells_religion, cell, payload.target_id),
+                        EntityType::Culture => {
+                            set_cell(&mut world.cells_culture, cell, payload.target_id)
+                        }
+                        EntityType::Religion => {
+                            set_cell(&mut world.cells_religion, cell, payload.target_id)
+                        }
                         _ => {}
+                    }
+                }
+                // Keep the packed `Culture.cell_count` in sync with the per-cell
+                // culture array, mirroring the generator's accounting so the
+                // projected world matches the working context exactly.
+                if ev.entity_type == EntityType::Culture {
+                    let moved = payload.cells.len() as u32;
+                    if let Some(src) = find_culture_mut(&mut world.pack, ev.entity_id) {
+                        src.cell_count = src.cell_count.saturating_sub(moved);
+                    }
+                    if let Some(dst) = find_culture_mut(&mut world.pack, payload.target_id) {
+                        dst.cell_count = dst.cell_count.saturating_add(moved);
                     }
                 }
             }
@@ -522,17 +611,30 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
                 a.dissolved_year = Some(ev.year);
             }
         }
-        EventKind::Dissolve => {
-            match ev.entity_type {
-                EntityType::State => if let Some(s) = find_state_mut(&mut world.pack, ev.entity_id) { s.dissolved_year = Some(ev.year); },
-                EntityType::Culture => if let Some(c) = find_culture_mut(&mut world.pack, ev.entity_id) { c.dissolved_year = Some(ev.year); },
-                EntityType::Religion => if let Some(r) = find_religion_mut(&mut world.pack, ev.entity_id) { r.dissolved_year = Some(ev.year); },
-                EntityType::Burg => if let Some(b) = find_burg_mut(&mut world.pack, ev.entity_id) { b.dissolved_year = Some(ev.year); },
-                _ => {}
+        EventKind::Dissolve => match ev.entity_type {
+            EntityType::State => {
+                if let Some(s) = find_state_mut(&mut world.pack, ev.entity_id) {
+                    s.dissolved_year = Some(ev.year);
+                }
             }
-        }
-        EventKind::Succession | EventKind::CivilWar | EventKind::Treaty |
-        EventKind::Battle => {
+            EntityType::Culture => {
+                if let Some(c) = find_culture_mut(&mut world.pack, ev.entity_id) {
+                    c.dissolved_year = Some(ev.year);
+                }
+            }
+            EntityType::Religion => {
+                if let Some(r) = find_religion_mut(&mut world.pack, ev.entity_id) {
+                    r.dissolved_year = Some(ev.year);
+                }
+            }
+            EntityType::Burg => {
+                if let Some(b) = find_burg_mut(&mut world.pack, ev.entity_id) {
+                    b.dissolved_year = Some(ev.year);
+                }
+            }
+            _ => {}
+        },
+        EventKind::Succession | EventKind::CivilWar | EventKind::Treaty | EventKind::Battle => {
             // Succession: heir inherits (no cell change — the state persists).
             // CivilWar / Treaty / Battle: modelled via Conquer events
             // that carry actual cell transfers, so this is a data-model no-op.
@@ -540,9 +642,22 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
         EventKind::War => {
             // War: the attacker wins and claims `conquered_cells` from the
             // outcome payload. Apply each cell flip to cells_state.
-            if let EventPayload::War { outcome, .. } = &ev.payload {
+            if let EventPayload::War {
+                opponent_state_id,
+                outcome,
+            } = &ev.payload
+            {
                 for &cell in &outcome.conquered_cells {
                     set_cell(&mut world.cells_state, cell, ev.entity_id);
+                }
+                // If the defender no longer owns any cell, dissolve it. This
+                // mirrors the generator's post-cession rule ("lost all cells"),
+                // so the projected world matches the working context.
+                if let Some(def) = find_state_mut(&mut world.pack, *opponent_state_id) {
+                    let still_owns = world.cells_state.iter().any(|&s| s == *opponent_state_id);
+                    if !still_owns {
+                        def.dissolved_year = def.dissolved_year.or(Some(ev.year));
+                    }
                 }
             }
         }
@@ -558,6 +673,10 @@ fn set_cell(arr: &mut [u32], cell: u32, value: u32) {
     if idx < arr.len() {
         arr[idx] = value;
     }
+}
+
+fn find_state<'p>(pack: &'p Pack, id: u32) -> Option<&'p State> {
+    pack.states.iter().find(|s| s.id == id)
 }
 
 fn find_state_mut<'p>(pack: &'p mut Pack, id: u32) -> Option<&'p mut State> {
@@ -596,25 +715,56 @@ mod tests {
     fn sample_pack_one_state() -> Pack {
         Pack {
             states: vec![State {
-                id: 1, name: "Aeloria".into(), color: 0x4a6fa5, capital: 1,
-                center_cell: 0, form: "Monarchy".into(), tax_rate: 0.12,
-                treasury: 5000.0, rural_pop: 12000.0, urban_pop: 8000.0,
-                military: 40, founded_year: 0, dissolved_year: None, culture: 1,
+                id: 1,
+                name: "Aeloria".into(),
+                color: 0x4a6fa5,
+                capital: 1,
+                center_cell: 0,
+                form: "Monarchy".into(),
+                tax_rate: 0.12,
+                treasury: 5000.0,
+                rural_pop: 12000.0,
+                urban_pop: 8000.0,
+                military: 40,
+                founded_year: 0,
+                dissolved_year: None,
+                culture: 1,
             }],
             provinces: vec![],
             cultures: vec![Culture {
-                id: 1, name: "Northland".into(), color: 0xaa8844, origin: 0,
-                type_code: 0, founded_year: 0, dissolved_year: None, cell_count: 3,
+                id: 1,
+                name: "Northland".into(),
+                color: 0xaa8844,
+                origin: 0,
+                type_code: 0,
+                founded_year: 0,
+                dissolved_year: None,
+                cell_count: 3,
             }],
             religions: vec![Religion {
-                id: 1, name: "Old Faith".into(), color: 0xddccbb, center_cell: 0,
-                parent: None, followers: 20000.0, type_code: 0,
-                expansion_mode: "global".into(), founded_year: 0, dissolved_year: None,
+                id: 1,
+                name: "Old Faith".into(),
+                color: 0xddccbb,
+                center_cell: 0,
+                parent: None,
+                followers: 20000.0,
+                type_code: 0,
+                expansion_mode: "global".into(),
+                founded_year: 0,
+                dissolved_year: None,
             }],
             burgs: vec![Burg {
-                id: 1, name: "Aeloria City".into(), cell: 0, state: 1,
-                culture: 1, religion: 1, population: 8.0, feature: 1,
-                capital: 1, founded_year: 0, dissolved_year: None,
+                id: 1,
+                name: "Aeloria City".into(),
+                cell: 0,
+                state: 1,
+                culture: 1,
+                religion: 1,
+                population: 8.0,
+                feature: 1,
+                capital: 1,
+                founded_year: 0,
+                dissolved_year: None,
             }],
             armies: vec![],
         }
@@ -623,12 +773,13 @@ mod tests {
     /// Year-0 per-cell arrays matching the `StatesResult`/`CulturesResult`
     /// i32/i16 convention (-1 = unassigned, 0 = no burg).
     fn base_cells(n: usize) -> (Vec<i32>, Vec<i32>, Vec<i32>, Vec<i16>) {
-        (
-            vec![1i32; n],
-            vec![1i32; n],
-            vec![1i32; n],
-            { let mut b = vec![0i16; n]; if n > 0 { b[0] = 1; } b },
-        )
+        (vec![1i32; n], vec![1i32; n], vec![1i32; n], {
+            let mut b = vec![0i16; n];
+            if n > 0 {
+                b[0] = 1;
+            }
+            b
+        })
     }
 
     /// Feed a hand-built timeline: Found (burg on cell 2 at year 10) then
@@ -640,13 +791,23 @@ mod tests {
         let (cs, cc, cr, cb) = base_cells(5);
         let timeline: Timeline = vec![
             Event {
-                id: 1, year: 10, entity_id: 99,
-                entity_type: EntityType::Burg, kind: EventKind::Found,
-                payload: EventPayload::Found { cell: 2 }, narrative: None,
+                id: 1,
+                year: 10,
+                entity_id: 99,
+                entity_type: EntityType::Burg,
+                kind: EventKind::Found,
+                payload: EventPayload::Found {
+                    cell: 2,
+                    population: 6.0,
+                },
+                narrative: None,
             },
             Event {
-                id: 2, year: 20, entity_id: 99,
-                entity_type: EntityType::State, kind: EventKind::Conquer,
+                id: 2,
+                year: 20,
+                entity_id: 99,
+                entity_type: EntityType::State,
+                kind: EventKind::Conquer,
                 payload: EventPayload::Conquer {
                     payload: ConquerPayload { cells: vec![3, 4] },
                 },
@@ -662,6 +823,13 @@ mod tests {
         // After Found at year 10: burg 99 on cell 2.
         let w1 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 10);
         assert_eq!(w1.cells_burg[2], 99);
+        // The burg entity is re-created by the projector (Found(Burg)).
+        let burg = w1.pack.burgs.iter().find(|b| b.id == 99).expect("burg 99");
+        assert_eq!(burg.cell, 2);
+        assert_eq!(burg.state, 1); // owner of cell 2
+        assert_eq!(burg.culture, 1); // state 1's culture
+        assert_eq!(burg.population, 6.0);
+        assert_eq!(burg.capital, 1); // state 1's first burg
 
         // After Conquer at year 20: cells 3,4 owned by state 99; 0,1,2 untouched.
         let w2 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 25);
@@ -686,12 +854,27 @@ mod tests {
                     id: y as u64,
                     year: y,
                     entity_id: 1,
-                    entity_type: if y % 2 == 0 { EntityType::State } else { EntityType::Burg },
-                    kind: if y % 2 == 0 { EventKind::Conquer } else { EventKind::Found },
-                    payload: if y % 2 == 0 {
-                        EventPayload::Conquer { payload: ConquerPayload { cells: vec![(y % 5) as u32] } }
+                    entity_type: if y % 2 == 0 {
+                        EntityType::State
                     } else {
-                        EventPayload::Found { cell: (y % 5) as u32 }
+                        EntityType::Burg
+                    },
+                    kind: if y % 2 == 0 {
+                        EventKind::Conquer
+                    } else {
+                        EventKind::Found
+                    },
+                    payload: if y % 2 == 0 {
+                        EventPayload::Conquer {
+                            payload: ConquerPayload {
+                                cells: vec![(y % 5) as u32],
+                            },
+                        }
+                    } else {
+                        EventPayload::Found {
+                            cell: (y % 5) as u32,
+                            population: 5.0,
+                        }
                     },
                     narrative: None,
                 });
@@ -706,7 +889,10 @@ mod tests {
         project_delta(&mut delta, &timeline, 15, 20);
         project_delta(&mut delta, &timeline, 20, 25);
 
-        assert_eq!(delta.cells_state, full.cells_state, "state cells must match full projection");
+        assert_eq!(
+            delta.cells_state, full.cells_state,
+            "state cells must match full projection"
+        );
         assert_eq!(delta.cells_culture, full.cells_culture);
         assert_eq!(delta.cells_burg, full.cells_burg);
         assert_eq!(delta.pack.states.len(), full.pack.states.len());
@@ -719,14 +905,22 @@ mod tests {
         let (cs, cc, cr, cb) = base_cells(5);
         let timeline: Timeline = vec![
             Event {
-                id: 1, year: 5, entity_id: 1,
-                entity_type: EntityType::State, kind: EventKind::Conquer,
-                payload: EventPayload::Conquer { payload: ConquerPayload { cells: vec![2, 3] } },
+                id: 1,
+                year: 5,
+                entity_id: 1,
+                entity_type: EntityType::State,
+                kind: EventKind::Conquer,
+                payload: EventPayload::Conquer {
+                    payload: ConquerPayload { cells: vec![2, 3] },
+                },
                 narrative: None,
             },
             Event {
-                id: 2, year: 15, entity_id: 1,
-                entity_type: EntityType::State, kind: EventKind::Plague,
+                id: 2,
+                year: 15,
+                entity_id: 1,
+                entity_type: EntityType::State,
+                kind: EventKind::Plague,
                 payload: EventPayload::PopScalar { factor: 0.5 },
                 narrative: None,
             },
@@ -737,7 +931,10 @@ mod tests {
 
         assert_eq!(a, b, "WorldAt must be deterministic for identical inputs");
         // Pop scalar applied: state 1 rural_pop halved from 12000 → 6000.
-        assert_eq!(a.pack.states[0].rural_pop.to_bits(), (12000.0f64 * 0.5).to_bits());
+        assert_eq!(
+            a.pack.states[0].rural_pop.to_bits(),
+            (12000.0f64 * 0.5).to_bits()
+        );
         // Conquer applied.
         assert_eq!(a.cells_state[2], 1);
         assert_eq!(a.cells_state[3], 1);
@@ -750,17 +947,26 @@ mod tests {
         let pack = sample_pack_one_state();
         let (cs, cc, cr, cb) = base_cells(4);
         let timeline: Timeline = vec![Event {
-            id: 1, year: 100, entity_id: 1,
-            entity_type: EntityType::Religion, kind: EventKind::Schism,
+            id: 1,
+            year: 100,
+            entity_id: 1,
+            entity_type: EntityType::Religion,
+            kind: EventKind::Schism,
             payload: EventPayload::Schism {
-                payload: SchismPayload { follower_fraction: 0.3, child_religion_id: 2 },
+                payload: SchismPayload {
+                    follower_fraction: 0.3,
+                    child_religion_id: 2,
+                },
             },
             narrative: None,
         }];
 
         let w = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 100);
         // Parent followers reduced to 70%.
-        assert_eq!(w.pack.religions[0].followers.to_bits(), (20000.0f64 * 0.7).to_bits());
+        assert_eq!(
+            w.pack.religions[0].followers.to_bits(),
+            (20000.0f64 * 0.7).to_bits()
+        );
         // One child religion spawned.
         assert_eq!(w.pack.religions.len(), 2);
         let child = &w.pack.religions[1];
@@ -776,9 +982,13 @@ mod tests {
         let pack = sample_pack_one_state();
         let (cs, cc, cr, cb) = base_cells(3);
         let timeline: Timeline = vec![Event {
-            id: 1, year: 50, entity_id: 1,
-            entity_type: EntityType::State, kind: EventKind::Dissolve,
-            payload: EventPayload::Dissolve, narrative: None,
+            id: 1,
+            year: 50,
+            entity_id: 1,
+            entity_type: EntityType::State,
+            kind: EventKind::Dissolve,
+            payload: EventPayload::Dissolve,
+            narrative: None,
         }];
 
         let w = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 50);
@@ -790,10 +1000,16 @@ mod tests {
     #[test]
     fn event_serde_round_trips() {
         let ev = Event {
-            id: 42, year: 800, entity_id: 7,
-            entity_type: EntityType::Religion, kind: EventKind::Schism,
+            id: 42,
+            year: 800,
+            entity_id: 7,
+            entity_type: EntityType::Religion,
+            kind: EventKind::Schism,
             payload: EventPayload::Schism {
-                payload: SchismPayload { follower_fraction: 0.25, child_religion_id: 8 },
+                payload: SchismPayload {
+                    follower_fraction: 0.25,
+                    child_religion_id: 8,
+                },
             },
             narrative: Some("The faith split.".into()),
         };
@@ -827,9 +1043,13 @@ mod tests {
         let pack = sample_pack_one_state();
         let (cs, cc, cr, cb) = base_cells(3);
         let timeline: Timeline = vec![Event {
-            id: 1, year: 10, entity_id: 1,
-            entity_type: EntityType::State, kind: EventKind::Found,
-            payload: EventPayload::Unknown, narrative: None,
+            id: 1,
+            year: 10,
+            entity_id: 1,
+            entity_type: EntityType::State,
+            kind: EventKind::Found,
+            payload: EventPayload::Unknown,
+            narrative: None,
         }];
         let w = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 10);
         let (exp_cs, exp_cc, _, _) = convert_base_cells(&cs, &cc, &vec![-1i32; 3], &cb);
@@ -843,7 +1063,8 @@ mod tests {
         let cells_culture = vec![1i32, -1, 2, -1, 1];
         let cells_religion = vec![-1i32; 5];
         let cells_burg = vec![0i16, 1, 0, 2, 0];
-        let (cs, cc, cr, cb) = convert_base_cells(&cells_state, &cells_culture, &cells_religion, &cells_burg);
+        let (cs, cc, cr, cb) =
+            convert_base_cells(&cells_state, &cells_culture, &cells_religion, &cells_burg);
         assert_eq!(cs, vec![0u32, 1, 0, 3, 2]);
         assert_eq!(cc, vec![1u32, 0, 2, 0, 1]);
         assert_eq!(cr, vec![0u32; 5]);
@@ -857,15 +1078,25 @@ mod tests {
         let (cs, cc, cr, cb) = base_cells(5);
         let timeline: Timeline = vec![
             Event {
-                id: 1, year: 30, entity_id: 1,
-                entity_type: EntityType::State, kind: EventKind::Raise,
-                payload: EventPayload::Raise { army_size: 5000, cell: 2 },
+                id: 1,
+                year: 30,
+                entity_id: 1,
+                entity_type: EntityType::State,
+                kind: EventKind::Raise,
+                payload: EventPayload::Raise {
+                    army_size: 5000,
+                    cell: 2,
+                },
                 narrative: None,
             },
             Event {
-                id: 2, year: 40, entity_id: 1,
-                entity_type: EntityType::Army, kind: EventKind::Disband,
-                payload: EventPayload::Disband, narrative: None,
+                id: 2,
+                year: 40,
+                entity_id: 1,
+                entity_type: EntityType::Army,
+                kind: EventKind::Disband,
+                payload: EventPayload::Disband,
+                narrative: None,
             },
         ];
 
@@ -894,8 +1125,11 @@ mod tests {
 
         // War event: state 1 attacks state 2 and conquers cells 3,4.
         let timeline: Timeline = vec![Event {
-            id: 1, year: 10, entity_id: 1,
-            entity_type: EntityType::State, kind: EventKind::War,
+            id: 1,
+            year: 10,
+            entity_id: 1,
+            entity_type: EntityType::State,
+            kind: EventKind::War,
             payload: EventPayload::War {
                 opponent_state_id: 2,
                 outcome: WarOutcome {
@@ -914,8 +1148,14 @@ mod tests {
 
         // After the war: cells 3,4 flip to state 1 (the attacker).
         let w1 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 15);
-        assert_eq!(w1.cells_state[3], 1, "cell 3 should flip to state 1 after war");
-        assert_eq!(w1.cells_state[4], 1, "cell 4 should flip to state 1 after war");
+        assert_eq!(
+            w1.cells_state[3], 1,
+            "cell 3 should flip to state 1 after war"
+        );
+        assert_eq!(
+            w1.cells_state[4], 1,
+            "cell 4 should flip to state 1 after war"
+        );
         // Cells 0,1,2 stay with state 1.
         assert_eq!(w1.cells_state[0], 1);
         assert_eq!(w1.cells_state[1], 1);
@@ -924,6 +1164,9 @@ mod tests {
         // Delta projection must match full projection.
         let mut w_delta = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 10);
         project_delta(&mut w_delta, &timeline, 10, 15);
-        assert_eq!(w_delta.cells_state, w1.cells_state, "delta projection must match full");
+        assert_eq!(
+            w_delta.cells_state, w1.cells_state,
+            "delta projection must match full"
+        );
     }
 }

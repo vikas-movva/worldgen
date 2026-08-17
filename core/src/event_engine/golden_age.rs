@@ -1,11 +1,11 @@
 //! Phase 4 Step 4.2 — `GoldenAge` event module.
 //!
 //! A golden age increases population growth in a state.
-//! Probability is `ctx.params.golden_age_prob` per state per year.
+//! Probability is `ctx.timeline.params.golden_age_prob` per state per year.
 //!
 //! Extracted from the monolithic `event_engine.rs` (refactor §P4.2-modular).
 
-use crate::event_engine::context::GenContext;
+use crate::event_engine::context::{scale_state_pops, GenContext};
 use crate::event_engine::EventModule;
 use crate::timeline::{EntityType, EventKind, EventPayload};
 use rand::rngs::StdRng;
@@ -21,6 +21,7 @@ impl EventModule for GoldenAgeModule {
 
     fn run(&self, ctx: &mut GenContext, rng: &mut StdRng, year: i32) {
         let eligible: Vec<u32> = ctx
+            .world
             .pack
             .states
             .iter()
@@ -29,12 +30,9 @@ impl EventModule for GoldenAgeModule {
             .collect();
 
         for state_id in eligible {
-            if rng.gen_bool(ctx.params.golden_age_prob) {
-                let mult = ctx.params.golden_age_growth * rng.gen_range(0.8..=1.2);
-                if let Some(s) = ctx.find_state_mut(state_id) {
-                    s.rural_pop *= mult;
-                    s.urban_pop *= mult;
-                }
+            if rng.gen_bool(ctx.timeline.params.golden_age_prob) {
+                let mult = ctx.timeline.params.golden_age_growth * rng.gen_range(0.8..=1.2);
+                scale_state_pops(ctx, state_id, mult);
                 ctx.push_event(
                     year,
                     state_id,

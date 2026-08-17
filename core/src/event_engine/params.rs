@@ -48,6 +48,10 @@ pub struct TimelineParams {
     /// Minimum world population (in thousands) for an event to trigger.
     /// Guards tiny test packs from over-firing. Default 1.0.
     pub min_state_pop: f64,
+    /// Minimum graph distance (in cells) a newly-founded burg must keep from
+    /// any existing burg owned by the same state. `0` disables the spacing
+    /// constraint (spatial de-duplication only). Default 0.
+    pub min_burg_spacing: u32,
     /// Random number generator seed override. If 0, the engine derives a
     /// sub-stream from the timeline seed. Default: 0 (derive).
     pub rng_override: u64,
@@ -70,6 +74,7 @@ impl Default for TimelineParams {
             schism_fraction: 0.3,
             migration_fraction: 0.1,
             min_state_pop: 1.0,
+            min_burg_spacing: 0,
             rng_override: 0,
         }
     }

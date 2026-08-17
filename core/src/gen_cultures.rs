@@ -14,8 +14,8 @@
 //! Port of FMG `cultures-generator.ts` and `religions-generator.ts`.
 
 use crate::entities::{Burg, Culture, Religion};
-use crate::grid::Grid;
 use crate::gen_states::SEA_LEVEL;
+use crate::grid::Grid;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -148,13 +148,25 @@ pub fn generate_cultures_religions(
 
     // --- 1. Generate + expand cultures --------------------------------------
     let cultures = generate_cultures(
-        grid, &mut rng, seed, culture_count, suitability, &mut cells_culture,
+        grid,
+        &mut rng,
+        seed,
+        culture_count,
+        suitability,
+        &mut cells_culture,
     );
 
     // --- 2. Generate + expand religions -------------------------------------
     let religions = generate_religions(
-        grid, &mut rng, seed, religion_count, suitability,
-        &cells_culture, cells_state, burgs, &cultures,
+        grid,
+        &mut rng,
+        seed,
+        religion_count,
+        suitability,
+        &cells_culture,
+        cells_state,
+        burgs,
+        &cultures,
         &mut cells_religion,
     );
 
@@ -266,7 +278,10 @@ fn generate_cultures(
 
     // Cap count to populated/25 (FMG: if populated < count*25, reduce).
     let max_by_cells = (populated.len() / 25).max(1) as u32;
-    let count = requested_count.min(max_by_cells).min(populated.len() as u32).max(1);
+    let count = requested_count
+        .min(max_by_cells)
+        .min(populated.len() as u32)
+        .max(1);
 
     // Place culture centers with spatial spacing (FMG quadtree → spatial grid).
     let spacing = (world_w + world_h) / 2.0 / count as f64;
@@ -554,7 +569,11 @@ fn expand_cultures(
 
             // River cost (FMG `getRiverCost`).
             let river_cost = if ctype == CTYPE_RIVER {
-                if grid.cells.r[nb] != 0 { 0.0 } else { 100.0 }
+                if grid.cells.r[nb] != 0 {
+                    0.0
+                } else {
+                    100.0
+                }
             } else if grid.cells.r[nb] == 0 {
                 0.0
             } else {
@@ -571,17 +590,25 @@ fn expand_cultures(
                 .any(|&nnb| (nnb as usize) < n && grid.cells.h[nnb as usize] < SEA_LEVEL);
             let is_coast = grid.cells.h[nb] >= SEA_LEVEL && has_water_neighbor;
             let type_cost = if ctype == CTYPE_NAVAL || ctype == CTYPE_LAKE {
-                if is_coast { 0.0 } else { 100.0 }
+                if is_coast {
+                    0.0
+                } else {
+                    100.0
+                }
             } else if ctype == CTYPE_NOMADIC {
-                if is_coast { 60.0 } else { 0.0 }
+                if is_coast {
+                    60.0
+                } else {
+                    0.0
+                }
             } else if is_coast {
                 20.0
             } else {
                 0.0
             };
 
-            let cell_cost =
-                (biome_cost + biome_change_cost + height_cost + river_cost + type_cost) / expansionism_val;
+            let cell_cost = (biome_cost + biome_change_cost + height_cost + river_cost + type_cost)
+                / expansionism_val;
             let total_cost = p + cell_cost;
 
             if total_cost > max_expansion_cost {
@@ -657,7 +684,9 @@ fn biome_cost_table(biome: u8) -> f64 {
 fn generate_culture_color(culture_id: u32, seed: u32) -> u32 {
     // Use golden-angle hue with per-id seeded RNG for variation.
     let mut color_rng = StdRng::seed_from_u64(
-        (seed as u64).wrapping_mul(0x200000001).wrapping_add(culture_id as u64),
+        (seed as u64)
+            .wrapping_mul(0x200000001)
+            .wrapping_add(culture_id as u64),
     );
     let hue = ((culture_id as f64 * 137.508) + color_rng.gen::<f64>() * 40.0) % 360.0;
     let saturation = 0.5 + color_rng.gen::<f64>() * 0.3;
@@ -761,9 +790,19 @@ fn generate_religions(
     } else {
         // Sort burgs by population descending.
         candidates.sort_by(|&a, &b| {
-            let pop_a = burgs.iter().find(|bu| bu.cell as usize == a).map(|bu| bu.population).unwrap_or(0.0);
-            let pop_b = burgs.iter().find(|bu| bu.cell as usize == b).map(|bu| bu.population).unwrap_or(0.0);
-            pop_b.partial_cmp(&pop_a).unwrap_or(std::cmp::Ordering::Equal)
+            let pop_a = burgs
+                .iter()
+                .find(|bu| bu.cell as usize == a)
+                .map(|bu| bu.population)
+                .unwrap_or(0.0);
+            let pop_b = burgs
+                .iter()
+                .find(|bu| bu.cell as usize == b)
+                .map(|bu| bu.population)
+                .unwrap_or(0.0);
+            pop_b
+                .partial_cmp(&pop_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
@@ -851,7 +890,11 @@ fn generate_religions(
         };
 
         let religion_id = religions.len() as u32;
-        let culture_id = if cell < n { cells_culture[cell] as u32 } else { 0 };
+        let culture_id = if cell < n {
+            cells_culture[cell] as u32
+        } else {
+            0
+        };
         let _state_id = if cell < n { cells_state[cell] } else { 0 };
 
         // Expansionism by type (FMG `expansionismMap`).
@@ -896,7 +939,12 @@ fn generate_religions(
 
     // Expand organized religions via Dijkstra.
     expand_religions(
-        grid, &religions, cells_culture, cells_state, cells_religion, placed,
+        grid,
+        &religions,
+        cells_culture,
+        cells_state,
+        cells_religion,
+        placed,
     );
 
     religions
@@ -934,7 +982,11 @@ fn expand_religions(
             continue;
         }
 
-        let culture = if cell < n { cells_culture[cell] as u32 } else { 0 };
+        let culture = if cell < n {
+            cells_culture[cell] as u32
+        } else {
+            0
+        };
         let state = if cell < n { cells_state[cell] } else { 0 };
 
         best_cost[cell] = 1.0;
@@ -1008,7 +1060,11 @@ fn expand_religions(
             }
 
             // Culture cost: 0 if same, 10 if different.
-            let culture_cost = if culture == cells_culture[nb] as u32 { 0.0 } else { 10.0 };
+            let culture_cost = if culture == cells_culture[nb] as u32 {
+                0.0
+            } else {
+                10.0
+            };
 
             // State cost: 0 if same, 10 if different.
             let state_cost = if state == cells_state[nb] { 0.0 } else { 10.0 };
@@ -1063,8 +1119,8 @@ fn mix_color(base: u32, mix_factor: f64, darkening: f64) -> u32 {
 mod adversarial_probes {
     use super::*;
     use crate::climate;
-    use crate::generate_world_inner;
     use crate::gen_states;
+    use crate::generate_world_inner;
     use std::collections::BTreeMap;
 
     fn grid(seed: u32, n: u32) -> Grid {
@@ -1075,19 +1131,35 @@ mod adversarial_probes {
     /// `cells_culture[c.origin]` must equal `c.id` after expansion.
     #[test]
     fn p1_culture_centers_not_overwritten() {
-        let cases = [(42u32, 1000u32), (0, 1000), (u32::MAX, 1000), (7, 2000), (123, 4000)];
+        let cases = [
+            (42u32, 1000u32),
+            (0, 1000),
+            (u32::MAX, 1000),
+            (7, 2000),
+            (123, 4000),
+        ];
         for (seed, n) in cases {
             let g = grid(seed, n);
             let states = gen_states::generate_states(&g, seed, 12);
             let suit = gen_states::compute_suitability(&g);
             let r = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             let mut bad = Vec::new();
             for c in &r.cultures {
-                if c.id == 0 { continue; }
+                if c.id == 0 {
+                    continue;
+                }
                 let cell = c.origin as usize;
-                if cell >= r.cells_culture.len() { continue; }
+                if cell >= r.cells_culture.len() {
+                    continue;
+                }
                 let assigned = r.cells_culture[cell];
                 if assigned != c.id as i32 {
                     bad.push((c.id, c.origin, assigned));
@@ -1096,10 +1168,15 @@ mod adversarial_probes {
             if !bad.is_empty() {
                 eprintln!(
                     "P1 FAIL seed={seed} n={n}: {} center(s) overwritten; first 5: {:?}",
-                    bad.len(), &bad[..bad.len().min(5)]
+                    bad.len(),
+                    &bad[..bad.len().min(5)]
                 );
             }
-            assert_eq!(bad.len(), 0, "P1 culture-center overwrite: seed={seed} n={n}");
+            assert_eq!(
+                bad.len(),
+                0,
+                "P1 culture-center overwrite: seed={seed} n={n}"
+            );
         }
     }
 
@@ -1113,10 +1190,22 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r4 = generate_cultures_religions(
-            &g, 42, 4, 0, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            4,
+            0,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let r12 = generate_cultures_religions(
-            &g, 42, 12, 0, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            0,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let common = r4.cultures.len().min(r12.cultures.len());
         let mismatches: Vec<_> = (0..common)
@@ -1135,13 +1224,23 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            10,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let bad: Vec<usize> = (0..g.cell_count())
             .filter(|&i| g.cells.h[i] < SEA_LEVEL && r.cells_religion[i] > 0)
             .collect();
         if !bad.is_empty() {
-            eprintln!("P3 religion-on-water: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+            eprintln!(
+                "P3 religion-on-water: {} violations, first 5: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(5)]
+            );
         }
         assert_eq!(bad.len(), 0, "P3 religions on water");
     }
@@ -1153,13 +1252,23 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            10,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let bad: Vec<usize> = (0..g.cell_count())
             .filter(|&i| g.cells.h[i] < SEA_LEVEL && r.cells_culture[i] > 0)
             .collect();
         if !bad.is_empty() {
-            eprintln!("P4 culture-on-water: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+            eprintln!(
+                "P4 culture-on-water: {} violations, first 5: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(5)]
+            );
         }
         assert_eq!(bad.len(), 0, "P4 cultures on water");
     }
@@ -1173,27 +1282,41 @@ mod adversarial_probes {
             let states = gen_states::generate_states(&g, seed, 12);
             let suit = gen_states::compute_suitability(&g);
             let r1 = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             let r2 = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             // Compare Cultures/Religions field-by-field since they don't
             // derive PartialEq (only Serialize + Debug + Clone + Default).
             let cols_eq = r1.cultures.len() == r2.cultures.len()
-                && r1.cultures.iter().zip(r2.cultures.iter())
-                    .all(|(a, b)| a.id == b.id
+                && r1.cultures.iter().zip(r2.cultures.iter()).all(|(a, b)| {
+                    a.id == b.id
                         && a.name == b.name
                         && a.color == b.color
                         && a.origin == b.origin
                         && a.type_code == b.type_code
-                        && a.cell_count == b.cell_count);
+                        && a.cell_count == b.cell_count
+                });
             let rels_eq = r1.religions.len() == r2.religions.len()
-                && r1.religions.iter().zip(r2.religions.iter())
-                    .all(|(a, b)| a.id == b.id
+                && r1.religions.iter().zip(r2.religions.iter()).all(|(a, b)| {
+                    a.id == b.id
                         && a.color == b.color
                         && a.followers.to_bits() == b.followers.to_bits()
-                        && a.type_code == b.type_code);
+                        && a.type_code == b.type_code
+                });
             let same = cols_eq
                 && rels_eq
                 && r1.cells_culture == r2.cells_culture
@@ -1210,24 +1333,40 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let cases = [
-            (0u32, 0u32), (0, 10), (1, 0), (1, 1), (10, 10),
-            (u32::MAX, 10), (10, u32::MAX), (u32::MAX, u32::MAX),
+            (0u32, 0u32),
+            (0, 10),
+            (1, 0),
+            (1, 1),
+            (10, 10),
+            (u32::MAX, 10),
+            (10, u32::MAX),
+            (u32::MAX, u32::MAX),
         ];
         for (cc, rc) in cases {
             let r = generate_cultures_religions(
-                &g, 42, cc, rc, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                42,
+                cc,
+                rc,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             // Sanity: cult assigned count ≤ cell_count.
             assert_eq!(r.cells_culture.len(), g.cell_count());
             assert_eq!(r.cells_religion.len(), g.cell_count());
             // Religion ids must be in [0, religions.len()).
             for &rid in &r.cells_religion {
-                assert!(rid >= 0 && (rid as usize) < r.religions.len(),
-                    "P6 cc={cc} rc={rc}: cells_religion id {rid} out of range");
+                assert!(
+                    rid >= 0 && (rid as usize) < r.religions.len(),
+                    "P6 cc={cc} rc={rc}: cells_religion id {rid} out of range"
+                );
             }
             for &cid in &r.cells_culture {
-                assert!(cid >= 0 && (cid as usize) < r.cultures.len(),
-                    "P6 cc={cc} rc={rc}: cells_culture id {cid} out of range");
+                assert!(
+                    cid >= 0 && (cid as usize) < r.cultures.len(),
+                    "P6 cc={cc} rc={rc}: cells_culture id {cid} out of range"
+                );
             }
         }
     }
@@ -1240,17 +1379,29 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 0, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            0,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let bad: Vec<usize> = (0..g.cell_count())
-            .filter(|&i| g.cells.h[i] >= SEA_LEVEL
-                && r.cells_culture[i] > 0
-                && (r.cells_religion[i] <= 0
-                    || (r.cells_religion[i] as usize) < r.religions.len()
-                        && r.religions[r.cells_religion[i] as usize].type_code != RTYPE_FOLK))
+            .filter(|&i| {
+                g.cells.h[i] >= SEA_LEVEL
+                    && r.cells_culture[i] > 0
+                    && (r.cells_religion[i] <= 0
+                        || (r.cells_religion[i] as usize) < r.religions.len()
+                            && r.religions[r.cells_religion[i] as usize].type_code != RTYPE_FOLK)
+            })
             .collect();
         if !bad.is_empty() {
-            eprintln!("P7 cells_with_culture_but_not_folk: {} violations, first 5: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+            eprintln!(
+                "P7 cells_with_culture_but_not_folk: {} violations, first 5: {:?}",
+                bad.len(),
+                &bad[..bad.len().min(5)]
+            );
         }
         assert_eq!(bad.len(), 0, "P7 folk-assignment broken");
     }
@@ -1263,14 +1414,24 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            10,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
 
         let mut sum = vec![0.0f64; r.religions.len()];
         for b in &states.pack.burgs {
-            if b.id == 0 { continue; }
+            if b.id == 0 {
+                continue;
+            }
             let cell = b.cell as usize;
-            if cell >= g.cell_count() { continue; }
+            if cell >= g.cell_count() {
+                continue;
+            }
             let rid = r.cells_religion[cell] as usize;
             if rid > 0 && rid < sum.len() {
                 sum[rid] += b.population;
@@ -1301,7 +1462,13 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            10,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let mut actual = vec![0u32; r.cultures.len()];
         for &c in &r.cells_culture {
@@ -1316,7 +1483,10 @@ mod adversarial_probes {
         let mismatches: Vec<_> = mismatches.into_iter().filter(|&i| i != 0).collect();
         if !mismatches.is_empty() {
             for i in &mismatches {
-                eprintln!("P9 culture {}: stored cell_count={}, actual={}", i, r.cultures[*i].cell_count, actual[*i]);
+                eprintln!(
+                    "P9 culture {}: stored cell_count={}, actual={}",
+                    i, r.cultures[*i].cell_count, actual[*i]
+                );
             }
         }
         assert_eq!(mismatches.len(), 0, "P9 cell_count invariant broken");
@@ -1335,14 +1505,23 @@ mod adversarial_probes {
             let states = gen_states::generate_states(&g, seed, 12);
             let suit = gen_states::compute_suitability(&g);
             let r = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             let land = (0..g.cell_count())
-                .filter(|&i| g.cells.h[i] >= SEA_LEVEL).count();
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL)
+                .count();
             let cult_assigned = (0..g.cell_count())
-                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_culture[i] > 0).count();
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_culture[i] > 0)
+                .count();
             let rel_assigned = (0..g.cell_count())
-                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_religion[i] > 0).count();
+                .filter(|&i| g.cells.h[i] >= SEA_LEVEL && r.cells_religion[i] > 0)
+                .count();
             let ratio = (cult_assigned as f64) / (land.max(1) as f64) * 100.0;
             let rel_ratio = (rel_assigned as f64) / (land.max(1) as f64) * 100.0;
             eprintln!(
@@ -1362,11 +1541,19 @@ mod adversarial_probes {
         let states = gen_states::generate_states(&g, 42, 12);
         let suit = gen_states::compute_suitability(&g);
         let r = generate_cultures_religions(
-            &g, 42, 12, 20, &suit, &states.cells_state, &states.pack.burgs,
+            &g,
+            42,
+            12,
+            20,
+            &suit,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let mut water_centers = 0;
         for rel in &r.religions {
-            if rel.id == 0 || rel.type_code == RTYPE_FOLK { continue; }
+            if rel.id == 0 || rel.type_code == RTYPE_FOLK {
+                continue;
+            }
             let cell = rel.center_cell as usize;
             if cell < g.cell_count() && g.cells.h[cell] < SEA_LEVEL {
                 water_centers += 1;
@@ -1385,10 +1572,22 @@ mod adversarial_probes {
             let states = gen_states::generate_states(&g, seed, 12);
             let suit = gen_states::compute_suitability(&g);
             let r1 = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             let r2 = generate_cultures_religions(
-                &g, seed, 12, 10, &suit, &states.cells_state, &states.pack.burgs,
+                &g,
+                seed,
+                12,
+                10,
+                &suit,
+                &states.cells_state,
+                &states.pack.burgs,
             );
             assert_eq!(r1.cells_culture, r2.cells_culture);
             assert_eq!(r1.cells_religion, r2.cells_religion);
@@ -1423,7 +1622,11 @@ mod adversarial_probes {
                 .collect();
             eprintln!("P13 seed={seed} populated_cells={}", populated.len());
             // A land cell should exist with positive suitability on typical worlds.
-            assert!(populated.len() > 20, "P13 seed={seed}: only {} populated cells", populated.len());
+            assert!(
+                populated.len() > 20,
+                "P13 seed={seed}: only {} populated cells",
+                populated.len()
+            );
         }
     }
 }
@@ -1436,8 +1639,8 @@ mod adversarial_probes {
 mod tests {
     use super::*;
     use crate::climate;
-    use crate::generate_world_inner;
     use crate::gen_states;
+    use crate::generate_world_inner;
 
     fn test_grid(seed: u32, n: u32) -> Grid {
         let opts = climate::ClimateOpts::default();
@@ -1450,15 +1653,31 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let r1 = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let r2 = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
-        assert_eq!(r1.cells_culture, r2.cells_culture, "cells_culture not deterministic");
-        assert_eq!(r1.cells_religion, r2.cells_religion, "cells_religion not deterministic");
+        assert_eq!(
+            r1.cells_culture, r2.cells_culture,
+            "cells_culture not deterministic"
+        );
+        assert_eq!(
+            r1.cells_religion, r2.cells_religion,
+            "cells_religion not deterministic"
+        );
         assert_eq!(r1.cultures.len(), r2.cultures.len());
         assert_eq!(r1.religions.len(), r2.religions.len());
         for (a, b) in r1.cultures.iter().zip(r2.cultures.iter()) {
@@ -1479,8 +1698,13 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let result = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         // At least 1 culture beyond Wildlands.
         assert!(result.cultures.len() > 1, "no cultures generated");
@@ -1498,12 +1722,19 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let result = generate_cultures_religions(
-            &grid, 42, 12, 0, &suitability, // 0 organized religions
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            0,
+            &suitability, // 0 organized religions
+            &states.cells_state,
+            &states.pack.burgs,
         );
         // One folk religion per non-wildlands culture (plus religion 0).
         let non_wildlands = result.cultures.iter().filter(|c| c.id != 0).count();
-        let folk_religions = result.religions.iter()
+        let folk_religions = result
+            .religions
+            .iter()
             .filter(|r| r.type_code == RTYPE_FOLK && r.id != 0)
             .count();
         assert_eq!(
@@ -1518,8 +1749,13 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let result = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let n = grid.cell_count();
         // Every land cell with a culture should also have a religion (folk auto-assign).
@@ -1541,8 +1777,13 @@ mod tests {
         let suitability = gen_states::compute_suitability(&grid);
         // Should not panic even on a mostly-water world.
         let result = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let n = grid.cell_count();
         assert_eq!(result.cells_culture.len(), n);
@@ -1555,8 +1796,13 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 8);
         let suitability = gen_states::compute_suitability(&grid);
         let result = generate_cultures_religions(
-            &grid, 42, 8, 5, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            8,
+            5,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let json = serde_json::to_string(&result).expect("serialize");
         let back: CulturesResult = serde_json::from_str(&json).expect("deserialize");
@@ -1574,8 +1820,13 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let r = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let mut actual = vec![0u32; r.cultures.len()];
         for &c in &r.cells_culture {
@@ -1605,8 +1856,13 @@ mod tests {
         let states = gen_states::generate_states(&grid, 42, 12);
         let suitability = gen_states::compute_suitability(&grid);
         let r = generate_cultures_religions(
-            &grid, 42, 12, 10, &suitability,
-            &states.cells_state, &states.pack.burgs,
+            &grid,
+            42,
+            12,
+            10,
+            &suitability,
+            &states.cells_state,
+            &states.pack.burgs,
         );
         let mut sum = vec![0.0f64; r.religions.len()];
         for b in &states.pack.burgs {

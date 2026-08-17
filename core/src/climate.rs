@@ -144,7 +144,11 @@ pub fn calculate_map_coordinates(opts: &ClimateOpts) -> MapCoords {
     let lat_t = round1(size_fraction * 180.0);
     let lat_n = round1(90.0 - (180.0 - lat_t) * lat_shift);
     let lat_s = round1(lat_n - lat_t);
-    MapCoords { lat_t, lat_n, lat_s }
+    MapCoords {
+        lat_t,
+        lat_n,
+        lat_s,
+    }
 }
 
 /// Latitude (degrees) for a given world `y`. FMG: `latN − (y / graphHeight) *
@@ -186,7 +190,16 @@ impl TempCurve {
         let ng = (tnt - opts.temperature_north_pole) / (90.0 - t0); // northernGradient
         let tst = opts.temperature_equator + t1 * tg; // tempSouthTropic
         let sg = (tst - opts.temperature_south_pole) / (90.0 + t1); // southernGradient
-        TempCurve { t0, t1, tg, tnt, ng, tst, sg, exponent: opts.height_exponent }
+        TempCurve {
+            t0,
+            t1,
+            tg,
+            tnt,
+            ng,
+            tst,
+            sg,
+            exponent: opts.height_exponent,
+        }
     }
 
     /// FMG `calculateSeaLevelTemp(latitude)` — the sea-level temperature curve.
@@ -212,7 +225,14 @@ impl TempCurve {
 /// Returns the temperature quantized to `i8` (FMG `Int8Array` assignment:
 /// `as i8` truncates toward zero, matching JS).
 #[inline]
-fn temp_at_cell(y: f64, h_cell: u8, opts: &ClimateOpts, curve: &TempCurve, world_h: f64, coords: &MapCoords) -> i8 {
+fn temp_at_cell(
+    y: f64,
+    h_cell: u8,
+    opts: &ClimateOpts,
+    curve: &TempCurve,
+    world_h: f64,
+    coords: &MapCoords,
+) -> i8 {
     let lat = latitude_at_y(y, world_h, coords);
     let sea_level = curve.sea_level_temp(lat, opts);
     let drop = altitude_drop(h_cell, curve.exponent);
@@ -224,7 +244,12 @@ fn temp_at_cell(y: f64, h_cell: u8, opts: &ClimateOpts, curve: &TempCurve, world
 ///
 /// Temperature is computed **per cell** from the cell's actual world `y`
 /// (rather than per grid-row), which is more accurate on an irregular mesh.
-pub fn calculate_temperatures(mesh: &Mesh, h: &[u8], opts: &ClimateOpts, coords: &MapCoords) -> Vec<i8> {
+pub fn calculate_temperatures(
+    mesh: &Mesh,
+    h: &[u8],
+    opts: &ClimateOpts,
+    coords: &MapCoords,
+) -> Vec<i8> {
     let n = mesh.points.len();
     let curve = TempCurve::from_opts(opts);
     let world_h = mesh.world_h;
@@ -252,8 +277,8 @@ pub fn calculate_temperatures(mesh: &Mesh, h: &[u8], opts: &ClimateOpts, coords:
 /// This convenience entry is kept as a standalone public API for callers that
 /// only need temperature.
 #[allow(dead_code)] // TODO(2.5.4): remove if the brush editor UI keeps the Grid
-                   // in-worker and calls a single combined entry; delete the
-                   // standalone if no VertX caller materializes.
+                    // in-worker and calls a single combined entry; delete the
+                    // standalone if no VertX caller materializes.
 pub fn recompute_temp_local(grid: &mut crate::grid::Grid, cell_ids: &[u32], opts: &ClimateOpts) {
     let coords = calculate_map_coordinates(opts);
     recompute_temp_local_with_coords(grid, cell_ids, opts, &coords);
@@ -423,7 +448,13 @@ fn wind_directions(angle: f64) -> WindFlags {
 }
 
 /// Compute `cells.prec` (FMG `generatePrecipitation`).
-pub fn generate_precipitation(mesh: &Mesh, h: &[u8], temp: &[i8], opts: &ClimateOpts, coords: &MapCoords) -> Vec<u8> {
+pub fn generate_precipitation(
+    mesh: &Mesh,
+    h: &[u8],
+    temp: &[i8],
+    opts: &ClimateOpts,
+    coords: &MapCoords,
+) -> Vec<u8> {
     let n = mesh.points.len();
     let cells_x = mesh.cells.cells_x as usize;
     let cells_y = mesh.cells.cells_y as usize;
@@ -451,11 +482,33 @@ pub fn generate_precipitation(mesh: &Mesh, h: &[u8], temp: &[i8], opts: &Climate
 
         if flags.is_west {
             let start = (row * cells_x) as isize;
-            pass_wind_one(&mut prec, h, temp, spacing, start, 120.0 * modifier, Some(lat_mod), 1, cells_x, modifier);
+            pass_wind_one(
+                &mut prec,
+                h,
+                temp,
+                spacing,
+                start,
+                120.0 * modifier,
+                Some(lat_mod),
+                1,
+                cells_x,
+                modifier,
+            );
         }
         if flags.is_east {
             let start = (row * cells_x + cells_x - 1) as isize;
-            pass_wind_one(&mut prec, h, temp, spacing, start, 120.0 * modifier, Some(lat_mod), -1, cells_x, modifier);
+            pass_wind_one(
+                &mut prec,
+                h,
+                temp,
+                spacing,
+                start,
+                120.0 * modifier,
+                Some(lat_mod),
+                -1,
+                cells_x,
+                modifier,
+            );
         }
         if flags.is_north {
             northerly += 1;
@@ -479,7 +532,18 @@ pub fn generate_precipitation(mesh: &Mesh, h: &[u8], temp: &[i8], opts: &Climate
         // From the top row downward (next = +cells_x), one source per column.
         for col in 0..cells_x {
             let start = col as isize;
-            pass_wind_one(&mut prec, h, temp, spacing, start, max_prec_n, None, cells_x as isize, cells_y, modifier);
+            pass_wind_one(
+                &mut prec,
+                h,
+                temp,
+                spacing,
+                start,
+                max_prec_n,
+                None,
+                cells_x as isize,
+                cells_y,
+                modifier,
+            );
         }
     }
     if southerly > 0 {
@@ -493,7 +557,18 @@ pub fn generate_precipitation(mesh: &Mesh, h: &[u8], temp: &[i8], opts: &Climate
         // From the bottom row upward (next = −cells_x), one source per column.
         for col in 0..cells_x {
             let start = (slots - cells_x + col) as isize;
-            pass_wind_one(&mut prec, h, temp, spacing, start, max_prec_s, None, -(cells_x as isize), cells_y, modifier);
+            pass_wind_one(
+                &mut prec,
+                h,
+                temp,
+                spacing,
+                start,
+                max_prec_s,
+                None,
+                -(cells_x as isize),
+                cells_y,
+                modifier,
+            );
         }
     }
 
@@ -521,8 +596,8 @@ pub fn generate_climate_js(mesh_js: JsValue, heightmap: Uint8Array, opts_js: JsV
     let mesh: Mesh = serde_wasm_bindgen::from_value(mesh_js)
         .expect("generate_climate: failed to deserialize Mesh from JsValue");
     let h = heightmap.to_vec();
-    let opts: ClimateOpts = serde_wasm_bindgen::from_value(opts_js)
-        .unwrap_or_else(|_| ClimateOpts::default());
+    let opts: ClimateOpts =
+        serde_wasm_bindgen::from_value(opts_js).unwrap_or_else(|_| ClimateOpts::default());
 
     let (temp, prec) = generate_climate(&mesh, &h, &opts);
 
@@ -552,8 +627,8 @@ mod tests {
     #![allow(clippy::needless_range_loop)]
 
     use super::*;
-    use crate::mesh;
     use crate::heightmap;
+    use crate::mesh;
 
     /// Build a deterministic mesh + heightmap for tests.
     fn fixture(cell_count: u32, seed: u32) -> (Mesh, Vec<u8>) {
@@ -805,7 +880,7 @@ mod tests {
         };
         let coords = calculate_map_coordinates(&opts);
         assert_eq!(coords.lat_t, 54.0); // 30/100 * 180 = 54
-        // FMG: latN = 90 - (180 - latT) * latShift = 90 - 126*0.5 = 90 - 63 = 27
+                                        // FMG: latN = 90 - (180 - latT) * latShift = 90 - 126*0.5 = 90 - 63 = 27
         assert_eq!(coords.lat_n, 27.0);
         assert_eq!(coords.lat_s, -27.0); // 27 - 54 = -27
     }
@@ -815,7 +890,11 @@ mod tests {
     /// y=world_h/2 → midpoint. FMG: `latN - (y / graphHeight) * latT`.
     #[test]
     fn latitude_at_y_boundaries() {
-        let coords = MapCoords { lat_t: 180.0, lat_n: 90.0, lat_s: -90.0 };
+        let coords = MapCoords {
+            lat_t: 180.0,
+            lat_n: 90.0,
+            lat_s: -90.0,
+        };
         let world_h = 8000.0;
         // Top edge → north
         assert_eq!(latitude_at_y(0.0, world_h, &coords), 90.0);
@@ -920,7 +999,10 @@ mod tests {
 
         // Ascending (h_next > h_cur) → more precip than flat
         let rising = get_precipitation(50.0, 30, 60, 1.0);
-        assert!(rising > flat, "rising precip {rising} should exceed flat {flat}");
+        assert!(
+            rising > flat,
+            "rising precip {rising} should exceed flat {flat}"
+        );
 
         // Descending (h_next < h_cur) → diff=0, same as flat
         let falling = get_precipitation(50.0, 60, 30, 1.0);
@@ -928,7 +1010,10 @@ mod tests {
 
         // Result never exceeds humidity
         let max_rising = get_precipitation(10.0, 10, 100, 1.0);
-        assert!(max_rising <= 10.0, "precip {max_rising} should not exceed humidity 10");
+        assert!(
+            max_rising <= 10.0,
+            "precip {max_rising} should not exceed humidity 10"
+        );
 
         // Result never below 1
         let dry = get_precipitation(2.0, 10, 10, 1.0);
@@ -962,11 +1047,19 @@ mod tests {
         let subtropical = tier_at(-30.0);
 
         // The key: these should NOT all be the same (the bug made them all 225).
-        let unique: std::collections::HashSet<_> =
-            [polar, midlat, tropical, subtropical].map(|v| v.to_bits()).into_iter().collect();
-        assert!(unique.len() > 1, "wind directions should vary by latitude, all got {unique:?}");
+        let unique: std::collections::HashSet<_> = [polar, midlat, tropical, subtropical]
+            .map(|v| v.to_bits())
+            .into_iter()
+            .collect();
+        assert!(
+            unique.len() > 1,
+            "wind directions should vary by latitude, all got {unique:?}"
+        );
         // Specifically: mid-latitude (45°) differs from polar (225°).
-        assert_ne!(polar, midlat, "polar and mid-latitude should have different wind dirs");
+        assert_ne!(
+            polar, midlat,
+            "polar and mid-latitude should have different wind dirs"
+        );
     }
 
     /// **C1 regression guard (functional):** On a real mesh + heightmap,
@@ -992,16 +1085,32 @@ mod tests {
         let world_h = mesh.world_h;
         let world_w = mesh.world_w;
 
-        let mut nw = 0.0; let mut ne = 0.0; let mut nw_c = 0; let mut ne_c = 0;
-        let mut sw = 0.0; let mut se = 0.0; let mut sw_c = 0; let mut se_c = 0;
+        let mut nw = 0.0;
+        let mut ne = 0.0;
+        let mut nw_c = 0;
+        let mut ne_c = 0;
+        let mut sw = 0.0;
+        let mut se = 0.0;
+        let mut sw_c = 0;
+        let mut se_c = 0;
         for (i, &[x, y]) in mesh.points.iter().enumerate() {
             let p = prec[i] as f64;
             if y < world_h * 0.5 {
-                if x < world_w * 0.5 { nw += p; nw_c += 1; }
-                else { ne += p; ne_c += 1; }
+                if x < world_w * 0.5 {
+                    nw += p;
+                    nw_c += 1;
+                } else {
+                    ne += p;
+                    ne_c += 1;
+                }
             } else {
-                if x < world_w * 0.5 { sw += p; sw_c += 1; }
-                else { se += p; se_c += 1; }
+                if x < world_w * 0.5 {
+                    sw += p;
+                    sw_c += 1;
+                } else {
+                    se += p;
+                    se_c += 1;
+                }
             }
         }
         let nw_mean = nw / nw_c.max(1) as f64;
@@ -1046,13 +1155,17 @@ mod tests {
             assert!(
                 temp_high[i] <= temp_water[i],
                 "cell {i}: high-land temp {} should be <= water temp {}",
-                temp_high[i], temp_water[i]
+                temp_high[i],
+                temp_water[i]
             );
             if temp_high[i] < temp_water[i] {
                 any_colder = true;
             }
         }
-        assert!(any_colder, "at least some cells should be colder with altitude");
+        assert!(
+            any_colder,
+            "at least some cells should be colder with altitude"
+        );
     }
 
     // ── Output length + determinism ─────────────────────────────────────────
@@ -1146,12 +1259,18 @@ mod tests {
         let temp = calculate_temperatures(&mesh, &h, &opts, &coords);
         // With all land at h=100, every cell should be very cold.
         let min_temp = *temp.iter().min().unwrap();
-        assert!(min_temp < -5, "all-land h=100 should produce permafrost temps, min={min_temp}");
+        assert!(
+            min_temp < -5,
+            "all-land h=100 should produce permafrost temps, min={min_temp}"
+        );
         // Precip should be uniformly low (no orographic or coastal deposition
         // because the permafrost gate stops all wind passes).
         let prec = generate_precipitation(&mesh, &h, &temp, &opts, &coords);
         let max_prec = *prec.iter().max().unwrap();
-        assert!(max_prec < 50, "permafrost should suppress precip, max={max_prec}");
+        assert!(
+            max_prec < 50,
+            "permafrost should suppress precip, max={max_prec}"
+        );
     }
 
     // ── A2: orographic rain-shadow on land cells ───────────────────────────
@@ -1263,8 +1382,10 @@ mod tests {
                 far_north_n += 1;
             }
         }
-        assert!(tropical_n > 0 && just_north_n > 0 && far_north_n > 0,
-                "need cells in all three latitude bands");
+        assert!(
+            tropical_n > 0 && just_north_n > 0 && far_north_n > 0,
+            "need cells in all three latitude bands"
+        );
         let t = tropical_mean / tropical_n as f64;
         let j = just_north_mean / just_north_n as f64;
         let f = far_north_mean / far_north_n as f64;
@@ -1292,14 +1413,34 @@ mod tests {
         let h_pass: Vec<u8> = vec![84; n];
         let mut prec_pass = vec![0u8; n];
         // Start at slot 0, stride +1 (east), 5 steps.
-        pass_wind_one(&mut prec_pass, &h_pass, &warm_temp, &spacing,
-                      0, 100.0, Some(2.0), 1, 5, 1.0);
+        pass_wind_one(
+            &mut prec_pass,
+            &h_pass,
+            &warm_temp,
+            &spacing,
+            0,
+            100.0,
+            Some(2.0),
+            1,
+            5,
+            1.0,
+        );
 
         // Blocked: h=86 everywhere. Wind dumps at source and stops.
         let h_block: Vec<u8> = vec![86; n];
         let mut prec_block = vec![0u8; n];
-        pass_wind_one(&mut prec_block, &h_block, &warm_temp, &spacing,
-                      0, 100.0, Some(2.0), 1, 5, 1.0);
+        pass_wind_one(
+            &mut prec_block,
+            &h_block,
+            &warm_temp,
+            &spacing,
+            0,
+            100.0,
+            Some(2.0),
+            1,
+            5,
+            1.0,
+        );
 
         // In the blocked case the first cell receives the full humidity dump
         // (since `is_passable=false` → `precipitation = humidity`), while in
@@ -1316,11 +1457,15 @@ mod tests {
             prec_block[0] >= prec_pass[0],
             "blocked source precip {} should be >= passable source precip {} \
              (wind wall dumps at source)",
-            prec_block[0], prec_pass[0]
+            prec_block[0],
+            prec_pass[0]
         );
         // The passable case should carry moisture to cells beyond the source.
         let pass_carried: u32 = prec_pass[1..].iter().map(|&p| p as u32).sum();
-        assert!(pass_carried > 0, "passable wind should carry moisture past source");
+        assert!(
+            pass_carried > 0,
+            "passable wind should carry moisture past source"
+        );
     }
 
     // ── A5: coastal precipitation branch (sea → land transition) ──────────
@@ -1342,7 +1487,18 @@ mod tests {
         let temp: Vec<i8> = vec![20; n]; // warm, no permafrost gate
         let mut prec = vec![0u8; n];
 
-        pass_wind_one(&mut prec, &h, &temp, &spacing, 0, 100.0, Some(2.0), 1, 5, 1.0);
+        pass_wind_one(
+            &mut prec,
+            &h,
+            &temp,
+            &spacing,
+            0,
+            100.0,
+            Some(2.0),
+            1,
+            5,
+            1.0,
+        );
 
         // Open-water cells 0..2: next cell is also water → open-water branch
         // deposits 5*modifier on the current cell. These should be non-zero.
@@ -1414,8 +1570,12 @@ mod tests {
             let wind_tier = clamp(((lat - 89.0).abs() / 30.0).floor(), 0.0, 5.0) as usize;
             let angle = opts_mean.winds.get(wind_tier).copied().unwrap_or(225.0);
             let flags = wind_directions(angle);
-            if flags.is_north { northerly += 1; }
-            if flags.is_south { southerly += 1; }
+            if flags.is_north {
+                northerly += 1;
+            }
+            if flags.is_south {
+                southerly += 1;
+            }
         }
         assert!(
             northerly > 0 || southerly > 0,
@@ -1475,7 +1635,10 @@ mod tests {
                 let y = mesh.points[i][1];
                 let curve = TempCurve::from_opts(&opts);
                 let expected = temp_at_cell(y, h[i], &opts, &curve, mesh.world_h, &coords);
-                assert_eq!(grid.cells.temp[i], expected, "cell {i} was not recomputed correctly");
+                assert_eq!(
+                    grid.cells.temp[i], expected,
+                    "cell {i} was not recomputed correctly"
+                );
             } else {
                 // Untouched.
                 assert_eq!(grid.cells.temp[i], 99, "cell {i} was wrongly modified");
@@ -1527,7 +1690,10 @@ mod tests {
         // A large raise should produce a *visible* drop unless the cell was
         // already at the i8 floor.
         if before > -120 {
-            assert!(after < before, "raise should produce a visible temp drop: {before} -> {after}");
+            assert!(
+                after < before,
+                "raise should produce a visible temp drop: {before} -> {after}"
+            );
         }
     }
 
@@ -1550,7 +1716,10 @@ mod tests {
         recompute_temp_local_with_coords(&mut grid_a, &cell_ids, &opts, &coords);
         recompute_temp_local_with_coords(&mut grid_b, &cell_ids, &opts, &coords);
 
-        assert_eq!(grid_a.cells.temp, grid_b.cells.temp, "recompute_temp_local not deterministic");
+        assert_eq!(
+            grid_a.cells.temp, grid_b.cells.temp,
+            "recompute_temp_local not deterministic"
+        );
     }
 
     /// Out-of-range cell_ids are silently skipped (no panic). Defense against
@@ -1569,7 +1738,10 @@ mod tests {
         recompute_temp_local_with_coords(&mut grid, &cell_ids, &opts, &coords);
 
         // Cells 0 and 5 were recomputed; no panic.
-        assert!(grid.cells.temp[0] != 0 || grid.cells.temp[5] != 0, "at least one in-range cell should have nonzero temp");
+        assert!(
+            grid.cells.temp[0] != 0 || grid.cells.temp[5] != 0,
+            "at least one in-range cell should have nonzero temp"
+        );
     }
 
     /// The local recompute must derive temp from the **current** `h`, not from

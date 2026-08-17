@@ -97,7 +97,11 @@ fn get_number_in_range(rng: &mut StdRng, s: &str) -> f64 {
         // fractional literal: integer part + 1 w.p. frac (FMG: ~~r + +P(+r-~~r))
         let int_part = n.floor();
         let frac = n - int_part;
-        return if p(rng, frac) { int_part + 1.0 } else { int_part };
+        return if p(rng, frac) {
+            int_part + 1.0
+        } else {
+            int_part
+        };
     }
     let (sign, body): (f64, &str) = if let Some(stripped) = s.strip_prefix('-') {
         (-1.0, stripped)
@@ -285,7 +289,14 @@ pub fn get_line_power(cells: usize) -> f64 {
 /// would round `change` below 1.0 to 0 and stall the cascade after one ring,
 /// which is why the spread must be float-based. Determinism is preserved: all
 /// arithmetic is fixed `f64` with seeded jitter.
-fn add_hill(view: &MeshView, h: &mut [u8], rng: &mut StdRng, start: usize, blob_power: f64, max_cells: usize) {
+fn add_hill(
+    view: &MeshView,
+    h: &mut [u8],
+    rng: &mut StdRng,
+    start: usize,
+    blob_power: f64,
+    max_cells: usize,
+) {
     let n = h.len();
     let mut change = vec![0f64; n];
     let height = lim(get_number_in_range(rng, "85-100"));
@@ -361,15 +372,21 @@ fn add_hill(view: &MeshView, h: &mut [u8], rng: &mut StdRng, start: usize, blob_
 /// trap warned about in `heightmap-generation.md §2` on the decay variable, and
 /// losing the propagated-decay spatial gradient (every cell in a ring got the
 /// same magnitude). See adversarial review C2.
-fn add_pit(view: &MeshView, h: &mut [u8], rng: &mut StdRng, start: usize, blob_power: f64, max_cells: usize) {
+fn add_pit(
+    view: &MeshView,
+    h: &mut [u8],
+    rng: &mut StdRng,
+    start: usize,
+    blob_power: f64,
+    max_cells: usize,
+) {
     let n = h.len();
     // Don't start a pit underwater — climb to a land neighbor. Mirrors add_hill's
     // "avoid starting on an already-too-high cell" but inverted.
     let mut limit = 0;
     let mut s = start;
     while h[s] < SEA_LEVEL && limit < 50 {
-        let neighbors = &view.cells.c
-            [view.cells.i[s] as usize..view.cells.i[s + 1] as usize];
+        let neighbors = &view.cells.c[view.cells.i[s] as usize..view.cells.i[s + 1] as usize];
         if let Some(&next) = neighbors.first() {
             s = next as usize;
         } else {
@@ -425,7 +442,13 @@ fn add_pit(view: &MeshView, h: &mut [u8], rng: &mut StdRng, start: usize, blob_p
 /// Build the main ridge path from `start` to `end` walking the neighbor that
 /// minimizes squared distance to `end`, with `randomness` chance to halve the
 /// distance (FMG `getRange`). `used` prevents revisits.
-pub fn build_range(view: &MeshView, rng: &mut StdRng, start: usize, end: usize, randomness: f64) -> Vec<usize> {
+pub fn build_range(
+    view: &MeshView,
+    rng: &mut StdRng,
+    start: usize,
+    end: usize,
+    randomness: f64,
+) -> Vec<usize> {
     let mut used = vec![false; view.points.len()];
     let mut range = vec![start];
     used[start] = true;
@@ -479,7 +502,10 @@ fn add_ridge(
 ) {
     let n = h.len();
     let mut used = vec![false; n];
-    let mut height = lim(get_number_in_range(rng, if raise { "30-60" } else { "20-30" }));
+    let mut height = lim(get_number_in_range(
+        rng,
+        if raise { "30-60" } else { "20-30" },
+    ));
     let range = build_range(view, rng, start, end, randomness);
     let mut queue: Vec<usize> = range.clone();
     for q in &queue {
@@ -691,7 +717,14 @@ fn parse_template(text: &str) -> Vec<Step> {
 }
 
 /// Run one parsed step against `h`, drawing randomness from `rng`.
-fn run_step(view: &MeshView, h: &mut [u8], rng: &mut StdRng, step: &Step, blob_power: f64, line_power: f64) {
+fn run_step(
+    view: &MeshView,
+    h: &mut [u8],
+    rng: &mut StdRng,
+    step: &Step,
+    blob_power: f64,
+    line_power: f64,
+) {
     // FMG templates use absolute feature counts tuned for a large map. To keep
     // the land fraction in a sane band across cell counts (1k–60k) we scale the
     // number of features with map size and cap each flood's *extent* to a
@@ -762,7 +795,17 @@ fn run_step(view: &MeshView, h: &mut [u8], rng: &mut StdRng, step: &Step, blob_p
                 if start == end {
                     continue;
                 }
-                add_ridge(view, h, rng, start, end, 0.15, line_power, true, ridge_budget);
+                add_ridge(
+                    view,
+                    h,
+                    rng,
+                    start,
+                    end,
+                    0.15,
+                    line_power,
+                    true,
+                    ridge_budget,
+                );
             }
         }
         Tool::Trough => {
@@ -772,7 +815,17 @@ fn run_step(view: &MeshView, h: &mut [u8], rng: &mut StdRng, step: &Step, blob_p
                 if start == end {
                     continue;
                 }
-                add_ridge(view, h, rng, start, end, 0.2, line_power, false, ridge_budget);
+                add_ridge(
+                    view,
+                    h,
+                    rng,
+                    start,
+                    end,
+                    0.2,
+                    line_power,
+                    false,
+                    ridge_budget,
+                );
             }
         }
         Tool::Smooth => {
@@ -792,7 +845,12 @@ fn run_step(view: &MeshView, h: &mut [u8], rng: &mut StdRng, step: &Step, blob_p
 
 /// FMG `addRange`/`addTrough`: pick a random start point in rangeX/rangeY, then
 /// a random end point ~`[W/8, W/3]` (range) / `[W/8, W/2]` (trough) away.
-fn pick_range_endpoints(view: &MeshView, rng: &mut StdRng, range_x: &str, range_y: &str) -> (usize, usize) {
+fn pick_range_endpoints(
+    view: &MeshView,
+    rng: &mut StdRng,
+    range_x: &str,
+    range_y: &str,
+) -> (usize, usize) {
     let w = view.world_w;
     let h = view.world_h;
     let Some(start_x) = point_in_range(rng, range_x, w) else {
@@ -960,7 +1018,10 @@ mod tests {
         let after_max = *h.iter().max().unwrap();
         let after_var = variance(&h);
         assert!(after_max <= before_max);
-        assert!(after_var <= before_var, "smoothing should not increase variance");
+        assert!(
+            after_var <= before_var,
+            "smoothing should not increase variance"
+        );
     }
 
     fn variance(h: &[u8]) -> f64 {
@@ -982,7 +1043,12 @@ mod tests {
         mask(&view, &mut h, 4.0);
         // An edge cell should be lower than the center after masking.
         let edge = find_grid_cell(&view, 2.0, 2.0);
-        assert!(h[edge] <= h[center], "edge {} should be <= center {}", h[edge], h[center]);
+        assert!(
+            h[edge] <= h[center],
+            "edge {} should be <= center {}",
+            h[edge],
+            h[center]
+        );
     }
 
     /// `mask` with `power == 0` is the identity (no-op). Previously the formula
@@ -1025,8 +1091,12 @@ mod tests {
         // Mean of the pit's neighbors should be lower than the untouched mean.
         let lo = view.cells.i[start] as usize;
         let hi = view.cells.i[start + 1] as usize;
-        let neighbors: Vec<u8> = view.cells.c[lo..hi].iter().map(|&c| h[c as usize]).collect();
-        let neighbor_mean = neighbors.iter().map(|&v| v as f64).sum::<f64>() / neighbors.len() as f64;
+        let neighbors: Vec<u8> = view.cells.c[lo..hi]
+            .iter()
+            .map(|&c| h[c as usize])
+            .collect();
+        let neighbor_mean =
+            neighbors.iter().map(|&v| v as f64).sum::<f64>() / neighbors.len() as f64;
         assert!(
             neighbor_mean < 80.0,
             "pit should lower neighbor mean ({} < 80), spread cascade was lost in the old impl",
@@ -1144,7 +1214,10 @@ mod tests {
         assert!(a.is_some() && b.is_some());
         assert_eq!(a, b, "deterministic");
         let v = a.unwrap();
-        assert!((100.0..=900.0).contains(&v), "10-90% of 1000 → [100,900], got {v}");
+        assert!(
+            (100.0..=900.0).contains(&v),
+            "10-90% of 1000 → [100,900], got {v}"
+        );
 
         // Degenerate max <= min → Some(min)
         assert_eq!(point_in_range(&mut rng1, "50-50", len), Some(500.0));
@@ -1197,18 +1270,29 @@ mod tests {
         let tl = find_grid_cell(&view, 0.0, 0.0);
         assert!(tl < n, "tl cell id {tl} out of bounds");
         let [tl_x, tl_y] = view.points[tl];
-        assert!(tl_x < THRESH * sx && tl_y < THRESH * sy, "tl cell at ({tl_x},{tl_y}) should be near (0,0)");
+        assert!(
+            tl_x < THRESH * sx && tl_y < THRESH * sy,
+            "tl cell at ({tl_x},{tl_y}) should be near (0,0)"
+        );
 
         // Bottom-right corner (last slot)
         let br = find_grid_cell(&view, view.world_w - 1.0, view.world_h - 1.0);
         assert!(br < n);
         let [br_x, br_y] = view.points[br];
-        assert!(br_x > view.world_w - THRESH * sx && br_y > view.world_h - THRESH * sy, "br cell at ({br_x},{br_y}) should be near ({},{})", view.world_w, view.world_h);
+        assert!(
+            br_x > view.world_w - THRESH * sx && br_y > view.world_h - THRESH * sy,
+            "br cell at ({br_x},{br_y}) should be near ({},{})",
+            view.world_w,
+            view.world_h
+        );
 
         // Center
         let center = find_grid_cell(&view, view.world_w / 2.0, view.world_h / 2.0);
         let [cx, cy] = view.points[center];
-        assert!((cx - view.world_w / 2.0).abs() < THRESH * sx && (cy - view.world_h / 2.0).abs() < THRESH * sy);
+        assert!(
+            (cx - view.world_w / 2.0).abs() < THRESH * sx
+                && (cy - view.world_h / 2.0).abs() < THRESH * sy
+        );
 
         // OOB negative coordinates clamp to slot 0 (top-left)
         let oob_neg = find_grid_cell(&view, -100.0, -100.0);
@@ -1229,7 +1313,10 @@ mod tests {
         // Query the exact center of cell 100.
         let [cx, cy] = mesh.points[100];
         let picked = pick_cell(&mesh, cx, cy).expect("pick_cell should return Some");
-        assert_eq!(picked, 100, "querying cell 100's center should return cell 100");
+        assert_eq!(
+            picked, 100,
+            "querying cell 100's center should return cell 100"
+        );
     }
 
     /// Step 2.5.4: `pick_cell` picks a cell closer to the query point than
@@ -1246,17 +1333,24 @@ mod tests {
         };
         assert!(!neighbors.is_empty(), "cell 200 should have neighbors");
         // Find the nearest neighbor to cell 200.
-        let nearest_nb = neighbors.iter().copied().min_by_key(|&nb| {
-            let [nx, ny] = mesh.points[nb];
-            ((nx - x0).powi(2) + (ny - y0).powi(2)) as i64
-        }).unwrap();
+        let nearest_nb = neighbors
+            .iter()
+            .copied()
+            .min_by_key(|&nb| {
+                let [nx, ny] = mesh.points[nb];
+                ((nx - x0).powi(2) + (ny - y0).powi(2)) as i64
+            })
+            .unwrap();
         // Query a point 70% of the way from cell 200 toward its nearest neighbor.
         // That should pick the neighbor (it's closer to the midpoint).
         let [nx, ny] = mesh.points[nearest_nb];
         let qx = x0 + 0.7 * (nx - x0);
         let qy = y0 + 0.7 * (ny - y0);
         let picked = pick_cell(&mesh, qx, qy).expect("pick_cell should return Some");
-        assert_eq!(picked, nearest_nb as u32, "query 70% toward nearest neighbor should pick the neighbor");
+        assert_eq!(
+            picked, nearest_nb as u32,
+            "query 70% toward nearest neighbor should pick the neighbor"
+        );
     }
 
     /// `pick_cell` handles OOB coordinates gracefully (returns a
@@ -1284,9 +1378,7 @@ mod tests {
             mesh.points
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, &[px, py])| {
-                    ((px - x).powi(2) + (py - y).powi(2)) as i64
-                })
+                .min_by_key(|(_, &[px, py])| ((px - x).powi(2) + (py - y).powi(2)) as i64)
                 .map(|(i, _)| i as u32)
                 .unwrap()
         };
@@ -1336,7 +1428,11 @@ mod tests {
         let path = build_range(&view, &mut rng, start, end, 0.0); // deterministic
         assert!(!path.is_empty());
         assert_eq!(path[0], start, "path must start at start");
-        assert_eq!(*path.last().unwrap(), end, "path must reach end (with randomness=0)");
+        assert_eq!(
+            *path.last().unwrap(),
+            end,
+            "path must reach end (with randomness=0)"
+        );
         // No duplicates
         let mut seen = std::collections::HashSet::new();
         for &c in &path {
@@ -1353,7 +1449,9 @@ mod tests {
             let dist = dx * dx + dy * dy;
             if dist > prev_dist {
                 // With randomness=0, greedy walk should be monotonic.
-                panic!("distance to end increased at cell {c}: {dist} > {prev_dist} (randomness=0)");
+                panic!(
+                    "distance to end increased at cell {c}: {dist} > {prev_dist} (randomness=0)"
+                );
             }
             prev_dist = dist;
         }
@@ -1378,19 +1476,36 @@ mod tests {
         let mut h = vec![0u8; n];
         let start = 200;
         add_hill(&view, &mut h, &mut rng, start, blob_power, hill_budget);
-        assert!(h[start] > 0, "hill start cell should be > 0, got {}", h[start]);
+        assert!(
+            h[start] > 0,
+            "hill start cell should be > 0, got {}",
+            h[start]
+        );
         // Some neighbors also raised (BFS spread)
         let lo = view.cells.i[start] as usize;
         let hi = view.cells.i[start + 1] as usize;
         let any_neighbor_raised = view.cells.c[lo..hi].iter().any(|&c| h[c as usize] > 0);
-        assert!(any_neighbor_raised, "hill should spread to at least one neighbor");
+        assert!(
+            any_neighbor_raised,
+            "hill should spread to at least one neighbor"
+        );
 
         // add_ridge raise=true (Range) — path cells go up
         let mut rng2 = StdRng::seed_from_u64(7);
         let mut h2 = vec![0u8; n];
         let start2 = 100;
         let end2 = 400;
-        add_ridge(&view, &mut h2, &mut rng2, start2, end2, 0.0, line_power, true, ridge_budget);
+        add_ridge(
+            &view,
+            &mut h2,
+            &mut rng2,
+            start2,
+            end2,
+            0.0,
+            line_power,
+            true,
+            ridge_budget,
+        );
         assert!(h2[start2] > 0, "ridge start should be raised");
         assert!(h2[end2] > 0, "ridge end should be raised");
 
@@ -1398,9 +1513,27 @@ mod tests {
         // but the change is negative so neighbors are lower than untouched)
         let mut rng3 = StdRng::seed_from_u64(8);
         let mut h3 = vec![50u8; n]; // flat at 50
-        add_ridge(&view, &mut h3, &mut rng3, start2, end2, 0.0, line_power, false, ridge_budget);
-        assert!(h3[start2] < 50, "trough start should be lowered from 50, got {}", h3[start2]);
-        assert!(h3[end2] < 50, "trough end should be lowered from 50, got {}", h3[end2]);
+        add_ridge(
+            &view,
+            &mut h3,
+            &mut rng3,
+            start2,
+            end2,
+            0.0,
+            line_power,
+            false,
+            ridge_budget,
+        );
+        assert!(
+            h3[start2] < 50,
+            "trough start should be lowered from 50, got {}",
+            h3[start2]
+        );
+        assert!(
+            h3[end2] < 50,
+            "trough end should be lowered from 50, got {}",
+            h3[end2]
+        );
     }
 
     /// `multiply_land` scales only cells ≥ SEA_LEVEL (land). Water cells
@@ -1410,12 +1543,12 @@ mod tests {
     #[test]
     fn multiply_land_only_affects_land() {
         let mut h = vec![
-            0u8,  // deep water
-            10,   // shallow water
-            20,   // exactly at sea level (land)
-            30,   // land
-            80,   // high land
-            100,  // peak
+            0u8, // deep water
+            10,  // shallow water
+            20,  // exactly at sea level (land)
+            30,  // land
+            80,  // high land
+            100, // peak
         ];
         let original = h.clone();
         multiply_land(&mut h, 2.0);
@@ -1439,10 +1572,10 @@ mod tests {
         // Halve
         let mut h3 = original.clone();
         multiply_land(&mut h3, 0.5);
-        assert_eq!(h3[2], 20);     // sea level unchanged
-        assert_eq!(h3[3], 25);     // (30-20)*0.5 + 20 = 25
-        assert_eq!(h3[4], 50);     // (80-20)*0.5 + 20 = 50
-        assert_eq!(h3[5], 60);     // (100-20)*0.5 + 20 = 60
+        assert_eq!(h3[2], 20); // sea level unchanged
+        assert_eq!(h3[3], 25); // (30-20)*0.5 + 20 = 25
+        assert_eq!(h3[4], 50); // (80-20)*0.5 + 20 = 50
+        assert_eq!(h3[5], 60); // (100-20)*0.5 + 20 = 60
     }
 
     /// `parse_template` + `default_template` produce exactly 8 steps with the
@@ -1452,19 +1585,29 @@ mod tests {
     fn default_template_parses_correctly() {
         let steps = parse_template(default_template());
         assert_eq!(steps.len(), 8);
-        let tools: Vec<_> = steps.iter().map(|s| match s.tool {
-            Tool::Hill => "Hill",
-            Tool::Pit => "Pit",
-            Tool::Range => "Range",
-            Tool::Trough => "Trough",
-            Tool::Smooth => "Smooth",
-            Tool::Mask => "Mask",
-            Tool::Multiply => "Multiply",
-        }).collect();
-        assert_eq!(tools, ["Hill", "Range", "Range", "Range", "Trough", "Pit", "Smooth", "Mask"]);
+        let tools: Vec<_> = steps
+            .iter()
+            .map(|s| match s.tool {
+                Tool::Hill => "Hill",
+                Tool::Pit => "Pit",
+                Tool::Range => "Range",
+                Tool::Trough => "Trough",
+                Tool::Smooth => "Smooth",
+                Tool::Mask => "Mask",
+                Tool::Multiply => "Multiply",
+            })
+            .collect();
+        assert_eq!(
+            tools,
+            ["Hill", "Range", "Range", "Range", "Trough", "Pit", "Smooth", "Mask"]
+        );
         // Count fields present
         for s in &steps {
-            assert!(!s.a2.is_empty(), "count field (a2) missing for {:?}", s.tool);
+            assert!(
+                !s.a2.is_empty(),
+                "count field (a2) missing for {:?}",
+                s.tool
+            );
         }
     }
 
@@ -1520,6 +1663,9 @@ mod tests {
         // Prob 0.5 should produce ~50% true (very loose bound)
         let mut rng5 = StdRng::seed_from_u64(12);
         let trues = (0..1000).filter(|_| p(&mut rng5, 0.5)).count();
-        assert!((400..=600).contains(&trues), "0.5 prob yielded {trues}/1000 true");
+        assert!(
+            (400..=600).contains(&trues),
+            "0.5 prob yielded {trues}/1000 true"
+        );
     }
 }

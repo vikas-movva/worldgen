@@ -146,8 +146,7 @@ fn apply_brush(mesh: &Mesh, h: &mut [u8], op: &EditOp) {
                 let dy = py - cy;
                 let f = falloff(dx * dx + dy * dy, op.radius);
                 let blend = strength * f;
-                h[cid as usize] =
-                    lim(h[cid as usize] as f64 * (1.0 - blend) + target * blend);
+                h[cid as usize] = lim(h[cid as usize] as f64 * (1.0 - blend) + target * blend);
             }
         }
         EditMode::Smooth => {
@@ -408,7 +407,10 @@ mod tests {
         let before = grid.cells.h[center as usize];
         edit_heightmap(&mut grid, &[op]);
         let after = grid.cells.h[center as usize];
-        assert!(after > before, "raise should increase center: {before} -> {after}");
+        assert!(
+            after > before,
+            "raise should increase center: {before} -> {after}"
+        );
         assert!(after <= 100, "raise clamps to 100: {after}");
         // Edge cells (farthest from center) should be raised less than center.
         let [cx, cy] = grid.mesh.points[center as usize];
@@ -452,7 +454,10 @@ mod tests {
         };
         edit_heightmap(&mut grid, &[op]);
         let after = grid.cells.h[center as usize];
-        assert!(after < before, "lower should decrease center: {before} -> {after}");
+        assert!(
+            after < before,
+            "lower should decrease center: {before} -> {after}"
+        );
         // Extreme lower should clamp to 0.
         let mut grid2 = test_grid(2000, 42);
         let op2 = EditOp {
@@ -511,7 +516,10 @@ mod tests {
         };
         edit_heightmap(&mut grid, &[op]);
         // After full-strength flatten, center stays 80; nearby cells move toward 80.
-        assert_eq!(grid.cells.h[center as usize], 80, "flatten center unchanged");
+        assert_eq!(
+            grid.cells.h[center as usize], 80,
+            "flatten center unchanged"
+        );
         // At least one neighbor should have moved toward 80 (from 50).
         let lo = grid.mesh.cells.i[center as usize] as usize;
         let hi = grid.mesh.cells.i[center as usize + 1] as usize;
@@ -651,7 +659,10 @@ mod tests {
         };
         edit_heightmap(&mut grid, std::slice::from_ref(&op));
         let after = grid.cells.h[center as usize];
-        assert!(after > before, "range should raise start: {before} -> {after}");
+        assert!(
+            after > before,
+            "range should raise start: {before} -> {after}"
+        );
         // Determinism: same grid + same op → byte-identical h.
         let mut grid2 = test_grid(2000, 42);
         edit_heightmap(&mut grid2, &[op]);
@@ -680,7 +691,10 @@ mod tests {
         };
         edit_heightmap(&mut grid, std::slice::from_ref(&op));
         let after = grid.cells.h[center as usize];
-        assert!(after < before, "trough should lower start: {before} -> {after}");
+        assert!(
+            after < before,
+            "trough should lower start: {before} -> {after}"
+        );
         // Determinism.
         let mut grid2 = test_grid(2000, 42);
         edit_heightmap(&mut grid2, &[op]);
@@ -706,8 +720,7 @@ mod tests {
         edit_heightmap(&mut grid, &[op]);
         for &cid in &cells {
             assert_eq!(
-                grid.cells.h[cid as usize],
-                SEA_LEVEL,
+                grid.cells.h[cid as usize], SEA_LEVEL,
                 "strait full strength should set h to sea level"
             );
         }
@@ -738,9 +751,9 @@ mod tests {
         // Center (nx=0, ny=0) → dist=1.0 → masked = 100 * 1.0 = 100 → no change.
         assert_eq!(center_h, 100, "mask center should be unchanged (dist=1.0)");
         // At least one edge cell should be lower than center.
-        let any_lower = cells.iter().any(|&cid| {
-            cid != center && grid.cells.h[cid as usize] < center_h
-        });
+        let any_lower = cells
+            .iter()
+            .any(|&cid| cid != center && grid.cells.h[cid as usize] < center_h);
         assert!(any_lower, "mask should lower at least one edge cell");
         for &h in &grid.cells.h {
             assert!(h <= 100, "mask h out of bounds: {h}");
@@ -849,9 +862,6 @@ mod tests {
             return 0.0;
         }
         let mean = h.iter().map(|&x| x as f64).sum::<f64>() / h.len() as f64;
-        h.iter()
-            .map(|&x| (x as f64 - mean).powi(2))
-            .sum::<f64>()
-            / h.len() as f64
+        h.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / h.len() as f64
     }
 }

@@ -214,9 +214,10 @@ type WorkerRequest =
 		cells_state: Int32Array;
 		cells_culture: Int32Array;
 		cells_religion: Int32Array;
-		cells_burg: Int16Array;
-		cells_h: Uint8Array;
-		mesh: unknown;          // serialized Mesh (serde-wasm-bindgen) for Delaunay neighbors
+						cells_burg: Int16Array;
+						cells_h: Uint8Array;
+						cells_province: Int32Array;
+						mesh: unknown;          // serialized Mesh (serde-wasm-bindgen) for Delaunay neighbors
 		seed: number;          // u64 as JS number (safe for ≤ 2^53)
 		era_start: number;     // i32
 		era_end: number;       // i32
@@ -833,6 +834,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				req.cells_religion,
 				req.cells_burg,
 				req.cells_h,
+				req.cells_province,
 				req.mesh,
 				BigInt(req.seed),
 				params,

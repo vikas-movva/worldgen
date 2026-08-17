@@ -215,13 +215,14 @@ export function generate_states(grid_js, seed, count) {
  * @param {Int32Array} cells_religion
  * @param {Int16Array} cells_burg
  * @param {Uint8Array} cells_h
+ * @param {Int32Array} cells_province
  * @param {any} mesh_js
  * @param {bigint} seed
  * @param {any} params_js
  * @returns {any}
  */
-export function generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, mesh_js, seed, params_js) {
-    const ret = wasm.generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, mesh_js, seed, params_js);
+export function generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, cells_province, mesh_js, seed, params_js) {
+    const ret = wasm.generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, cells_province, mesh_js, seed, params_js);
     return ret;
 }
 

@@ -1,13 +1,13 @@
 //! Phase 4 Step 4.2 — `Schism` event module.
 //!
 //! A parent religion splits into a child denomination. Probability is
-//! `ctx.params.schism_prob` per parent religion per year.
+//! `ctx.timeline.params.schism_prob` per parent religion per year.
 //!
 //! Extracted from the monolithic `event_engine.rs` (refactor §P4.2-modular).
 
+use crate::entities::Religion;
 use crate::event_engine::context::GenContext;
 use crate::event_engine::EventModule;
-use crate::entities::Religion;
 use crate::timeline::{EntityType, EventKind, EventPayload, SchismPayload};
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -23,26 +23,37 @@ impl EventModule for SchismModule {
     fn run(&self, ctx: &mut GenContext, rng: &mut StdRng, year: i32) {
         // Collect parent religion ids + their data (owned, no borrow on ctx).
         let parents: Vec<(u32, String, u32, u8, String, f64)> = ctx
+            .world
             .pack
             .religions
             .iter()
             .filter(|r| r.parent.is_none() && r.followers > 1000.0)
-            .map(|r| (
-                r.id,
-                r.name.clone(),
-                r.center_cell,
-                r.type_code,
-                r.expansion_mode.clone(),
-                r.followers,
-            ))
+            .map(|r| {
+                (
+                    r.id,
+                    r.name.clone(),
+                    r.center_cell,
+                    r.type_code,
+                    r.expansion_mode.clone(),
+                    r.followers,
+                )
+            })
             .collect();
 
-        for (parent_id, parent_name, parent_center, parent_type_code, parent_mode, parent_followers) in parents {
-            if !rng.gen_bool(ctx.params.schism_prob) {
+        for (
+            parent_id,
+            parent_name,
+            parent_center,
+            parent_type_code,
+            parent_mode,
+            parent_followers,
+        ) in parents
+        {
+            if !rng.gen_bool(ctx.timeline.params.schism_prob) {
                 continue;
             }
 
-            let fraction = ctx.params.schism_fraction * rng.gen_range(0.5..=1.0);
+            let fraction = ctx.timeline.params.schism_fraction * rng.gen_range(0.5..=1.0);
             let child_id = ctx.next_religion_id();
 
             // Reassign followers from parent to child.
@@ -63,7 +74,7 @@ impl EventModule for SchismModule {
                 dissolved_year: None,
             };
 
-            ctx.pack.religions.push(child);
+            ctx.world.pack.religions.push(child);
 
             ctx.push_event(
                 year,

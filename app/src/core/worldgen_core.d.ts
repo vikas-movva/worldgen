@@ -135,7 +135,7 @@ export function generate_states(grid_js: any, seed: number, count: number): any;
  * Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
  * cells_burg, cells_h, mesh, seed, params)` to JS.
  */
-export function generate_timeline(pack_js: any, cells_state: Int32Array, cells_culture: Int32Array, cells_religion: Int32Array, cells_burg: Int16Array, cells_h: Uint8Array, mesh_js: any, seed: bigint, params_js: any): any;
+export function generate_timeline(pack_js: any, cells_state: Int32Array, cells_culture: Int32Array, cells_religion: Int32Array, cells_burg: Int16Array, cells_h: Uint8Array, cells_province: Int32Array, mesh_js: any, seed: bigint, params_js: any): any;
 
 /**
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
@@ -348,7 +348,7 @@ export interface InitOutput {
     readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_states: (a: any, b: number, c: number) => any;
-    readonly generate_timeline: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: bigint, i: any) => any;
+    readonly generate_timeline: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: any, i: bigint, j: any) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly get_drainage_geometry_h: () => any;
     readonly has_grid_h: () => number;

@@ -439,35 +439,36 @@ fn poisson_disk_sample(n: usize, rng: &mut StdRng) -> Vec<Point2<f64>> {
 
     // Helper: insert a point into the grid if it satisfies the minimum
     // distance to all existing points (checked against the 3×3 neighbourhood).
-    let insert = |p: Point2<f64>, grid: &mut Vec<Vec<usize>>, points: &mut Vec<Point2<f64>>| -> bool {
-        let col = (p.x / cell_size) as usize;
-        let row = (p.y / cell_size) as usize;
-        let col = col.min(cols - 1);
-        let row = row.min(rows - 1);
-        // Check 3×3 neighbourhood.
-        for dcol in 0..=2 {
-            for drow in 0..=2 {
-                let nc = col as isize + dcol as isize - 1;
-                let nr = row as isize + drow as isize - 1;
-                if nc < 0 || nr < 0 || nc >= cols as isize || nr >= rows as isize {
-                    continue;
-                }
-                let idx = nr as usize * cols + nc as usize;
-                for &pi in &grid[idx] {
-                    let dp = points[pi];
-                    let dx = p.x - dp.x;
-                    let dy = p.y - dp.y;
-                    if dx * dx + dy * dy < r_min * r_min {
-                        return false;
+    let insert =
+        |p: Point2<f64>, grid: &mut Vec<Vec<usize>>, points: &mut Vec<Point2<f64>>| -> bool {
+            let col = (p.x / cell_size) as usize;
+            let row = (p.y / cell_size) as usize;
+            let col = col.min(cols - 1);
+            let row = row.min(rows - 1);
+            // Check 3×3 neighbourhood.
+            for dcol in 0..=2 {
+                for drow in 0..=2 {
+                    let nc = col as isize + dcol as isize - 1;
+                    let nr = row as isize + drow as isize - 1;
+                    if nc < 0 || nr < 0 || nc >= cols as isize || nr >= rows as isize {
+                        continue;
+                    }
+                    let idx = nr as usize * cols + nc as usize;
+                    for &pi in &grid[idx] {
+                        let dp = points[pi];
+                        let dx = p.x - dp.x;
+                        let dy = p.y - dp.y;
+                        if dx * dx + dy * dy < r_min * r_min {
+                            return false;
+                        }
                     }
                 }
             }
-        }
-        let id = points.len();
-        points.push(p);
-        grid[row * cols + col].push(id);
-        true
-    };
+            let id = points.len();
+            points.push(p);
+            grid[row * cols + col].push(id);
+            true
+        };
 
     // Seed: a random point in the world rectangle.
     let sx = rng.gen_range(0.0..WORLD_W);
@@ -625,10 +626,7 @@ fn lloyd_relax(points: &[Point2<f64>], step: f64, _rng: &mut StdRng) -> Vec<Poin
                 cy /= 6.0 * area;
                 let nx = p.x + (cx - p.x) * step;
                 let ny = p.y + (cy - p.y) * step;
-                new_points.push(Point2::new(
-                    nx.clamp(0.0, WORLD_W),
-                    ny.clamp(0.0, WORLD_H),
-                ));
+                new_points.push(Point2::new(nx.clamp(0.0, WORLD_W), ny.clamp(0.0, WORLD_H)));
             } else {
                 new_points.push(p);
             }
@@ -736,10 +734,7 @@ fn clamp_to_world(cell_pos: Point2<f64>, dir: Point2<f64>) -> [f64; 2] {
     let x = px + best_t * dx;
     let y = py + best_t * dy;
     // Clamp defensively in case of FP slop right at the boundary.
-    [
-        x.clamp(0.0, WORLD_W),
-        y.clamp(0.0, WORLD_H),
-    ]
+    [x.clamp(0.0, WORLD_W), y.clamp(0.0, WORLD_H)]
 }
 
 /// `#[wasm_bindgen]` entry point. Serializes the `Mesh` to a `JsValue` via
@@ -804,7 +799,11 @@ mod tests {
         let mesh = build(1000, 42);
         let n = mesh.points.len();
         assert_eq!(mesh.cells.i.len(), n + 1, "i must be length N+1");
-        assert_eq!(mesh.cells.v.len(), mesh.cells.c.len(), "v and c same length");
+        assert_eq!(
+            mesh.cells.v.len(),
+            mesh.cells.c.len(),
+            "v and c same length"
+        );
         assert_eq!(
             *mesh.cells.i.last().unwrap() as usize,
             mesh.cells.v.len(),
@@ -826,7 +825,10 @@ mod tests {
         // Count border cells; should be at least 3 (any convex hull has ≥3
         // vertices), and at most n.
         let border_count = mesh.cells.b.iter().filter(|&&b| b == 1).count();
-        assert!(border_count >= 3, "need ≥3 border cells, got {border_count}");
+        assert!(
+            border_count >= 3,
+            "need ≥3 border cells, got {border_count}"
+        );
         assert!(border_count <= n, "more border cells than cells");
         // Sanity: every cell's vertex ids in-bounds of v_positions.
         for cell in 0..n {
@@ -855,7 +857,11 @@ mod tests {
         assert_eq!(a.cells.b, b.cells.b, "cells.b differ");
         // Vertex positions are floats; compare exact bits (determinism means
         // bit-identical, not just "close enough").
-        assert_eq!(a.vertices.p.len(), b.vertices.p.len(), "vertex count differs");
+        assert_eq!(
+            a.vertices.p.len(),
+            b.vertices.p.len(),
+            "vertex count differs"
+        );
         for (pa, pb) in a.vertices.p.iter().zip(b.vertices.p.iter()) {
             assert_eq!(pa[0].to_bits(), pb[0].to_bits(), "vertex x bits differ");
             assert_eq!(pa[1].to_bits(), pb[1].to_bits(), "vertex y bits differ");
@@ -880,8 +886,15 @@ mod tests {
         let mesh = build(1000, 42);
         // Actual cell count = i.len() - 1 (CSR offset array length N+1)
         let actual_cells = mesh.cells.i.len() - 1;
-        assert_eq!(mesh.points.len(), actual_cells, "points must match actual cell count");
-        assert_eq!(actual_cells, 1000, "should produce exactly 1000 cells after dedup");
+        assert_eq!(
+            mesh.points.len(),
+            actual_cells,
+            "points must match actual cell count"
+        );
+        assert_eq!(
+            actual_cells, 1000,
+            "should produce exactly 1000 cells after dedup"
+        );
     }
 
     /// All actual cell positions fall within the world rectangle.
@@ -916,7 +929,10 @@ mod tests {
         for &cell_id in &a.cells.spacing {
             assert!((cell_id as usize) < n, "spacing cell id {cell_id} >= {n}");
         }
-        assert_eq!(a.cells.spacing, b.cells.spacing, "spacing must be deterministic");
+        assert_eq!(
+            a.cells.spacing, b.cells.spacing,
+            "spacing must be deterministic"
+        );
         assert_eq!(a.cells.cells_x, b.cells.cells_x);
         assert_eq!(a.cells.cells_y, b.cells.cells_y);
     }
@@ -971,7 +987,10 @@ mod tests {
         assert!((y - 4000.0).abs() < 1e-9, "y unchanged, got {y}");
         // Ray pointing east (dx>0) → hits x=WORLD_W.
         let [x, y] = clamp_to_world(p, Point2::new(1.0, 0.0));
-        assert!((x - WORLD_W).abs() < 1e-9, "east ray should hit x=WORLD_W, got {x}");
+        assert!(
+            (x - WORLD_W).abs() < 1e-9,
+            "east ray should hit x=WORLD_W, got {x}"
+        );
         assert!((y - 4000.0).abs() < 1e-9);
         // Ray pointing north (dy<0) → hits y=0.
         let [x, y] = clamp_to_world(p, Point2::new(0.0, -1.0));
@@ -980,7 +999,10 @@ mod tests {
         // Ray pointing south (dy>0) → hits y=WORLD_H.
         let [x, y] = clamp_to_world(p, Point2::new(0.0, 1.0));
         assert!((x - 5000.0).abs() < 1e-9);
-        assert!((y - WORLD_H).abs() < 1e-9, "south ray should hit y=WORLD_H, got {y}");
+        assert!(
+            (y - WORLD_H).abs() < 1e-9,
+            "south ray should hit y=WORLD_H, got {y}"
+        );
     }
 
     /// A diagonal ray hits whichever side is nearer in terms of the parameter
@@ -994,8 +1016,14 @@ mod tests {
         let [x, y] = clamp_to_world(p, Point2::new(1.0, 1.0));
         // East wall is far (9900 units); south wall is far (4000 units) but dy
         // and dx are both 1.0 so east (t=9900) vs south (t=4000): south wins.
-        assert!((y - WORLD_H).abs() < 1e-9, "diagonal should hit south wall first, got y={y}");
-        assert!((x - 4100.0).abs() < 1e-9, "x = 100 + 4000*1 = 4100, got {x}");
+        assert!(
+            (y - WORLD_H).abs() < 1e-9,
+            "diagonal should hit south wall first, got y={y}"
+        );
+        assert!(
+            (x - 4100.0).abs() < 1e-9,
+            "x = 100 + 4000*1 = 4100, got {x}"
+        );
         // Negative-x boundary must not be selected when dx>0 (the `dx < 0.0`
         // guard), and vice versa.
         assert!((0.0..=WORLD_W).contains(&x));
@@ -1056,8 +1084,14 @@ mod tests {
         // NOT left as -1/coerced-to-0-by-default and NOT pointing at an
         // arbitrary cell. cell 0 is in slot 2, so slots 0,1,2 should all
         // resolve to cell 0; slot 3 resolves to cell 1.
-        assert_eq!(spacing[0], 0, "leading empty slot 0 should back-fill to cell 0");
-        assert_eq!(spacing[1], 0, "leading empty slot 1 should back-fill to cell 0");
+        assert_eq!(
+            spacing[0], 0,
+            "leading empty slot 0 should back-fill to cell 0"
+        );
+        assert_eq!(
+            spacing[1], 0,
+            "leading empty slot 1 should back-fill to cell 0"
+        );
         assert_eq!(spacing[2], 0, "slot 2 holds cell 0");
         assert_eq!(spacing[3], 1, "slot 3 holds cell 1");
     }
@@ -1083,10 +1117,7 @@ mod tests {
             // they have equal total length from csr_well_formed. Here we
             // verify the per-cell counts agree with the i-offset, i.e. no
             // off-by-one in the offset pushes.
-            assert_eq!(
-                len, hi - lo,
-                "per-cell length self-consistent (sanity)"
-            );
+            assert_eq!(len, hi - lo, "per-cell length self-consistent (sanity)");
             assert!(len >= 3, "cell {cell} has {len} verts/neighbors (need ≥3)");
         }
         // The 1:1 vertex/neighbor relationship is what makes a single offset
@@ -1127,7 +1158,10 @@ mod tests {
                     || y.abs() < EPS
                     || (y - WORLD_H).abs() < EPS
             });
-            assert!(touches_edge, "border cell {cell} has no vertex on the world boundary");
+            assert!(
+                touches_edge,
+                "border cell {cell} has no vertex on the world boundary"
+            );
         }
         assert!(any_border, "expected at least one border cell at N=1000");
     }
@@ -1157,7 +1191,10 @@ mod tests {
             }
         }
         let border_count = mesh.cells.b.iter().filter(|&&b| b == 1).count();
-        assert!(border_count >= 3, "need ≥3 border cells, got {border_count}");
+        assert!(
+            border_count >= 3,
+            "need ≥3 border cells, got {border_count}"
+        );
     }
 
     /// Determinism must hold for more than one seed. The existing
@@ -1176,11 +1213,26 @@ mod tests {
             assert_eq!(a.cells.c, b.cells.c, "seed {seed}: cells.c differ");
             assert_eq!(a.cells.i, b.cells.i, "seed {seed}: cells.i differ");
             assert_eq!(a.cells.b, b.cells.b, "seed {seed}: cells.b differ");
-            assert_eq!(a.cells.spacing, b.cells.spacing, "seed {seed}: spacing differs");
-            assert_eq!(a.vertices.p.len(), b.vertices.p.len(), "seed {seed}: vertex count differs");
+            assert_eq!(
+                a.cells.spacing, b.cells.spacing,
+                "seed {seed}: spacing differs"
+            );
+            assert_eq!(
+                a.vertices.p.len(),
+                b.vertices.p.len(),
+                "seed {seed}: vertex count differs"
+            );
             for (pa, pb) in a.vertices.p.iter().zip(b.vertices.p.iter()) {
-                assert_eq!(pa[0].to_bits(), pb[0].to_bits(), "seed {seed}: vertex x bits differ");
-                assert_eq!(pa[1].to_bits(), pb[1].to_bits(), "seed {seed}: vertex y bits differ");
+                assert_eq!(
+                    pa[0].to_bits(),
+                    pb[0].to_bits(),
+                    "seed {seed}: vertex x bits differ"
+                );
+                assert_eq!(
+                    pa[1].to_bits(),
+                    pb[1].to_bits(),
+                    "seed {seed}: vertex y bits differ"
+                );
             }
         }
     }
@@ -1216,10 +1268,7 @@ mod tests {
         for &[x, y] in &mesh.points {
             // Quantize to 1e-9 so that FP-equal-but-not-bit-equal points (which
             // would indicate a dedup miss) still collide in the set.
-            let key = (
-                (x * 1e9).round() as i64,
-                (y * 1e9).round() as i64,
-            );
+            let key = ((x * 1e9).round() as i64, (y * 1e9).round() as i64);
             assert!(seen.insert(key), "duplicate cell point at ({x},{y})");
         }
     }
