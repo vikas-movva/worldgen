@@ -531,11 +531,20 @@ fn apply_event(world: &mut WorldAt, ev: &Event) {
                 _ => {}
             }
         }
-        EventKind::Succession | EventKind::CivilWar | EventKind::War | EventKind::Treaty |
+        EventKind::Succession | EventKind::CivilWar | EventKind::Treaty |
         EventKind::Battle => {
             // Succession: heir inherits (no cell change — the state persists).
-            // CivilWar / War / Treaty / Battle: modelled via Conquer events
+            // CivilWar / Treaty / Battle: modelled via Conquer events
             // that carry actual cell transfers, so this is a data-model no-op.
+        }
+        EventKind::War => {
+            // War: the attacker wins and claims `conquered_cells` from the
+            // outcome payload. Apply each cell flip to cells_state.
+            if let EventPayload::War { outcome, .. } = &ev.payload {
+                for &cell in &outcome.conquered_cells {
+                    set_cell(&mut world.cells_state, cell, ev.entity_id);
+                }
+            }
         }
     }
 }
@@ -870,5 +879,51 @@ mod tests {
         let w_at_disband = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 50);
         assert_eq!(w_at_disband.pack.armies.len(), 1);
         assert_eq!(w_at_disband.pack.armies[0].dissolved_year, Some(40));
+    }
+
+    /// A `War` event with `conquered_cells` in the outcome must flip those
+    /// cells to the attacker's ownership in the projected WorldAt.
+    #[test]
+    fn war_event_conquers_cells_in_projection() {
+        let pack = sample_pack_one_state();
+        // cell 3 and 4 start owned by state 2 (opponent), rest by state 1.
+        let cs = vec![1i32, 1, 1, 2, 2];
+        let cc = vec![1i32, 1, 1, 1, 1];
+        let cr = vec![1i32; 5];
+        let cb = vec![0i16; 5];
+
+        // War event: state 1 attacks state 2 and conquers cells 3,4.
+        let timeline: Timeline = vec![Event {
+            id: 1, year: 10, entity_id: 1,
+            entity_type: EntityType::State, kind: EventKind::War,
+            payload: EventPayload::War {
+                opponent_state_id: 2,
+                outcome: WarOutcome {
+                    result: 0,
+                    attrition: 0.3,
+                    conquered_cells: vec![3, 4],
+                },
+            },
+            narrative: None,
+        }];
+
+        // Before the war: cells 3,4 are owned by state 2.
+        let w0 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 5);
+        assert_eq!(w0.cells_state[3], 2, "cell 3 should be state 2 before war");
+        assert_eq!(w0.cells_state[4], 2, "cell 4 should be state 2 before war");
+
+        // After the war: cells 3,4 flip to state 1 (the attacker).
+        let w1 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 15);
+        assert_eq!(w1.cells_state[3], 1, "cell 3 should flip to state 1 after war");
+        assert_eq!(w1.cells_state[4], 1, "cell 4 should flip to state 1 after war");
+        // Cells 0,1,2 stay with state 1.
+        assert_eq!(w1.cells_state[0], 1);
+        assert_eq!(w1.cells_state[1], 1);
+        assert_eq!(w1.cells_state[2], 1);
+
+        // Delta projection must match full projection.
+        let mut w_delta = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 10);
+        project_delta(&mut w_delta, &timeline, 10, 15);
+        assert_eq!(w_delta.cells_state, w1.cells_state, "delta projection must match full");
     }
 }
