@@ -119,15 +119,41 @@ pub struct Vertices {
 pub fn build(cell_count: u32, seed: u32) -> Mesh {
     let n = cell_count.clamp(4, 1_000_000) as usize;
 
-    // 1. Poisson-disk sampling + Lloyd relaxation → well-spaced seed points.
+    // 1. Seed points: Poisson-disk + Lloyd relaxation → well-spaced seed points.
     //    Uniform random sampling produces clustered points that yield skinny
     //    Voronoi cells (bad for downstream generators and rendering). Poisson
     //    disk enforces a minimum separation (≈ r_min = world_diagonal / √N),
     //    and 3-5 Lloyd iterations move each point to its cell centroid, giving
     //    a blue-noise, centroidal-Voronoi-tessellation layout with regular,
     //    roughly hexagonal cells.
+    //
+    //    At very small N (≤ 12) the Poisson-disk minimum separation exceeds the
+    //    world dimensions, so Bridson's algorithm saturates early and the
+    //    remaining uniform-random fill lands near-collinear triples. spade then
+    //    yields Voronoi cells with k=2 edges, violating the ≥3-vertex
+    //    invariant every downstream consumer relies on (this broke
+    //    `minimum_cell_count_does_not_panic` in the Poisson-disk commit). For
+    //    N ≤ 12 we fall back to the pre-Poisson uniform-random sampler, which
+    //    jittered into general position produces valid cells at these counts.
     let mut rng = StdRng::seed_from_u64(seed as u64);
-    let mut points_in: Vec<Point2<f64>> = poisson_disk_sample(n, &mut rng);
+    let mut points_in: Vec<Point2<f64>> = if n <= 12 {
+        // NOTE: we skip the Lloyd relaxation here. At N ≤ 12 the relaxation
+        // centroid step collapses near-collinear triples into coincident
+        // points (the 4-point seed=42 case produced two degenerate cells with
+        // k=2 after 3 Lloyd passes). Uniform random + jitter already lands in
+        // general position with probability 1; Lloyd only makes it worse at
+        // this scale. For N > 12 the Poisson-disk branch keeps Lloyd (it's the
+        // whole point of blue-noise spacing there).
+        let mut pts = Vec::with_capacity(n);
+        for _ in 0..n {
+            let x = rng.gen_range(0.0..WORLD_W);
+            let y = rng.gen_range(0.0..WORLD_H);
+            pts.push(Point2::new(x, y));
+        }
+        pts
+    } else {
+        poisson_disk_sample(n, &mut rng)
+    };
     // Clamp to a tiny margin inside the world edge so that the small_jitter
     // applied later (±5e-6) cannot push points outside [0, WORLD_W]×[0, WORLD_H].
     let margin = 1e-5;
@@ -135,12 +161,16 @@ pub fn build(cell_count: u32, seed: u32) -> Mesh {
         p.x = p.x.clamp(margin, WORLD_W - margin);
         p.y = p.y.clamp(margin, WORLD_H - margin);
     }
-    for _ in 0..3 {
-        points_in = lloyd_relax(&points_in, 0.5, &mut rng);
-        // Re-clamp after each relaxation step (Lloyd can drift points out).
-        for p in &mut points_in {
-            p.x = p.x.clamp(margin, WORLD_W - margin);
-            p.y = p.y.clamp(margin, WORLD_H - margin);
+    // Lloyd relaxation only runs on the Poisson-disk branch (N > 12); see the
+    // N ≤ 12 fallback above for the rationale.
+    if n > 12 {
+        for _ in 0..3 {
+            points_in = lloyd_relax(&points_in, 0.5, &mut rng);
+            // Re-clamp after each relaxation step (Lloyd can drift points out).
+            for p in &mut points_in {
+                p.x = p.x.clamp(margin, WORLD_W - margin);
+                p.y = p.y.clamp(margin, WORLD_H - margin);
+            }
         }
     }
 

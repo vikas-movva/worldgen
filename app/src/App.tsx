@@ -9,8 +9,8 @@ import type { WorldMap } from "./render/layers";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
 import { useWorldgenStore } from "./state/worldgenStore";
 import { CellInspector } from "./ui/CellInspector";
-import { HeightmapEditor } from "./ui/HeightmapEditor";
 import { EntityPanel } from "./ui/EntityPanel";
+import { HeightmapEditor } from "./ui/HeightmapEditor";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -227,7 +227,12 @@ function App() {
 				}}
 			>
 				<h1 style={{ margin: 0, fontSize: "1.1rem", fontWeight: 600 }}>
-					<a href="https://github.com/vikas-movva/worldgen" target="_blank" rel="noopener noreferrer" style={{ color: "inherit", textDecoration: "none" }}>
+					<a
+						href="https://github.com/vikas-movva/worldgen"
+						target="_blank"
+						rel="noopener noreferrer"
+						style={{ color: "inherit", textDecoration: "none" }}
+					>
 						Worldgen
 					</a>
 				</h1>
@@ -377,7 +382,7 @@ function App() {
 						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
 						<CellInspector worldMap={worldMap} />
 						<EntityPanel worldMap={worldMap} />
-						</div>
+					</div>
 				)}
 			</main>
 			<footer

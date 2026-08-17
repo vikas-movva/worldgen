@@ -169,7 +169,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					const pack = s.statesResult.pack;
 					const idx = id - 1; // ids are 1-based
 					if (idx < 0 || idx >= pack.states.length) return {};
-					const updated: typeof pack.states[number] = {
+					const updated: (typeof pack.states)[number] = {
 						...pack.states[idx],
 						...(patch.color !== undefined ? { color: patch.color } : {}),
 						...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -177,7 +177,10 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					const newStates = pack.states.slice();
 					newStates[idx] = updated;
 					return {
-						statesResult: { ...s.statesResult, pack: { ...pack, states: newStates } },
+						statesResult: {
+							...s.statesResult,
+							pack: { ...pack, states: newStates },
+						},
 					};
 				}
 				if (kind === "province") {
@@ -185,7 +188,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					const pack = s.statesResult.pack;
 					const idx = id - 1; // ids are 1-based
 					if (idx < 0 || idx >= pack.provinces.length) return {};
-					const updated: typeof pack.provinces[number] = {
+					const updated: (typeof pack.provinces)[number] = {
 						...pack.provinces[idx],
 						...(patch.color !== undefined ? { color: patch.color } : {}),
 						...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -203,20 +206,22 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					if (!s.culturesResult) return {};
 					const idx = id; // ids are 0-based
 					if (idx < 0 || idx >= s.culturesResult.cultures.length) return {};
-					const updated: typeof s.culturesResult.cultures[number] = {
+					const updated: (typeof s.culturesResult.cultures)[number] = {
 						...s.culturesResult.cultures[idx],
 						...(patch.color !== undefined ? { color: patch.color } : {}),
 						...(patch.name !== undefined ? { name: patch.name } : {}),
 					};
 					const newCultures = s.culturesResult.cultures.slice();
 					newCultures[idx] = updated;
-					return { culturesResult: { ...s.culturesResult, cultures: newCultures } };
+					return {
+						culturesResult: { ...s.culturesResult, cultures: newCultures },
+					};
 				}
 				if (kind === "religion") {
 					if (!s.culturesResult) return {};
 					const idx = id; // ids are 0-based
 					if (idx < 0 || idx >= s.culturesResult.religions.length) return {};
-					const updated: typeof s.culturesResult.religions[number] = {
+					const updated: (typeof s.culturesResult.religions)[number] = {
 						...s.culturesResult.religions[idx],
 						...(patch.color !== undefined ? { color: patch.color } : {}),
 						...(patch.name !== undefined ? { name: patch.name } : {}),

@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-mod mesh;
+pub mod mesh;
 mod heightmap;
 mod heightmap_edit;
 mod grid;

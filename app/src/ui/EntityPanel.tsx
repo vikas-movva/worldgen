@@ -18,10 +18,9 @@
 // colour texture via MapCanvas's entity-subscription).
 
 import { useMemo } from "react";
+import type { EntityKind, WorldMap } from "../render/layers";
 import { rgb } from "../render/palette";
 import { useWorldgenStore } from "../state/worldgenStore";
-import type { EntityKind } from "../render/layers";
-import type { WorldMap } from "../render/layers";
 
 type EntityPanelProps = {
 	/** Reserved for future map-coupled affordances. The panel drives the map
@@ -52,7 +51,9 @@ const LAYER_LABEL: Record<EntityKind, string> = {
 	religion: "Religions",
 };
 
-export function EntityPanel({ worldMap: _worldMap }: EntityPanelProps): React.ReactElement | null {
+export function EntityPanel({
+	worldMap: _worldMap,
+}: EntityPanelProps): React.ReactElement | null {
 	const grid = useWorldgenStore((s) => s.grid);
 	const layerEnabled = useWorldgenStore((s) => s.layerEnabled);
 	const statesResult = useWorldgenStore((s) => s.statesResult);
@@ -119,8 +120,8 @@ export function EntityPanel({ worldMap: _worldMap }: EntityPanelProps): React.Re
 					color: "#6e7681",
 				}}
 			>
-				Enable a States / Provinces / Cultures / Religions layer to
-				view its legend.
+				Enable a States / Provinces / Cultures / Religions layer to view its
+				legend.
 			</div>
 		);
 	}
@@ -169,7 +170,9 @@ export function EntityPanel({ worldMap: _worldMap }: EntityPanelProps): React.Re
 							key={item.id}
 							data-testid={`entity-row-${activeKind}-${item.id}`}
 							onClick={() => {
-								const sel = isSelected ? null : { kind: activeKind, id: item.id };
+								const sel = isSelected
+									? null
+									: { kind: activeKind, id: item.id };
 								selectEntity(sel);
 							}}
 							style={{

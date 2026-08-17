@@ -423,41 +423,55 @@ export class WorldMap {
 	 * scale-compensation pattern as `drawSelection`).
 	 */
 	setSelectedEntity(grid: Grid, cellId: number): void {
-	if (cellId < 0 || cellId >= grid.mesh.points.length) {
-		this.selectedEntity = null;
-		this.setSelected(grid, -1);
-		return;
-	}
-	const cells = grid.cells;
-	// Priority: most-specific visible layer wins. We detect the owning
-	// entity by reading BOTH the grid's per-cell arrays AND the
-	// entity-layer stash populated by setEntities — whichever has real
-	// (non-sentinel) data wins. The main-thread grid.cells.* may lag the
-	// worker's heldGrid (e.g. right after generation, before the
-	// App splices them back), so falling back to entityCells keeps
-	// click-to-select working regardless of that timing.
-	const probe = (kind: "state" | "province" | "culture" | "religion", id: number) =>
-		id > (kind === "state" || kind === "province" ? -1 : 0);
-	let kind: "state" | "province" | "culture" | "religion" | null = null;
-	let id = -1;
-	const stash = this.entityCells;
-	if (this.layers.religions) {
-		const v = (stash?.religion ?? cells.religion)[cellId] ?? 0;
-		if (probe("religion", v)) { kind = "religion"; id = v; }
-	}
-	if (!kind && this.layers.cultures) {
-		const v = (stash?.culture ?? cells.culture)[cellId] ?? 0;
-		if (probe("culture", v)) { kind = "culture"; id = v; }
-	}
-	if (!kind && this.layers.provinces) {
-		const v = (stash?.province ?? cells.province)[cellId] ?? -1;
-		if (probe("province", v)) { kind = "province"; id = v; }
-	}
-	if (!kind && this.layers.states) {
-		const v = (stash?.state ?? cells.state)[cellId] ?? -1;
-		if (probe("state", v)) { kind = "state"; id = v; }
-	}
-	if (!kind || id < 0) {
+		if (cellId < 0 || cellId >= grid.mesh.points.length) {
+			this.selectedEntity = null;
+			this.setSelected(grid, -1);
+			return;
+		}
+		const cells = grid.cells;
+		// Priority: most-specific visible layer wins. We detect the owning
+		// entity by reading BOTH the grid's per-cell arrays AND the
+		// entity-layer stash populated by setEntities — whichever has real
+		// (non-sentinel) data wins. The main-thread grid.cells.* may lag the
+		// worker's heldGrid (e.g. right after generation, before the
+		// App splices them back), so falling back to entityCells keeps
+		// click-to-select working regardless of that timing.
+		const probe = (
+			kind: "state" | "province" | "culture" | "religion",
+			id: number,
+		) => id > (kind === "state" || kind === "province" ? -1 : 0);
+		let kind: "state" | "province" | "culture" | "religion" | null = null;
+		let id = -1;
+		const stash = this.entityCells;
+		if (this.layers.religions) {
+			const v = (stash?.religion ?? cells.religion)[cellId] ?? 0;
+			if (probe("religion", v)) {
+				kind = "religion";
+				id = v;
+			}
+		}
+		if (!kind && this.layers.cultures) {
+			const v = (stash?.culture ?? cells.culture)[cellId] ?? 0;
+			if (probe("culture", v)) {
+				kind = "culture";
+				id = v;
+			}
+		}
+		if (!kind && this.layers.provinces) {
+			const v = (stash?.province ?? cells.province)[cellId] ?? -1;
+			if (probe("province", v)) {
+				kind = "province";
+				id = v;
+			}
+		}
+		if (!kind && this.layers.states) {
+			const v = (stash?.state ?? cells.state)[cellId] ?? -1;
+			if (probe("state", v)) {
+				kind = "state";
+				id = v;
+			}
+		}
+		if (!kind || id < 0) {
 			// No entity layer active, or clicked cell is unassigned -> single cell.
 			this.selectedEntity = null;
 			this.setSelected(grid, cellId);
@@ -494,7 +508,10 @@ export class WorldMap {
 
 	/** Optional callback the canvas wires to mirror selection into the store. */
 	onSelectEntity:
-		| ((kind: "state" | "province" | "culture" | "religion", id: number) => void)
+		| ((
+				kind: "state" | "province" | "culture" | "religion",
+				id: number,
+		  ) => void)
 		| null = null;
 
 	/**
@@ -504,64 +521,15 @@ export class WorldMap {
 	 * (initial draw) and from `fitToScreen` (pan/zoom/resize re-stroke).
 	 */
 	private drawSelection(): void {
-			if (this.selectionGfx) this.selectionGfx.clear();
-			const grid = this.selectedGrid;
-			const cellId = this.selectedCellId;
-			const entity = this.selectedEntity;
+		if (this.selectionGfx) this.selectionGfx.clear();
+		const grid = this.selectedGrid;
+		const cellId = this.selectedCellId;
+		const entity = this.selectedEntity;
 
-			// Entity selection: outline every cell belonging to the entity.
-			// This path must NOT depend on `cellId >= 0` because selectEntity
-			// sets selectedCellId = -1 (no single cell picked).
-			if (entity && this.entityCells && grid) {
-				if (!this.selectionGfx) {
-					this.selectionGfx = new Graphics();
-					this.selectionGfx.label = "selection";
-					this.view.addChild(this.selectionGfx);
-				}
-				const gfx = this.selectionGfx;
-				gfx.clear();
-
-				const sx = Math.abs(this.view.scale.x) || 1;
-				const sy = Math.abs(this.view.scale.y) || 1;
-				const meanScale = (sx + sy) / 2;
-				const desiredPx = 2;
-				const localWidth = Math.max(
-					desiredPx / meanScale,
-					1 / 4096,
-				);
-				this.selectionStrokeWidth = localWidth * meanScale;
-
-				const arr =
-					entity.kind === "state"
-						? this.entityCells.state
-						: entity.kind === "province"
-							? this.entityCells.province
-							: entity.kind === "culture"
-								? this.entityCells.culture
-								: this.entityCells.religion;
-				const n = grid.mesh.points.length;
-				let drawn = 0;
-				for (let c = 0; c < n; c++) {
-					if (arr[c] === entity.id) {
-						drawn++;
-					}
-				}
-				if (drawn > 0) {
-					// Border-only outline of the entity silhouette (not the
-					// full per-cell rings — those trace interior edges too).
-					this.strokeEntityBoundary(gfx, grid, arr, entity.id, localWidth);
-				} else if (cellId >= 0 && cellId < grid.mesh.points.length) {
-					// Fallback: if the entity somehow has no cells, outline the picked one.
-					this.strokeCellOutline(gfx, grid, cellId, localWidth);
-				}
-				return;
-			}
-
-			// Single-cell selection (no entity, or no entityCells data).
-			if (!grid || cellId < 0 || cellId >= grid.mesh.points.length) {
-				this.selectionStrokeWidth = 0;
-				return;
-			}
+		// Entity selection: outline every cell belonging to the entity.
+		// This path must NOT depend on `cellId >= 0` because selectEntity
+		// sets selectedCellId = -1 (no single cell picked).
+		if (entity && this.entityCells && grid) {
 			if (!this.selectionGfx) {
 				this.selectionGfx = new Graphics();
 				this.selectionGfx.label = "selection";
@@ -574,14 +542,57 @@ export class WorldMap {
 			const sy = Math.abs(this.view.scale.y) || 1;
 			const meanScale = (sx + sy) / 2;
 			const desiredPx = 2;
-			const localWidth = Math.max(
-				desiredPx / meanScale,
-				1 / 4096,
-			);
+			const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
 			this.selectionStrokeWidth = localWidth * meanScale;
 
-			this.strokeCellOutline(gfx, grid, cellId, localWidth);
+			const arr =
+				entity.kind === "state"
+					? this.entityCells.state
+					: entity.kind === "province"
+						? this.entityCells.province
+						: entity.kind === "culture"
+							? this.entityCells.culture
+							: this.entityCells.religion;
+			const n = grid.mesh.points.length;
+			let drawn = 0;
+			for (let c = 0; c < n; c++) {
+				if (arr[c] === entity.id) {
+					drawn++;
+				}
+			}
+			if (drawn > 0) {
+				// Border-only outline of the entity silhouette (not the
+				// full per-cell rings — those trace interior edges too).
+				this.strokeEntityBoundary(gfx, grid, arr, entity.id, localWidth);
+			} else if (cellId >= 0 && cellId < grid.mesh.points.length) {
+				// Fallback: if the entity somehow has no cells, outline the picked one.
+				this.strokeCellOutline(gfx, grid, cellId, localWidth);
+			}
+			return;
 		}
+
+		// Single-cell selection (no entity, or no entityCells data).
+		if (!grid || cellId < 0 || cellId >= grid.mesh.points.length) {
+			this.selectionStrokeWidth = 0;
+			return;
+		}
+		if (!this.selectionGfx) {
+			this.selectionGfx = new Graphics();
+			this.selectionGfx.label = "selection";
+			this.view.addChild(this.selectionGfx);
+		}
+		const gfx = this.selectionGfx;
+		gfx.clear();
+
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		const meanScale = (sx + sy) / 2;
+		const desiredPx = 2;
+		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
+		this.selectionStrokeWidth = localWidth * meanScale;
+
+		this.strokeCellOutline(gfx, grid, cellId, localWidth);
+	}
 
 	/**
 	 * Stroke only the OUTER boundary of an entity (the set of cells with
@@ -621,7 +632,8 @@ export class WorldMap {
 			if (k < 3) continue;
 			for (let r = lo; r < hi; r++) {
 				const vid0 = cellV[r] as number;
-				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const vid1 =
+					r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
 				const p0 = vpts[vid0];
 				const p1 = vpts[vid1];
 				if (!p0 || !p1) continue;
@@ -871,7 +883,8 @@ export class WorldMap {
 			if (k < 3) continue;
 			for (let r = lo; r < hi; r++) {
 				const vid0 = cellV[r] as number;
-				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const vid1 =
+					r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
 				const a = vertexToCells[vid0] ?? [];
 				const b = vertexToCells[vid1] ?? [];
 				// The true neighbor is the cell (other than c) present in both
@@ -879,7 +892,10 @@ export class WorldMap {
 				let nb = -1;
 				for (const x of a) {
 					if (x === c) continue;
-					if (b.includes(x)) { nb = x; break; }
+					if (b.includes(x)) {
+						nb = x;
+						break;
+					}
 				}
 				edgeNeighbor[r] = nb;
 			}
@@ -916,8 +932,7 @@ export class WorldMap {
 		// state / province / religion is selected in the legend (per spec).
 		const sel = this.selectedEntity;
 		const selTriggersBorder =
-			!!sel &&
-			(sel.kind === "state" || sel.kind === "province");
+			!!sel && (sel.kind === "state" || sel.kind === "province");
 		if (!grid || (!this.layers.provinces && !selTriggersBorder)) {
 			gfx.visible = false;
 			this.stateBorderStrokeWidth = 0;
@@ -926,8 +941,7 @@ export class WorldMap {
 		gfx.visible = true;
 		const cellI = grid.mesh.cells.i as unknown as number[];
 		const cellV = grid.mesh.cells.v as unknown as number[];
-		const vpts =
-			grid.mesh.vertices?.p as unknown as [number, number][] ?? [];
+		const vpts = (grid.mesh.vertices?.p as unknown as [number, number][]) ?? [];
 		const n = grid.mesh.points.length;
 		const worldW = grid.mesh.world_w || 1;
 		const worldH = grid.mesh.world_h || 1;
@@ -960,7 +974,8 @@ export class WorldMap {
 			if (hi <= lo) continue;
 			for (let r = lo; r < hi; r++) {
 				const vid0 = cellV[r] as number;
-				const vid1 = r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
+				const vid1 =
+					r + 1 < hi ? (cellV[r + 1] as number) : (cellV[lo] as number);
 				const p0 = vpts[vid0];
 				const p1 = vpts[vid1];
 				if (!p0 || !p1) continue;
