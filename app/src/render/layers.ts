@@ -17,7 +17,7 @@
 // be inspected at 60k cells without re-tessellation.
 
 import { Container, Graphics, Mesh, Texture, TextureStyle } from "pixi.js";
-import type { Grid, LakeGeo, RiverGeo } from "../core/api";
+import type { Grid, LakeGeo, RiverGeo, WorldAt } from "../core/api";
 import { buildWorldGeometry, type MeshGeometryData } from "./buildGeometry";
 import {
 	BIOME_COLORS,
@@ -1180,6 +1180,102 @@ export class WorldMap {
 		this.textures[3]?.source.update();
 		this.textures[4]?.source.update();
 		this.textures[5]?.source.update();
+	}
+
+	/**
+	 * Live morph (Step 5.2): update entity data textures + borders from a
+	 * projected `WorldAt` WITHOUT rebuilding base geometry.
+	 *
+	 * `WorldAt` uses the `u32` per-cell convention (`0` = unassigned) for
+	 * state/province/culture/religion, while the internal `entityCells` stash
+	 * and `drawStateBorders` expect the `i32` convention (`-1` = unassigned)
+	 * for state/province. We normalise during the copy so border drawing and
+	 * click-to-select keep working unchanged.
+	 *
+	 * `cells_province` is optional: the Rust `WorldAt` struct does not carry it
+	 * (province cell assignments are stable across projection — only state
+	 * ownership changes). When absent, the province layer is left as-is from
+	 * the initial `setEntities` call.
+	 *
+	 * @param world  the projected world at the target year
+	 * @param grid   the cached grid (for cell count). Falls back to
+	 *               `stashGridForBorders` when omitted.
+	 */
+	updateEntities(world: WorldAt, grid?: Grid): void {
+		const g = grid ?? this.stashGridForBorders;
+		if (!g) return;
+		const n = g.mesh.points.length;
+		this.stashGridForBorders = g;
+
+		// Normalise state cells: u32 0 -> i32 -1 (unassigned sentinel).
+		// Also accept i32 -1 (the year-0 convention) for robustness.
+		const stateCells: number[] = [];
+		for (const v of world.cells_state) stateCells.push(v <= 0 ? -1 : v);
+
+		// Province cells: optional. Normalise u32 0 -> -1 when present and
+		// non-empty (the Rust WorldAt struct does not carry province cells).
+		const provinceCells: number[] | null =
+			world.cells_province && world.cells_province.length > 0
+				? Array.from(world.cells_province, (v: number) =>
+						v <= 0 ? -1 : v,
+					)
+				: null;
+
+		// Culture/religion: 0 = none/Wildlands — same sentinel in both
+		// conventions, so no normalisation needed.
+		const cultureCells = world.cells_culture;
+		const religionCells = world.cells_religion;
+
+		// Stash for click-to-select + border drawing.
+		this.entityCells = {
+			state: stateCells,
+			province: provinceCells ?? this.entityCells?.province ?? [],
+			culture: cultureCells,
+			religion: religionCells,
+		};
+
+		// Re-fill the four data-texture buffers (texture swap, no tessellation).
+		this.fillEntityBuffer(
+			this.stateData,
+			n,
+			world.pack.states,
+			stateCells,
+			-1, // i32 convention after normalisation
+			1, // state ids are 1-based
+		);
+		this.fillEntityBuffer(
+			this.provinceData,
+			n,
+			world.pack.provinces,
+			this.entityCells.province,
+			-1,
+			1, // province ids are 1-based
+		);
+		this.fillEntityBuffer(
+			this.cultureData,
+			n,
+			world.pack.cultures,
+			cultureCells,
+			0, // 0 == Wildlands / no culture
+			0, // culture ids are 0-based
+		);
+		this.fillEntityBuffer(
+			this.religionData,
+			n,
+			world.pack.religions,
+			religionCells,
+			0, // 0 == no religion
+			0, // religion ids are 0-based
+		);
+
+		// Upload all four textures.
+		this.textures[2]?.source.update();
+		this.textures[3]?.source.update();
+		this.textures[4]?.source.update();
+		this.textures[5]?.source.update();
+
+		// Re-draw state borders from projected ownership.
+		this.drawStateBorders();
 	}
 
 	/**

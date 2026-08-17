@@ -350,19 +350,26 @@ export function MapCanvas({
 					state.culturesResult !== prev.culturesResult
 				) {
 					if (worldMap && state.grid) {
-						pushEntities(worldMap, state.grid, state);
-					}
+					pushEntities(worldMap, state.grid, state);
+				}
+				}
+				// Step 5.2: projected world changed (timeline scrub). Live-morph
+				// the entity data textures + borders without rebuilding geometry.
+				if (state.projectedWorld !== prev.projectedWorld) {
+					if (worldMap && state.projectedWorld && state.grid) {
+					worldMap.updateEntities(state.projectedWorld, state.grid);
+				}
 				}
 				// Step 3.5: a panel-driven entity selection. Mirror the store
 				// selection onto the map (highlights the entity's cells; for
 				// a state on the Provinces layer, also draws its border).
 				if (state.selectedEntity !== prev.selectedEntity) {
 					if (worldMap && state.grid && state.selectedEntity) {
-						const sel = state.selectedEntity;
-						worldMap.selectEntity(state.grid, sel.kind, sel.id);
-					} else if (worldMap && state.grid) {
-						worldMap.setSelected(state.grid, -1);
-					}
+					const sel = state.selectedEntity;
+					worldMap.selectEntity(state.grid, sel.kind, sel.id);
+				} else if (worldMap && state.grid) {
+				worldMap.setSelected(state.grid, -1);
+				}
 				}
 			});
 			unsubRef.current = unsub;

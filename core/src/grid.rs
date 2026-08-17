@@ -110,6 +110,152 @@ impl Grid {
     }
 }
 
+// ===========================================================================//
+// Tests — verification gate for the Grid / CellData data model.
+// ===========================================================================//
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::{Cells, Mesh, Vertices};
+
+    /// Build a minimal valid mesh for testing (3 cells, chain topology).
+    fn simple_mesh() -> Mesh {
+        let points = vec![[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]];
+        let v = vec![0, 1, 1, 2]; // vertex ids (not used by Grid tests)
+        // 3 cells in a chain: cell 0 neighbors [1], cell 1 neighbors [0,2], cell 2 neighbors [1]
+        let c = vec![1, 0, 2, 1]; // CSR: cell 0:[1], cell 1:[0,2], cell 2:[1]
+        let i = vec![0, 1, 3, 4]; // offsets: 0..1, 1..3, 3..4
+        let b = vec![0, 0, 0];
+        Mesh {
+            points,
+            cells: Cells {
+                v,
+                c,
+                i,
+                b,
+                spacing: vec![],
+                cells_x: 3,
+                cells_y: 1,
+            },
+            vertices: Vertices { p: vec![] },
+            world_w: 10000.0,
+            world_h: 8000.0,
+        }
+    }
+
+    #[test]
+    fn cell_data_with_capacity_correct_lengths() {
+        let cd = CellData::with_capacity(100);
+        assert_eq!(cd.h.len(), 100);
+        assert_eq!(cd.temp.len(), 100);
+        assert_eq!(cd.prec.len(), 100);
+        assert_eq!(cd.biome.len(), 100);
+        assert_eq!(cd.state.len(), 100);
+        assert_eq!(cd.province.len(), 100);
+        assert_eq!(cd.culture.len(), 100);
+        assert_eq!(cd.religion.len(), 100);
+        assert_eq!(cd.burg.len(), 100);
+        assert_eq!(cd.fl.len(), 100);
+        assert_eq!(cd.r.len(), 100);
+        assert_eq!(cd.conf.len(), 100);
+    }
+
+    #[test]
+    fn cell_data_with_capacity_defaults() {
+        let cd = CellData::with_capacity(50);
+        // h defaults to 0 (water).
+        assert!(cd.h.iter().all(|&v| v == 0));
+        // temp defaults to 0.
+        assert!(cd.temp.iter().all(|&v| v == 0));
+        // prec defaults to 0.
+        assert!(cd.prec.iter().all(|&v| v == 0));
+        // biome defaults to 0 (ocean/water).
+        assert!(cd.biome.iter().all(|&v| v == 0));
+        // Entity arrays default to -1 (or 0 for burg).
+        assert!(cd.state.iter().all(|&v| v == -1));
+        assert!(cd.province.iter().all(|&v| v == -1));
+        assert!(cd.culture.iter().all(|&v| v == -1));
+        assert!(cd.religion.iter().all(|&v| v == -1));
+        // burg defaults to 0 (unassigned).
+        assert!(cd.burg.iter().all(|&v| v == 0));
+        // Drainage arrays default to 0.
+        assert!(cd.fl.iter().all(|&v| v == 0));
+        assert!(cd.r.iter().all(|&v| v == 0));
+        assert!(cd.conf.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn grid_from_mesh_correct_cell_count() {
+        let mesh = simple_mesh();
+        let seed = 42;
+        let grid = Grid::from_mesh(&mesh, seed);
+        assert_eq!(grid.seed, seed);
+        assert_eq!(grid.cell_count(), 3);
+        assert_eq!(grid.cells.h.len(), 3);
+        assert_eq!(grid.cells.temp.len(), 3);
+        assert_eq!(grid.cells.prec.len(), 3);
+        assert_eq!(grid.cells.biome.len(), 3);
+        assert_eq!(grid.cells.state.len(), 3);
+        assert_eq!(grid.cells.burg.len(), 3);
+        assert_eq!(grid.cells.fl.len(), 3);
+        assert_eq!(grid.cells.r.len(), 3);
+        assert_eq!(grid.cells.conf.len(), 3);
+    }
+
+    #[test]
+    fn grid_from_mesh_copies_entity_arrays_to_unassigned() {
+        let mesh = simple_mesh();
+        let grid = Grid::from_mesh(&mesh, 1);
+        assert!(grid.cells.state.iter().all(|&v| v == -1));
+        assert!(grid.cells.burg.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn grid_from_mesh_clones_geometry() {
+        let mesh = simple_mesh();
+        let grid = Grid::from_mesh(&mesh, 1);
+        // The grid's mesh should be a copy (not a borrow).
+        assert_eq!(grid.mesh.points.len(), mesh.points.len());
+        assert_eq!(grid.mesh.cells.c.len(), mesh.cells.c.len());
+        assert_eq!(grid.mesh.cells.i.len(), mesh.cells.i.len());
+    }
+
+    #[test]
+    fn grid_cell_count_matches_points_len() {
+        let n = 100;
+        // Use the real mesh builder for a larger, realistic mesh.
+        let mesh = crate::mesh::build(n, 42);
+        let grid = Grid::from_mesh(&mesh, 42);
+        assert_eq!(grid.cell_count(), mesh.points.len());
+        assert_eq!(grid.cells.h.len(), grid.cell_count());
+    }
+
+    #[test]
+    fn grid_from_mesh_seed_is_stored() {
+        let mesh = simple_mesh();
+        let grid = Grid::from_mesh(&mesh, 999);
+        assert_eq!(grid.seed, 999);
+    }
+
+    #[test]
+    fn cell_data_with_capacity_zero() {
+        let cd = CellData::with_capacity(0);
+        assert_eq!(cd.h.len(), 0);
+        assert_eq!(cd.state.len(), 0);
+        assert_eq!(cd.burg.len(), 0);
+    }
+
+    #[test]
+    fn cell_data_with_capacity_one() {
+        let cd = CellData::with_capacity(1);
+        assert_eq!(cd.h.len(), 1);
+        assert_eq!(cd.h[0], 0);
+        assert_eq!(cd.state[0], -1);
+        assert_eq!(cd.burg[0], 0);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Step 2.5.3 — dependent-recompute output types
 // ---------------------------------------------------------------------------

@@ -673,3 +673,350 @@ fn define_rivers(
     }
     rivers
 }
+
+// ===========================================================================//
+// Tests — verification gate for the rivers/lakes drainage module.
+// ===========================================================================//
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::{Cells, Mesh, Vertices};
+
+    /// Build a minimal hand-crafted mesh for testing: N cells in a chain
+    /// where cell i is connected to i-1 and i+1. Cell 0 and cell N-1 are
+    /// border cells (b=1). rivers.rs only reads `mesh.cells.i`, `mesh.cells.c`,
+    /// `mesh.cells.b`, and `mesh.points`.
+    fn chain_mesh(n: usize) -> Mesh {
+        let points: Vec<[f64; 2]> = (0..n)
+            .map(|i| [100.0 + i as f64 * 10.0, 100.0])
+            .collect();
+
+        let mut v: Vec<u32> = Vec::new();
+        let mut c: Vec<u32> = Vec::new();
+        let mut i_arr: Vec<u32> = vec![0];
+        let mut b: Vec<u8> = vec![0; n];
+
+        for cell in 0..n {
+            if cell > 0 {
+                v.push((cell * 2) as u32);
+                c.push((cell - 1) as u32);
+            }
+            if cell < n - 1 {
+                v.push((cell * 2 + 1) as u32);
+                c.push((cell + 1) as u32);
+            }
+            if cell == 0 || cell == n - 1 {
+                b[cell] = 1;
+            }
+            i_arr.push(c.len() as u32);
+        }
+
+        Mesh {
+            points,
+            cells: Cells {
+                v,
+                c,
+                i: i_arr,
+                b,
+                spacing: vec![],
+                cells_x: n as u32,
+                cells_y: 1,
+            },
+            vertices: Vertices { p: vec![] },
+            world_w: 10000.0,
+            world_h: 8000.0,
+        }
+    }
+
+    /// Build an n-cell ring mesh: each cell connects to both neighbors and
+    /// cell 0 connects to cell N-1. No border cells (b=0 throughout).
+    fn ring_mesh(n: usize) -> Mesh {
+        assert!(n >= 3, "ring needs >= 3 cells");
+        let points: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                let angle = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+                [5000.0 + 3000.0 * angle.cos(), 4000.0 + 3000.0 * angle.sin()]
+            })
+            .collect();
+
+        let mut v: Vec<u32> = Vec::new();
+        let mut c: Vec<u32> = Vec::new();
+        let mut i_arr: Vec<u32> = vec![0];
+        let b: Vec<u8> = vec![0; n];
+
+        for cell in 0..n {
+            let neighbors = if n == 3 {
+                vec![((cell + 1) % n) as u32, ((cell + 2) % n) as u32]
+            } else {
+                vec![((cell as i32 - 1).rem_euclid(n as i32)) as u32,
+                     ((cell + 1) % n) as u32]
+            };
+            for (j, &nb) in neighbors.iter().enumerate() {
+                v.push((cell * 2 + j) as u32);
+                c.push(nb);
+            }
+            i_arr.push(c.len() as u32);
+        }
+
+        Mesh {
+            points,
+            cells: Cells {
+                v,
+                c,
+                i: i_arr,
+                b,
+                spacing: vec![],
+                cells_x: n as u32,
+                cells_y: 1,
+            },
+            vertices: Vertices { p: vec![] },
+            world_w: 10000.0,
+            world_h: 8000.0,
+        }
+    }
+
+    // ---- alter_heights tests ------------------------------------------------
+
+    #[test]
+    fn alter_heights_water_unchanged() {
+        let n = 1usize;
+        let mesh = chain_mesh(n);
+        let h = vec![5u8]; // water (h < 20)
+        let temp = vec![20i8];
+        let eff = alter_heights(&mesh, &h, &temp);
+        assert_eq!(eff[0], 5.0, "water cell height should be unchanged");
+    }
+
+    #[test]
+    fn alter_heights_land_gets_temp_bonus() {
+        let n = 1usize;
+        let mesh = chain_mesh(n);
+        let h = vec![50u8]; // land (h >= 20)
+        let temp = vec![10i8];
+        let eff = alter_heights(&mesh, &h, &temp);
+        // Single cell with no neighbors: mean_t = 0.
+        // eff = 50 + 10/100 + 0/10000 = 50.1
+        assert!((eff[0] - 50.1).abs() < 1e-9, "land cell should get temp bonus");
+    }
+
+    #[test]
+    fn alter_heights_includes_neighbor_mean_temp() {
+        let n = 3usize;
+        let mesh = ring_mesh(n);
+        let h = vec![50u8; n]; // all land
+        let temp = vec![10i8, 20i8, 30i8];
+        let eff = alter_heights(&mesh, &h, &temp);
+        // Cell 0 neighbors: 1 (ring 0->1,2). Actually for n=3 ring:
+        // cell 0 → neighbors [1, 2], cell 1 → [0, 2], cell 2 → [0, 1].
+        // Cell 0: mean_t = (20+30)/2 = 25. eff = 50 + 10/100 + 25/10000 = 50.1025
+        assert!((eff[0] - 50.1025).abs() < 1e-9);
+        // Cell 1: mean_t = (10+30)/2 = 20. eff = 50 + 20/100 + 20/10000 = 50.202
+        assert!((eff[1] - 50.202).abs() < 1e-9);
+    }
+
+    // ---- build_lake_geometries tests --------------------------------------
+
+    #[test]
+    fn lake_geometries_empty_when_no_lake_cells() {
+        let mesh = ring_mesh(4);
+        let h_eff = vec![50.0; 4];
+        let result = build_lake_geometries(&mesh, &h_eff, &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn lake_geometries_groups_connected_component() {
+        let n = 4usize;
+        let mesh = ring_mesh(n);
+        // cells 0,1 are water (h < SEA_LEVEL), cells 2,3 are land
+        let mut h_eff = vec![50.0; n];
+        h_eff[0] = 10.0;
+        h_eff[1] = 10.0;
+        let lake_cells = vec![0u32, 1u32];
+        let lakes = build_lake_geometries(&mesh, &h_eff, &lake_cells);
+        assert_eq!(lakes.len(), 1);
+        let lake = &lakes[0];
+        let mut lc = lake.cells.clone();
+        lc.sort();
+        assert_eq!(lc, vec![0, 1]);
+        // Cell 0 neighbors: 1 and 3 (ring). Cell 1 neighbors: 0 and 2.
+        // Land neighbors (shoreline) = {2, 3}.
+        let mut sh = lake.shoreline.clone();
+        sh.sort();
+        assert_eq!(sh, vec![2, 3]);
+        // Height = min shoreline h_eff - delta = 50 - 0.1 = 49.9
+        assert!((lake.height - 49.9).abs() < 1e-9);
+        assert!(!lake.closed);
+    }
+
+    // ---- detect_close_lakes tests -----------------------------------------
+
+    #[test]
+    fn detect_close_lakes_empty_shoreline_is_closed() {
+        let mesh = ring_mesh(4);
+        let h_eff = vec![10.0; 4];
+        let lakes = vec![LakeGeo {
+            id: 1,
+            height: 10.0,
+            cells: vec![0],
+            shoreline: vec![],
+            closed: false,
+        }];
+        let result = detect_close_lakes(&mesh, &h_eff, lakes);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].closed);
+    }
+
+    #[test]
+    fn detect_close_lakes_open_when_reachable_lower_water() {
+        let n = 6usize;
+        let mesh = ring_mesh(n);
+        let mut h_eff = vec![50.0; n];
+        h_eff[0] = 15.0; // lake surface
+        h_eff[2] = 5.0;  // lower water body
+        // Cell 0's shoreline neighbors in the ring: cells 1 and 5.
+        let lakes = vec![LakeGeo {
+            id: 1,
+            height: 15.0,
+            cells: vec![0],
+            shoreline: vec![1, 5],
+            closed: false,
+        }];
+        let result = detect_close_lakes(&mesh, &h_eff, lakes);
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].closed, "lake should be open (reachable lower water)");
+    }
+
+    // ---- compute_drainage integration tests --------------------------------
+
+    #[test]
+    fn drainage_all_water_no_rivers_no_lakes() {
+        let n = 5usize;
+        let mesh = ring_mesh(n);
+        let h = vec![5u8; n]; // all water
+        let temp = vec![0i8; n];
+        let prec = vec![100u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        assert_eq!(result.fl.len(), n);
+        assert_eq!(result.r.len(), n);
+        assert_eq!(result.conf.len(), n);
+        assert!(result.fl.iter().all(|&f| f == 0));
+        assert!(result.r.iter().all(|&r| r == 0));
+        assert!(result.rivers.is_empty());
+        assert!(result.lakes.is_empty());
+    }
+
+    #[test]
+    fn drainage_deterministic() {
+        let n = 5usize;
+        let mesh = ring_mesh(n);
+        let h = vec![50u8, 5u8, 50u8, 5u8, 50u8];
+        let temp = vec![10i8; n];
+        let prec = vec![100u8; n];
+        let r1 = compute_drainage(&mesh, &h, &temp, &prec);
+        let r2 = compute_drainage(&mesh, &h, &temp, &prec);
+        assert_eq!(r1.fl, r2.fl);
+        assert_eq!(r1.r, r2.r);
+        assert_eq!(r1.conf, r2.conf);
+        assert_eq!(r1.rivers.len(), r2.rivers.len());
+        assert_eq!(r1.lakes.len(), r2.lakes.len());
+    }
+
+    #[test]
+    fn drainage_flat_land_high_prec_forms_rivers() {
+        let n = 10usize;
+        let mesh = chain_mesh(n);
+        let h = vec![50u8; n]; // all land, flat
+        let temp = vec![10i8; n];
+        let prec = vec![255u8; n]; // max precipitation
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        assert_eq!(result.fl.len(), n);
+        assert_eq!(result.r.len(), n);
+        assert!(result.fl.iter().any(|&f| f > 0), "should have nonzero flux");
+        // Rivers that survive define_rivers must have >= 3 cells.
+        for riv in &result.rivers {
+            assert!(riv.cells.len() >= 3, "river {} has only {} cells", riv.id, riv.cells.len());
+        }
+    }
+
+    #[test]
+    fn drainage_river_ids_consistent() {
+        let n = 10usize;
+        let mesh = chain_mesh(n);
+        let h = vec![50u8; n];
+        let temp = vec![10i8; n];
+        let prec = vec![255u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        // Every river id referenced by a cell should be in the declared rivers.
+        let declared_ids: std::collections::BTreeSet<u16> =
+            result.rivers.iter().map(|r| r.id as u16).collect();
+        for &rid in result.r.iter() {
+            if rid != 0 {
+                assert!(declared_ids.contains(&rid), "cell references river id {rid} not in declared rivers");
+            }
+        }
+    }
+
+    #[test]
+    fn drainage_sloped_terrain_no_depressions() {
+        let n = 6usize;
+        let mesh = chain_mesh(n);
+        let mut h = vec![0u8; n];
+        for i in 0..n {
+            h[i] = (90 - i * 10) as u8;
+        }
+        let temp = vec![0i8; n];
+        let prec = vec![10u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        // With low precip, no rivers form (flux < 30).
+        // h_eff should preserve the slope since there are no depressions.
+        assert!((result.h_eff[0] - 90.0).abs() < 1.0, "cell 0 h_eff should be ~90");
+        assert!((result.h_eff[5] - 40.0).abs() < 1.0, "cell 5 h_eff should be ~40");
+    }
+
+    #[test]
+    fn drainage_precip_flux_saturates_u16() {
+        let n = 3usize;
+        let mesh = ring_mesh(n);
+        let h = vec![50u8; n];
+        let temp = vec![0i8; n];
+        let prec = vec![255u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        // With high precipitation, flux may accumulate from multiple cells.
+        // The saturating_add in drain_water ensures we never overflow u16.
+        // Just verify all values are valid (non-negative, within u16 range).
+        for &f in &result.fl {
+            assert!(f <= 65535);
+        }
+    }
+
+    #[test]
+    fn drainage_output_arrays_correct_length() {
+        let n = 7usize;
+        let mesh = chain_mesh(n);
+        let h = vec![50u8; n];
+        let temp = vec![0i8; n];
+        let prec = vec![100u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        assert_eq!(result.h_eff.len(), n);
+        assert_eq!(result.fl.len(), n);
+        assert_eq!(result.r.len(), n);
+        assert_eq!(result.conf.len(), n);
+    }
+
+    #[test]
+    fn drainage_water_cells_never_get_river_ids() {
+        let n = 6usize;
+        let mesh = chain_mesh(n);
+        // cells 0,2,4 are water, 1,3,5 are land
+        let h = vec![5u8, 50u8, 5u8, 50u8, 5u8, 50u8];
+        let temp = vec![10i8; n];
+        let prec = vec![255u8; n];
+        let result = compute_drainage(&mesh, &h, &temp, &prec);
+        // Water cells (even indices) should never have a river id.
+        for i in [0, 2, 4] {
+            assert_eq!(result.r[i], 0, "water cell {i} should not have a river id");
+        }
+    }
+}

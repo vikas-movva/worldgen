@@ -23,7 +23,7 @@
 
 import { Container } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Grid, LakeGeo, RiverGeo } from "../core/api";
+import type { Grid, LakeGeo, RiverGeo, WorldAt } from "../core/api";
 import { attachCamera, WorldMap } from "./layers";
 
 // ---- fixture ------------------------------------------------------------
@@ -974,5 +974,388 @@ describe("WorldMap.setSelected (selection outline)", () => {
 			expect(sameSegments).toBe(6);
 			expect(diffSegments).toBe(sameSegments + 2);
 		});
+	});
+});
+
+// Step 5.2: updateEntities live morph tests --------------------------------
+// Re-use twoCellGrid from the state-border describe by hoisting it to module scope.
+function makeTwoCellGrid(): Grid {
+	const vertP: [number, number][] = [
+		[500, 400], // 0 shared
+		[500, 600], // 1 shared
+		[400, 400], // 2 A-only
+		[400, 600], // 3 A-only
+		[600, 400], // 4 B-only
+		[600, 600], // 5 B-only
+	];
+	const cellV = [0, 2, 3, 1, 4, 0, 1, 5];
+	const cellI = [0, 4, 8];
+	const cellC = [99, 99, 99, 99, 99, 99, 99, 99];
+	return {
+		seed: 1,
+		mesh: {
+			points: [
+				[450, 500],
+				[550, 500],
+			],
+			cells: {
+				v: cellV,
+				c: cellC,
+				i: cellI,
+				b: [],
+				spacing: [],
+				cells_x: 1,
+				cells_y: 1,
+			},
+			vertices: { p: vertP },
+			world_w: 1000,
+			world_h: 1000,
+		},
+		cells: {
+			h: [50, 50],
+			temp: [0, 0],
+			prec: [0, 0],
+			biome: [0, 0],
+			state: [0, 0],
+			province: [0, 0],
+			culture: [0, 0],
+			religion: [0, 0],
+			burg: [0, 0],
+			fl: [0, 0],
+			r: [0, 0],
+			conf: [0, 0],
+		},
+	};
+}
+
+/** Build a minimal WorldAt with typed pack (entities cast to bypass full shape). */
+function makeWorldAt(overrides: Partial<WorldAt> & { pack: WorldAt["pack"] }): WorldAt {
+	return {
+		year: 0,
+		cells_state: [0, 0],
+		cells_province: [0, 0],
+		cells_culture: [0, 0],
+		cells_religion: [0, 0],
+		cells_burg: [0, 0],
+		...overrides,
+	};
+}
+
+describe("updateEntities (Step 5.2 live morph)", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** Read the RGBA texels written into a data-texture buffer. */
+	function readTexels(buf: Uint8Array | null): Array<[number, number, number, number]> {
+		if (!buf) return [];
+		const out: Array<[number, number, number, number]> = [];
+		for (let i = 0; i < buf.length; i += 4) {
+			out.push([buf[i]!, buf[i + 1]!, buf[i + 2]!, buf[i + 3]!]);
+		}
+		return out;
+	}
+
+	/** Cast the private WorldMap fields to a testable shape. */
+	function getDataBuffers(wm: WorldMap) {
+		return wm as unknown as {
+			stateData: Uint8Array | null;
+			provinceData: Uint8Array | null;
+			cultureData: Uint8Array | null;
+			religionData: Uint8Array | null;
+			geometry: unknown;
+			textures: { source: { update: () => void } }[];
+		};
+	}
+
+	it("updates state data texture from projected WorldAt (u32 0=unassigned)", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 500,
+			cells_state: [1, 0],
+			cells_province: [1, 0],
+			pack: {
+				states: [{ id: 1, name: "A", color: 0xff0000, capital: 0, center_cell: 0, form: "x", tax_rate: 0, treasury: 0, rural_pop: 0, urban_pop: 0, military: 0, founded_year: 0, dissolved_year: null, culture: 0 } as any,
+						  { id: 2, name: "B", color: 0x00ff00, capital: 0, center_cell: 0, form: "x", tax_rate: 0, treasury: 0, rural_pop: 0, urban_pop: 0, military: 0, founded_year: 0, dissolved_year: null, culture: 0 } as any],
+				provinces: [],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		const { stateData } = getDataBuffers(wm);
+		const texels = readTexels(stateData);
+		expect(texels[0]).toEqual([255, 0, 0, 255]);
+		expect(texels[1]).toEqual([0, 0, 0, 0]);
+		wm.destroy();
+	});
+
+	it("normalises u32 0 -> i32 -1 in entityCells for border drawing", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 100,
+			cells_state: [1, 0],
+			cells_province: [1, 0],
+			pack: {
+				states: [{ color: 0xaabbcc } as any],
+				provinces: [{ color: 0x112233 } as any],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		const stash = wm as unknown as { entityCells: { state: number[]; province: number[] } | null };
+		expect(stash.entityCells).not.toBeNull();
+		expect(stash.entityCells!.state).toEqual([1, -1]);
+		expect(stash.entityCells!.province).toEqual([1, -1]);
+		wm.destroy();
+	});
+
+	it("also accepts i32 -1 sentinel (year-0 convention) for robustness", () => {
+		const g = quadGrid(1, 1000, 1000);
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 0,
+			cells_state: [-1, -1],
+			cells_province: [-1, -1],
+			cells_culture: [-1, -1],
+			cells_religion: [-1, -1],
+			cells_burg: [0, 0],
+			pack: { states: [], provinces: [], cultures: [], religions: [], burgs: [], armies: [] } as any,
+		});
+		expect(() => wm.updateEntities(world, g)).not.toThrow();
+		const stash = wm as unknown as { entityCells: { state: number[] } | null };
+		expect(stash.entityCells!.state.every((v: number) => v < 0)).toBe(true);
+		wm.destroy();
+	});
+
+	it("rebuilds borders from projected state ownership (different states = border)", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		// Initial: both cells same state -> no shared border
+		wm.setEntities(g, {
+			pack: {
+				states: [{ color: 0xff0000 } as any, { color: 0x00ff00 } as any],
+				provinces: [],
+				cultures: [],
+				religions: [],
+			},
+			cells_state: [1, 1],
+			cells_province: [-1, -1],
+			cells_culture: [0, 0],
+			cells_religion: [0, 0],
+		});
+		const countSegs = (wm: WorldMap): number => {
+			const gfx = (wm as unknown as { stateBorderGfx: { moveTo: () => void } }).stateBorderGfx;
+			let count = 0;
+			const spy = vi.spyOn(gfx, "moveTo" as never).mockImplementation(() => {
+				count++;
+			}) as unknown as { mockRestore: () => void };
+			wm.setLayers({ provinces: true });
+			spy.mockRestore();
+			return count;
+		};
+		expect(countSegs(wm)).toBe(6);
+
+		// Project to a year where cell 1 changes hands
+		const world = makeWorldAt({
+			year: 500,
+			cells_state: [1, 2],
+			cells_province: [1, 2],
+			pack: {
+				states: [{ color: 0xff0000 } as any, { color: 0x00ff00 } as any],
+				provinces: [{ color: 0x112233 } as any, { color: 0x445566 } as any],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		expect(countSegs(wm)).toBe(8);
+		expect(wm.getStateBorderStrokeWidth()).toBeGreaterThan(0);
+		wm.destroy();
+	});
+
+	it("does NOT rebuild base geometry — same geometry reference after update", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const geomBefore = getDataBuffers(wm).geometry;
+		const world = makeWorldAt({
+			year: 100,
+			cells_state: [1, 2],
+			cells_province: [1, 2],
+			pack: {
+				states: [{ color: 1 } as any, { color: 2 } as any],
+				provinces: [{ color: 1 } as any, { color: 2 } as any],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		expect(getDataBuffers(wm).geometry).toBe(geomBefore);
+		wm.destroy();
+	});
+
+	it("uploads all four data textures (texture[2..5].source.update called)", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const updates: string[] = [];
+		for (let i = 2; i <= 5; i++) {
+			vi.spyOn(getDataBuffers(wm).textures[i].source, "update").mockImplementation(
+				() => updates.push(`tex${i}`),
+			);
+		}
+		const world = makeWorldAt({
+			year: 100,
+			cells_state: [1, 2],
+			cells_province: [1, 2],
+			cells_culture: [0, 0],
+			cells_religion: [0, 0],
+			pack: {
+				states: [{ color: 1 } as any, { color: 2 } as any],
+				provinces: [{ color: 1 } as any, { color: 2 } as any],
+				cultures: [{ color: 3 } as any, { color: 4 } as any],
+				religions: [{ color: 5 } as any, { color: 6 } as any],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		expect(updates).toEqual(["tex2", "tex3", "tex4", "tex5"]);
+		wm.destroy();
+	});
+
+	it("falls back to existing province data when cells_province empty", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		wm.setEntities(g, {
+			pack: {
+				states: [{ color: 1 } as any, { color: 2 } as any],
+				provinces: [{ color: 0x10 } as any, { color: 0x20 } as any],
+				cultures: [],
+				religions: [],
+			},
+			cells_state: [1, 2],
+			cells_province: [1, 2],
+			cells_culture: [0, 0],
+			cells_religion: [0, 0],
+		});
+		const stashBefore = wm as unknown as { entityCells: { province: number[] } };
+		const provinceBefore = [...stashBefore.entityCells.province];
+
+		const world = makeWorldAt({
+			year: 500,
+			cells_state: [1, 2],
+			cells_province: [],
+			pack: {
+				states: [{ color: 1 } as any, { color: 2 } as any],
+				provinces: [{ color: 0x10 } as any, { color: 0x20 } as any],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		const stashAfter = wm as unknown as { entityCells: { province: number[] } };
+		expect(stashAfter.entityCells.province).toEqual(provinceBefore);
+		wm.destroy();
+	});
+
+	it("no-ops gracefully when grid is missing", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 100,
+			cells_state: [1, 0],
+			cells_province: [1, 0],
+			pack: {
+				states: [{ color: 1 } as any],
+				provinces: [],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		expect(() => wm.updateEntities(world, null as unknown as Grid)).not.toThrow();
+		wm.destroy();
+	});
+
+	it("updates culture and religion textures from projected WorldAt", () => {
+		const g = quadGrid(4, 1000, 1000);
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 300,
+			cells_state: [0, 0, 0, 0],
+			cells_province: [0, 0, 0, 0],
+			cells_culture: [1, 2, 0, 1],
+			cells_religion: [1, 0, 2, 0],
+			pack: {
+				states: [],
+				provinces: [],
+				cultures: [{ color: 0xffffff } as any, { color: 0xff0000 } as any, { color: 0x00ff00 } as any],
+				religions: [{ color: 0xffffff } as any, { color: 0x0000ff } as any, { color: 0xffff00 } as any],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		const { cultureData, religionData } = getDataBuffers(wm);
+		const cultureTexels = readTexels(cultureData);
+		const religionTexels = readTexels(religionData);
+		// fillEntityBuffer with unassigned=0, idBias=0:
+		// eid=0 -> transparent; eid=1 -> pack.cultures[1]; eid=2 -> pack.cultures[2]
+		expect(cultureTexels[0]).toEqual([255, 0, 0, 255]); // culture 1 -> cultures[1]
+		expect(cultureTexels[1]).toEqual([0, 255, 0, 255]); // culture 2 -> cultures[2]
+		expect(cultureTexels[2]).toEqual([0, 0, 0, 0]); // 0 = none
+		expect(cultureTexels[3]).toEqual([255, 0, 0, 255]); // culture 1
+		expect(religionTexels[0]).toEqual([0, 0, 255, 255]); // religion 1 -> religions[1]
+		expect(religionTexels[1]).toEqual([0, 0, 0, 0]); // 0 = none
+		expect(religionTexels[2]).toEqual([255, 255, 0, 255]); // religion 2 -> religions[2]
+		expect(religionTexels[3]).toEqual([0, 0, 0, 0]); // 0 = none
+		wm.destroy();
+	});
+
+	it("is idempotent — calling twice yields same buffer contents", () => {
+		const g = makeTwoCellGrid();
+		const wm = new WorldMap(g);
+		const world = makeWorldAt({
+			year: 200,
+			cells_state: [1, 2],
+			cells_province: [1, 2],
+			cells_culture: [1, 0],
+			cells_religion: [0, 2],
+			pack: {
+				states: [{ color: 0xff0000 } as any, { color: 0x00ff00 } as any],
+				provinces: [{ color: 0x111111 } as any, { color: 0x222222 } as any],
+				cultures: [{ color: 0xffffff } as any, { color: 0xaaaaaa } as any],
+				religions: [{ color: 0xbbbbbb } as any, { color: 0xcccccc } as any],
+				burgs: [],
+				armies: [],
+			} as any,
+		});
+		wm.updateEntities(world, g);
+		const b = getDataBuffers(wm);
+		const s1 = readTexels(b.stateData);
+		const p1 = readTexels(b.provinceData);
+		const c1 = readTexels(b.cultureData);
+		const r1 = readTexels(b.religionData);
+
+		wm.updateEntities(world, g);
+		expect(readTexels(b.stateData)).toEqual(s1);
+		expect(readTexels(b.provinceData)).toEqual(p1);
+		expect(readTexels(b.cultureData)).toEqual(c1);
+		expect(readTexels(b.religionData)).toEqual(r1);
+		wm.destroy();
 	});
 });
