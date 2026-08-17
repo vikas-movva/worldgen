@@ -193,6 +193,34 @@ export function generate_states(grid_js, seed, count) {
 }
 
 /**
+ * Phase 4.2: generate a deterministic `Timeline` from a year-0 `Pack` + cell
+ * arrays + era bounds + seed. Each module (succession, war, plague, golden
+ * age, schism, found/expand, migration) produces events that are immediately
+ * applied to a working `WorldAt`, so later modules see updated state.
+ *
+ * `cells_state`/`cells_culture`/`cells_religion` use the `i32` convention
+ * (`-1` = unassigned); `cells_burg` uses `i16` (`0` = none). `cells_h` is the
+ * heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
+ * object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
+ *
+ * Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
+ * cells_burg, cells_h, seed, params)` to JS.
+ * @param {any} pack_js
+ * @param {Int32Array} cells_state
+ * @param {Int32Array} cells_culture
+ * @param {Int32Array} cells_religion
+ * @param {Int16Array} cells_burg
+ * @param {Uint8Array} cells_h
+ * @param {bigint} seed
+ * @param {any} params_js
+ * @returns {any}
+ */
+export function generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params_js) {
+    const ret = wasm.generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params_js);
+    return ret;
+}
+
+/**
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.

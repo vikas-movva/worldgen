@@ -1,7 +1,7 @@
 // Core worker — runs the Rust WASM module off the main thread.
 // Step 0.1: exports `add(a,b)` for verification.
 // Step 1.1: exports `generate_mesh(cell_count, seed)` → Mesh.
-// Later phases: generate_world, project_world, edit_heightmap, recompute_dependents, generate_timeline.
+// Step 1.5: exports `generate_world(seed, N, opts)` → Grid. Phase 3.4: entity layers.
 //
 // Step 2.5.4 grid handle: the worker holds the last-generated/edited Grid in
 // `heldGrid` so the hot-path editor calls (`edit_heightmap`,
@@ -24,6 +24,7 @@ import init, {
 	generate_heightmap,
 	generate_mesh,
 	generate_states,
+	generate_timeline,
 	generate_world,
 	get_drainage_geometry_h,
 	has_grid_h,
@@ -203,9 +204,25 @@ type WorkerRequest =
 		target_year: number;
 		/** Optional: the caller's cached WorldAt (for delta from heldWorld). */
 		world?: WorldAt;
+	}
+	// Phase 4.2: timeline generation — generates a deterministic Timeline from
+	// a base Pack + year-0 cell arrays + era bounds + seed.
+	| {
+		kind: "generate_timeline";
+		reqId: number;
+		pack: unknown;         // serialized Pack (serde-wasm-bindgen)
+		cells_state: Int32Array;
+		cells_culture: Int32Array;
+		cells_religion: Int32Array;
+		cells_burg: Int16Array;
+		cells_h: Uint8Array;
+		seed: number;          // u64 as JS number (safe for ≤ 2^53)
+		era_start: number;     // i32
+		era_end: number;       // i32
+		params?: TimelineParams;
 	};
 
-// Phase 4.1 types: timeline + WorldAt (mirror Rust timeline.rs).
+	// Phase 4.1 types: timeline + WorldAt (mirror Rust timeline.rs).
 // These cross the JS↔WASM boundary via serde-wasm-bindgen.
 type EventKind =
 	| "Found"
@@ -250,6 +267,18 @@ type WorldAt = {
 	cells_religion: number[];
 	cells_burg: number[];
 	pack: Pack;
+};
+// Phase 4.2: parameters for timeline generation (mirror Rust TimelineParams).
+type TimelineParams = {
+	eraStart?: number;
+	eraEnd?: number;
+	foundingRate?: number;
+	warRate?: number;
+	plagueProbability?: number;
+	schismProbability?: number;
+	migrationRate?: number;
+	successionRate?: number;
+	goldenAgeProbability?: number;
 };
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
@@ -365,6 +394,8 @@ type WorkerResponse =
 	| { kind: "project_world"; reqId: number; ok: true; result: WorldAt }
 	| { kind: "project_delta"; reqId: number; ok: true; result: WorldAt }
 	| { kind: "scrub_world"; reqId: number; ok: true; result: WorldAt }
+	// Phase 4.2: timeline generation response
+	| { kind: "generate_timeline"; reqId: number; ok: true; result: Timeline }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 // River + lake geometry (mirrors api.ts RiverGeo/LakeGeo).
@@ -749,9 +780,28 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				heldWorld = result;
 				checkpointYear = result.year;
 				send({ kind: "scrub_world", reqId, ok: true, result });
-			}
-		} else {
-			const unknownReq = req as { kind: string };
+				}
+				} else if (req.kind === "generate_timeline") {
+				// Phase 4.2: generate a deterministic timeline from a base Pack
+				// + year-0 cell arrays + era bounds + seed. Returns a sorted Timeline.
+				const params = {
+					eraStart: req.era_start,
+					eraEnd: req.era_end,
+					...(req.params ?? {}),
+				};
+				const result = generate_timeline(
+					req.pack,
+					req.cells_state,
+					req.cells_culture,
+					req.cells_religion,
+					req.cells_burg,
+					req.cells_h,
+					BigInt(req.seed),
+					params,
+				) as Timeline;
+				send({ kind: "generate_timeline", reqId, ok: true, result });
+				} else {
+				const unknownReq = req as { kind: string };
 			send({
 				kind: "error",
 				reqId,

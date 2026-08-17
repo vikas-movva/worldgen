@@ -276,6 +276,20 @@ export type WorldAt = {
 	pack: Pack;
 };
 
+/** Phase 4.2: parameters for deterministic timeline generation. All fields
+ * are optional — omitted fields use deterministic engine defaults. */
+export type TimelineParams = {
+	eraStart?: number;
+	eraEnd?: number;
+	foundingRate?: number;
+	warRate?: number;
+	plagueProbability?: number;
+	schismProbability?: number;
+	migrationRate?: number;
+	successionRate?: number;
+	goldenAgeProbability?: number;
+};
+
 export function clampSeed(seed: number): number {
 	const s = Math.floor(Number.isFinite(seed) ? seed : 0);
 	if (s < 0) return 0;
@@ -672,6 +686,35 @@ export const coreApi = {
       target_year: Math.floor(target_year),
       world,
     }) as Promise<WorldAt>;
+  },
+  /**
+   * Phase 4.2: generate a deterministic timeline from a base Pack + year-0 cell
+   * arrays + era bounds + seed. Returns a sorted Timeline.
+   */
+  generateTimeline(
+    pack: Pack,
+    cells_state: number[] | Int32Array,
+    cells_culture: number[] | Int32Array,
+    cells_religion: number[] | Int32Array,
+    cells_burg: number[] | Int16Array,
+    cells_h: number[] | Uint8Array,
+    seed: number,
+    era_start: number,
+    era_end: number,
+    params?: TimelineParams,
+  ): Promise<Timeline> {
+    return call("generate_timeline", {
+      pack,
+      cells_state: new Int32Array(cells_state),
+      cells_culture: new Int32Array(cells_culture),
+      cells_religion: new Int32Array(cells_religion),
+      cells_burg: new Int16Array(cells_burg),
+      cells_h: new Uint8Array(cells_h),
+      seed,
+      era_start: Math.floor(era_start),
+      era_end: Math.floor(era_end),
+      params: params ?? {},
+    }) as Promise<Timeline>;
   },
 };
 

@@ -13,6 +13,7 @@ export const generate_cultures_religions: (a: any, b: number, c: number, d: numb
 export const generate_heightmap: (a: any, b: number) => any;
 export const generate_mesh: (a: number, b: number) => any;
 export const generate_states: (a: any, b: number, c: number) => any;
+export const generate_timeline: (a: any, b: any, c: any, d: any, e: any, f: any, g: bigint, h: any) => any;
 export const generate_world: (a: number, b: number, c: any) => any;
 export const get_drainage_geometry_h: () => any;
 export const has_grid_h: () => number;

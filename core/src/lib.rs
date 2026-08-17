@@ -28,6 +28,11 @@ mod gen_cultures;
 /// `EventPayload`) + `WorldAt(year)` projector (`project_world` / `project_delta`).
 /// See `agent/worldgen-implementation-plan.md` §Step 4.1 and design §3.3/§3.4.
 mod timeline;
+/// Phase 4 Step 4.2: event generation engine — deterministic timeline
+/// generation (succession, war, plague, golden age, schism, found/expand,
+/// migration) producing a chronologically-sorted `Timeline`.
+/// See `agent/worldgen-implementation-plan.md` §Step 4.2.
+mod event_engine;
 
 /// Initialize the panic hook so Rust panics surface in the browser console
 /// instead of silently failing. Called once on startup.
@@ -845,6 +850,66 @@ pub fn project_delta_inner(
     target_year: i32,
 ) {
     timeline::project_delta(world, timeline, prev_year, target_year)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4.2: Event generation engine — WASM boundary.
+//
+// `generate_timeline` — deterministic timeline generation from a base Pack +
+// year-0 cell arrays + era bounds + seed. Returns a sorted `Timeline`.
+// ---------------------------------------------------------------------------
+
+/// Phase 4.2: generate a deterministic `Timeline` from a year-0 `Pack` + cell
+/// arrays + era bounds + seed. Each module (succession, war, plague, golden
+/// age, schism, found/expand, migration) produces events that are immediately
+/// applied to a working `WorldAt`, so later modules see updated state.
+///
+/// `cells_state`/`cells_culture`/`cells_religion` use the `i32` convention
+/// (`-1` = unassigned); `cells_burg` uses `i16` (`0` = none). `cells_h` is the
+/// heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
+/// object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
+///
+/// Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
+/// cells_burg, cells_h, seed, params)` to JS.
+#[wasm_bindgen]
+pub fn generate_timeline(
+    pack_js: JsValue,
+    cells_state: js_sys::Int32Array,
+    cells_culture: js_sys::Int32Array,
+    cells_religion: js_sys::Int32Array,
+    cells_burg: js_sys::Int16Array,
+    cells_h: js_sys::Uint8Array,
+    seed: u64,
+    params_js: JsValue,
+) -> JsValue {
+    let pack: entities::Pack =
+        serde_wasm_bindgen::from_value(pack_js).expect("generate_timeline: failed to deserialize Pack");
+    let params: event_engine::TimelineParams = serde_wasm_bindgen::from_value(params_js)
+        .unwrap_or_else(|_| event_engine::TimelineParams::default());
+
+    let cs: Vec<i32> = cells_state.to_vec();
+    let cc: Vec<i32> = cells_culture.to_vec();
+    let cr: Vec<i32> = cells_religion.to_vec();
+    let cb: Vec<i16> = cells_burg.to_vec();
+    let ch: Vec<u8> = cells_h.to_vec();
+
+    let timeline = event_engine::generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, seed, &params);
+    serde_wasm_bindgen::to_value(&timeline).expect("generate_timeline: Timeline serde to JsValue")
+}
+
+/// Phase 4.2: inner (test-callable) timeline generation. Same as the WASM
+/// export but takes typed Rust references so `cargo test` can call it directly.
+pub fn generate_timeline_inner(
+    pack: &entities::Pack,
+    cells_state: &[i32],
+    cells_culture: &[i32],
+    cells_religion: &[i32],
+    cells_burg: &[i16],
+    cells_h: &[u8],
+    seed: u64,
+    params: &event_engine::TimelineParams,
+) -> timeline::Timeline {
+    event_engine::generate_timeline(pack, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params)
 }
 
 /// Pure-data inner implementation of `generate_world` — used by the WASM

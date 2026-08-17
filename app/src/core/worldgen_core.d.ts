@@ -118,6 +118,22 @@ export function generate_mesh(cell_count: number, seed: number): any;
 export function generate_states(grid_js: any, seed: number, count: number): any;
 
 /**
+ * Phase 4.2: generate a deterministic `Timeline` from a year-0 `Pack` + cell
+ * arrays + era bounds + seed. Each module (succession, war, plague, golden
+ * age, schism, found/expand, migration) produces events that are immediately
+ * applied to a working `WorldAt`, so later modules see updated state.
+ *
+ * `cells_state`/`cells_culture`/`cells_religion` use the `i32` convention
+ * (`-1` = unassigned); `cells_burg` uses `i16` (`0` = none). `cells_h` is the
+ * heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
+ * object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
+ *
+ * Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
+ * cells_burg, cells_h, seed, params)` to JS.
+ */
+export function generate_timeline(pack_js: any, cells_state: Int32Array, cells_culture: Int32Array, cells_religion: Int32Array, cells_burg: Int16Array, cells_h: Uint8Array, seed: bigint, params_js: any): any;
+
+/**
  * Runs mesh → heightmap → climate → biomes in sequence and returns a fully
  * populated `Grid` (geometry + cells.h + cells.temp + cells.prec + cells.biome).
  * This is the single entry point the browser/worker calls for a complete world.
@@ -328,6 +344,7 @@ export interface InitOutput {
     readonly generate_heightmap: (a: any, b: number) => any;
     readonly generate_mesh: (a: number, b: number) => any;
     readonly generate_states: (a: any, b: number, c: number) => any;
+    readonly generate_timeline: (a: any, b: any, c: any, d: any, e: any, f: any, g: bigint, h: any) => any;
     readonly generate_world: (a: number, b: number, c: any) => any;
     readonly get_drainage_geometry_h: () => any;
     readonly has_grid_h: () => number;
