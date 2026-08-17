@@ -35,7 +35,7 @@ function pushEntities(
 				provinces: { color: number }[];
 				cultures: { color: number }[];
 				religions: { color: number }[];
-				burgs: { cell: number; population: number; capital: number }[];
+				burgs: { id: number; cell: number; population: number; capital: number }[];
 			};
 			cells_state: number[];
 			cells_province: number[];

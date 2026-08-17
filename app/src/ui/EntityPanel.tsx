@@ -44,7 +44,7 @@ function cssToColor(css: string): number | null {
 	return Number.parseInt(m[1], 16);
 }
 
-const LAYER_LABEL: Record<EntityKind, string> = {
+const LAYER_LABEL: Record<Exclude<EntityKind, "burg">, string> = {
 	state: "States",
 	province: "Provinces",
 	culture: "Cultures",
@@ -63,16 +63,23 @@ export function EntityPanel({
 	const updateEntity = useWorldgenStore((s) => s.updateEntity);
 
 	// Which entity kind is the single active layer?
+	// Entity fill layers are mutually exclusive, but "burgs" is a point
+	// overlay that can coexist with any fill layer — so we only fall back
+	// to it when no fill layer is active.
 	const activeKind: EntityKind | null = useMemo(() => {
 		if (layerEnabled.states) return "state";
 		if (layerEnabled.provinces) return "province";
 		if (layerEnabled.cultures) return "culture";
 		if (layerEnabled.religions) return "religion";
+		if (layerEnabled.burgs && (statesResult?.pack.burgs?.length ?? 0) > 0) return "burg";
 		return null;
-	}, [layerEnabled]);
+	}, [layerEnabled, statesResult]);
 
 	// Build the list of {id, name, color} for the active kind.
-	const items = useMemo(() => {
+	// Burg items also carry `capital` (for the swatch colour); they have no
+	// `color` field, so we synthesize a 0xRRGGBB from the capital flag.
+	type Item = { id: number; name: string; color: number; capital?: number };
+	const items: Item[] = useMemo(() => {
 		if (!activeKind) return [];
 		if (activeKind === "state") {
 			if (!statesResult) return [];
@@ -97,6 +104,15 @@ export function EntityPanel({
 				name: e.name,
 				color: e.color,
 			}));
+		}
+		if (activeKind === "burg") {
+			if (!statesResult) return [];
+			return statesResult.pack.burgs?.map((b) => ({
+				id: b.id,
+				name: b.name,
+				color: b.capital > 0 ? 0xd4af37 : 0x6e7681,
+				capital: b.capital,
+			})) ?? [];
 		}
 		// religion
 		if (!culturesResult) return [];
@@ -148,7 +164,7 @@ export function EntityPanel({
 					letterSpacing: "0.05em",
 				}}
 			>
-				{LAYER_LABEL[activeKind]} legend
+				{activeKind === "burg" ? "Burgs" : LAYER_LABEL[activeKind as Exclude<EntityKind, "burg">]} legend
 			</span>
 
 			<div
@@ -221,7 +237,8 @@ export function EntityPanel({
 								}}
 								data-testid={`entity-name-${activeKind}-${item.id}`}
 							/>
-							{/* Editable colour. */}
+							{/* Editable colour (hidden for burgs — they use a fixed swatch). */}
+							{activeKind !== "burg" && (
 							<input
 								type="color"
 								value={hexCss(item.color)}
@@ -243,7 +260,8 @@ export function EntityPanel({
 								data-testid={`entity-color-${activeKind}-${item.id}`}
 								title="Change colour"
 							/>
-						</div>
+							)}
+							</div>
 					);
 				})}
 				{items.length === 0 && (

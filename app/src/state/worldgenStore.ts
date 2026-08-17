@@ -20,7 +20,10 @@ import type { EntityKind, LayerName } from "../render/layers";
 export type LayerState = Record<LayerName, boolean>;
 
 /** Maps each entity kind to its `layerEnabled` key (plural ids). */
-export const ENTITY_LAYER_KEYS: Record<EntityKind, LayerName> = {
+/** Entity kinds that have fill layers (mutually exclusive via toggleEntityLayer).
+ * "burg" is excluded — burgs are a point overlay toggled independently via
+ * toggleLayer("burgs"), so they can appear on top of any fill layer. */
+export const ENTITY_LAYER_KEYS: Record<Exclude<EntityKind, "burg">, LayerName> = {
 	state: "states",
 	province: "provinces",
 	culture: "cultures",
@@ -96,11 +99,13 @@ export type WorldgenActions = {
 	/** Toggle a render layer on/off (terrain/biome). */
 	toggleLayer: (layer: LayerName) => void;
 	/**
-	 * Toggle one of the four entity layers. Entity layers are mutually
-	 * exclusive — enabling one disables the other three so only a single
-	 * entity layer is ever displayed at a time (per the entity-UI spec).
+	 * Toggle one of the four entity fill layers (state/province/culture/
+	 * religion). Entity layers are mutually exclusive — enabling one
+	 * disables the other three so only a single entity layer is ever
+	 * displayed at a time (per the entity-UI spec). "burg" is excluded:
+	 * burgs are a point overlay toggled via toggleLayer("burgs").
 	 */
-	toggleEntityLayer: (layer: EntityKind) => void;
+	toggleEntityLayer: (layer: Exclude<EntityKind, "burg">) => void;
 	/** Select an entity (for highlight + the edit panel). */
 	selectEntity: (sel: { kind: EntityKind; id: number } | null) => void;
 	/** Update an entity's color + name in the relevant pack result in place. */
@@ -182,7 +187,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			})),
 		// Entity layers are mutually exclusive: enabling one turns the other
 		// three off so only a single entity layer shows at once.
-		toggleEntityLayer: (layer) =>
+		toggleEntityLayer: (layer: Exclude<EntityKind, "burg">) =>
 			set((s) => {
 				const layerKey = ENTITY_LAYER_KEYS[layer];
 				const turningOn = !s.layerEnabled[layerKey];

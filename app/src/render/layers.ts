@@ -39,8 +39,8 @@ export type LayerName =
 	| "burgs";
 export type LayerState = Record<LayerName, boolean>;
 
-/** The four anthropological entity kinds (states/provinces/cultures/religions). */
-export type EntityKind = "state" | "province" | "culture" | "religion";
+/** The anthropological entity kinds (states/provinces/cultures/religions/burgs). */
+export type EntityKind = "state" | "province" | "culture" | "religion" | "burg";
 
 const STYLE = new TextureStyle({
 	scaleMode: "nearest",
@@ -119,7 +119,7 @@ export class WorldMap {
 	} | null = null;
 	/** Step 3.4: the currently selected entity (for click-to-select highlight). */
 	private selectedEntity: {
-		kind: "state" | "province" | "culture" | "religion";
+		kind: "state" | "province" | "culture" | "religion" | "burg";
 		id: number;
 	} | null = null;
 	/**
@@ -150,7 +150,7 @@ export class WorldMap {
 	private burgRadius = 0;
 	/** Stashed burg data + grid for re-drawing on camera change. */
 	private burgGrid: Grid | null = null;
-	private burgPoints: { cell: number; population: number; capital: number }[] = [];
+	private burgPoints: { id: number; cell: number; population: number; capital: number }[] = [];
 	/**
 	 * Step 2.5.6: stashed river + lake geometry + the grid it was computed
 	 * for, so `fitToScreen` can re-stroke the polylines at the new camera
@@ -449,6 +449,7 @@ export class WorldMap {
 			return;
 		}
 		const cells = grid.cells;
+		const burgCells = (cells.burg as number[] | undefined) ?? [];
 		// Priority: most-specific visible layer wins. We detect the owning
 		// entity by reading BOTH the grid's per-cell arrays AND the
 		// entity-layer stash populated by setEntities — whichever has real
@@ -457,13 +458,22 @@ export class WorldMap {
 		// App splices them back), so falling back to entityCells keeps
 		// click-to-select working regardless of that timing.
 		const probe = (
-			kind: "state" | "province" | "culture" | "religion",
+			kind: "state" | "province" | "culture" | "religion" | "burg",
 			id: number,
 		) => id > (kind === "state" || kind === "province" ? -1 : 0);
-		let kind: "state" | "province" | "culture" | "religion" | null = null;
+		let kind: "state" | "province" | "culture" | "religion" | "burg" | null = null;
 		let id = -1;
 		const stash = this.entityCells;
-		if (this.layers.religions) {
+		// Burg click-to-select: if the burgs layer is visible and the clicked
+		// cell has a burg, select that burg (highest priority — most specific).
+		if (this.layers.burgs) {
+			const burgId = burgCells[cellId] ?? -1;
+			if (burgId > 0) {
+				kind = "burg";
+				id = burgId;
+			}
+		}
+		if (!kind && this.layers.religions) {
 			const v = (stash?.religion ?? cells.religion)[cellId] ?? 0;
 			if (probe("religion", v)) {
 				kind = "religion";
@@ -508,7 +518,7 @@ export class WorldMap {
 	 */
 	selectEntity(
 		grid: Grid,
-		kind: "state" | "province" | "culture" | "religion",
+		kind: "state" | "province" | "culture" | "religion" | "burg",
 		id: number,
 	): void {
 		// Guard against re-entrancy: the store mirrors this selection back
@@ -520,6 +530,12 @@ export class WorldMap {
 		this.selectedEntity = { kind, id };
 		this.selectedGrid = grid;
 		this.selectedCellId = -1;
+		// For a burg selection, find the cell the burg sits on so the
+		// single-cell highlight (drawSelection fallback) can outline it.
+		if (kind === "burg") {
+			const burg = this.burgPoints.find((b) => b.id === id);
+			if (burg) this.selectedCellId = burg.cell;
+		}
 		this.drawSelection();
 		this.drawStateBorders();
 		// Keep the store-facing selection in sync via the canvas hook.
@@ -529,7 +545,7 @@ export class WorldMap {
 	/** Optional callback the canvas wires to mirror selection into the store. */
 	onSelectEntity:
 		| ((
-				kind: "state" | "province" | "culture" | "religion",
+				kind: "state" | "province" | "culture" | "religion" | "burg",
 				id: number,
 		  ) => void)
 		| null = null;
@@ -753,11 +769,11 @@ export class WorldMap {
 	 * pattern as rivers/selection/state-borders).
 	 *
 	 * @param grid  the Grid (for `mesh.points` cell centroids).
-	 * @param burgs the burg list from `pack.burgs` (Phase 3.4).
+	 * @param burgs the burg list from `pack.burgs` (Phase 3.4), including `id`.
 	 */
 	setBurgs(
 		grid: Grid | null,
-		burgs: { cell: number; population: number; capital: number }[],
+		burgs: { id: number; cell: number; population: number; capital: number }[],
 	): void {
 		this.burgGrid = grid;
 		this.burgPoints = burgs;
