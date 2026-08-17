@@ -11,6 +11,7 @@ import { useWorldgenStore } from "./state/worldgenStore";
 import { CellInspector } from "./ui/CellInspector";
 import { EntityPanel } from "./ui/EntityPanel";
 import { HeightmapEditor } from "./ui/HeightmapEditor";
+import EntityInspector from "./ui/EntityInspector";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -456,6 +457,7 @@ function App() {
 						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
 						<CellInspector worldMap={worldMap} />
 						<EntityPanel worldMap={worldMap} />
+					<EntityInspector />
 					</div>
 				)}
 			</main>
