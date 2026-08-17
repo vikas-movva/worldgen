@@ -21,6 +21,11 @@ import {
   type Grid,
   type EditOp,
   type EditMode,
+  type WorldAt,
+  type Timeline,
+  type TimelineEvent,
+  type Pack,
+  type State,
   spliceDependentResult,
   type DependentResult,
 } from "./api";
@@ -992,6 +997,286 @@ describe("coreApi.storeGrid", () => {
 
     await expect(p2).resolves.toBeNull();
     await expect(p1).resolves.toBeNull();
+  });
+});
+
+// ---- Phase 4.1: timeline projection tests ----------------------------------
+
+/**
+ * Build a minimal Pack with the given number of states. States have empty
+ * province/burg vectors so the projector has a simple base to project from.
+ */
+function makeFakePack(stateCount: number): Pack {
+  const states: State[] = [];
+  for (let i = 0; i < stateCount; i++) {
+    states.push({
+      id: i + 1,
+      name: `State${i + 1}`,
+      color: 0xff0000 + i,
+      capital: 0,
+      center_cell: 0,
+      form: "Monarchy",
+      tax_rate: 0.1,
+      treasury: 1000,
+      rural_pop: 5000 + i * 100,
+      urban_pop: 500 + i * 50,
+      military: 10 + i,
+      founded_year: 0,
+      dissolved_year: null,
+      culture: 0,
+    });
+  }
+  return {
+    states,
+    provinces: [],
+    cultures: [],
+    religions: [],
+    burgs: [],
+    armies: [],
+  };
+}
+
+/**
+ * Build a fake Timeline with a single event at `year`.
+ */
+function makeFakeTimeline(year: number): Timeline {
+  const event: TimelineEvent = {
+    id: 1,
+    year,
+    entity_id: 1,
+    entity_type: "State",
+    kind: "Found",
+    payload: { kind: "none" },
+    narrative: null,
+  };
+  return [event];
+}
+
+/**
+ * Build a fake WorldAt at `year` with the given cell count.
+ */
+function makeFakeWorldAt(year: number, cellCount: number): WorldAt {
+  return {
+    year,
+    cells_state: new Array(cellCount).fill(0),
+    cells_culture: new Array(cellCount).fill(0),
+    cells_religion: new Array(cellCount).fill(0),
+    cells_burg: new Array(cellCount).fill(0),
+    pack: makeFakePack(1),
+  };
+}
+
+/** Make Int32Array of length n filled with val. */
+function makeInts32(n: number, val = 0): Int32Array {
+  return new Int32Array(n).fill(val);
+}
+
+/** Make Int16Array of length n filled with val. */
+function makeInts16(n: number, val = 0): Int16Array {
+  return new Int16Array(n).fill(val);
+}
+
+describe("coreApi.projectWorld", () => {
+  const pack = makeFakePack(3);
+  const cells_state = makeInts32(100, -1);
+  const cells_culture = makeInts32(100, -1);
+  const cells_religion = makeInts32(100, -1);
+  const cells_burg = makeInts16(100, 0);
+  const timeline = makeFakeTimeline(50);
+
+  it("returns a Promise (off-main-thread contract, never blocks)", () => {
+    const p = coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 50);
+    expect(p).toBeInstanceOf(Promise);
+  });
+
+  it("emits the exact 'project_world' wire message with all fields", () => {
+    coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 50);
+    const msg = fake.lastMessage;
+    expect(msg).toMatchObject({
+      kind: "project_world",
+      pack,
+      cells_state,
+      cells_culture,
+      cells_religion,
+      cells_burg,
+      timeline,
+      target_year: 50,
+    });
+    expect(typeof msg!.reqId).toBe("number");
+    expect(msg!.reqId).toBeGreaterThan(0);
+  });
+
+  it("floors fractional target_year on the wire", () => {
+    coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 42.9);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "project_world",
+      target_year: 42,
+    });
+  });
+
+  it("resolves with the worker's WorldAt result", async () => {
+    const expected = makeFakeWorldAt(50, 100);
+    const p = coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 50);
+    fake.reply(expected);
+    const result = await p;
+    expect(result).toBe(expected);
+    expect(result.year).toBe(50);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const p = coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 50);
+    fake.replyError("project_world: timeline serde deserialize failed");
+    await expect(p).rejects.toThrow(/timeline serde/);
+  });
+
+  it("routes two concurrent calls to their own reqIds (no cross-talk)", async () => {
+    const p1 = coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 10);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.projectWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 50);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    const w1 = makeFakeWorldAt(10, 100);
+    const w2 = makeFakeWorldAt(50, 100);
+
+    // Deliver replies out of order to prove reqId routing.
+    fake.reply(w2); // satisfies p2 (most recent message)
+    fake.lastMessage = firstMsg;
+    fake.reply(w1); // satisfies p1
+
+    await expect(p2).resolves.toBe(w2);
+    await expect(p1).resolves.toBe(w1);
+  });
+});
+
+describe("coreApi.projectDelta", () => {
+  const timeline = makeFakeTimeline(50);
+  const world = makeFakeWorldAt(10, 100);
+
+  it("returns a Promise (off-main-thread contract)", () => {
+    const p = coreApi.projectDelta(world, timeline, 10, 50);
+    expect(p).toBeInstanceOf(Promise);
+  });
+
+  it("emits the exact 'project_delta' wire message with all fields", () => {
+    coreApi.projectDelta(world, timeline, 10, 50);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "project_delta",
+      world,
+      timeline,
+      prev_year: 10,
+      target_year: 50,
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("floors fractional prev/target years on the wire", () => {
+    coreApi.projectDelta(world, timeline, 10.4, 50.9);
+    expect(fake.lastMessage).toMatchObject({
+      prev_year: 10,
+      target_year: 50,
+    });
+  });
+
+  it("resolves with the worker's updated WorldAt", async () => {
+    const expected = makeFakeWorldAt(50, 100);
+    const p = coreApi.projectDelta(world, timeline, 10, 50);
+    fake.reply(expected);
+    const result = await p;
+    expect(result).toBe(expected);
+    expect(result.year).toBe(50);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const p = coreApi.projectDelta(world, timeline, 10, 50);
+    fake.replyError("project_delta: invalid WorldAt");
+    await expect(p).rejects.toThrow(/invalid WorldAt/);
+  });
+});
+
+describe("coreApi.scrubWorld", () => {
+  const pack = makeFakePack(2);
+  const cells_state = makeInts32(100, -1);
+  const cells_culture = makeInts32(100, -1);
+  const cells_religion = makeInts32(100, -1);
+  const cells_burg = makeInts16(100, 0);
+  const timeline = makeFakeTimeline(100);
+
+  it("returns a Promise (off-main-thread contract)", () => {
+    const p = coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    expect(p).toBeInstanceOf(Promise);
+  });
+
+  it("emits the exact 'scrub_world' wire message with all fields", () => {
+    coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    expect(fake.lastMessage).toMatchObject({
+      kind: "scrub_world",
+      pack,
+      cells_state,
+      cells_culture,
+      cells_religion,
+      cells_burg,
+      timeline,
+      from_year: 0,
+      target_year: 50,
+    });
+    expect(typeof fake.lastMessage!.reqId).toBe("number");
+    expect(fake.lastMessage!.reqId).toBeGreaterThan(0);
+  });
+
+  it("omits world from the wire when not provided (first scrub)", () => {
+    coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    const msg = fake.lastMessage as AnyReq;
+    expect(msg.world).toBeUndefined();
+  });
+
+  it("includes world on the wire when provided (delta path)", () => {
+    const world = makeFakeWorldAt(40, 100);
+    coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 40, 50, world);
+    const msg = fake.lastMessage as AnyReq;
+    expect(msg.world).toBe(world);
+  });
+
+  it("floors fractional from_year and target_year on the wire", () => {
+    coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0.5, 49.9);
+    expect(fake.lastMessage).toMatchObject({
+      from_year: 0,
+      target_year: 49,
+    });
+  });
+
+  it("resolves with the worker's WorldAt result", async () => {
+    const expected = makeFakeWorldAt(50, 100);
+    const p = coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    fake.reply(expected);
+    const result = await p;
+    expect(result).toBe(expected);
+    expect(result.year).toBe(50);
+  });
+
+  it("rejects with an Error when the worker reports failure", async () => {
+    const p = coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    fake.replyError("scrub_world: no held world");
+    await expect(p).rejects.toThrow(/no held world/);
+  });
+
+  it("routes two concurrent scrub calls to their own reqIds", async () => {
+    const p1 = coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 10);
+    const firstMsg = fake.lastMessage!;
+    const p2 = coreApi.scrubWorld(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, 0, 50);
+    const secondMsg = fake.lastMessage!;
+    expect(firstMsg.reqId).not.toBe(secondMsg.reqId);
+
+    const w1 = makeFakeWorldAt(10, 100);
+    const w2 = makeFakeWorldAt(50, 100);
+
+    fake.reply(w2);
+    fake.lastMessage = firstMsg;
+    fake.reply(w1);
+
+    await expect(p2).resolves.toBe(w2);
+    await expect(p1).resolves.toBe(w1);
   });
 });
 

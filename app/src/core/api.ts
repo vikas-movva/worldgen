@@ -221,6 +221,61 @@ function nextId(): number {
 /// f64; `wasm-bindgen` would silently wrap > u32::MAX (4294967295) to a
 /// different seed with no error. We clamp + floor so an out-of-range seed is
 /// deterministic and never panics in WASM (adversarial review M6).
+// ---------------------------------------------------------------------------//
+// Phase 4.1: timeline data model + projection types (mirror Rust timeline.rs).
+// These cross the WASM boundary via serde-wasm-bindgen — field names must match
+// the Rust structs exactly.
+// ---------------------------------------------------------------------------//
+
+export type EventKind =
+	| "Found"
+	| "Conquer"
+	| "Disband"
+	| "Raise"
+	| "Plague"
+	| "GoldenAge"
+	| "Schism"
+	| "Secession"
+	| "Dissolve";
+
+export type EntityType = "State" | "Province" | "Culture" | "Religion" | "Burg";
+
+export type EventPayload =
+	| { kind: "none" }
+	| { kind: "found"; cells: number[] }
+	| { kind: "conquer"; from_state: number; to_state: number; cells: number[] }
+	| { kind: "disband"; army: number }
+	| { kind: "raise"; army: number }
+	| { kind: "plague"; target_state: number; mortality: number }
+	| { kind: "golden_age"; target_state: number; decade: number }
+	| { kind: "schism"; parent_religion: number; child_religion: number }
+	| { kind: "secession"; cells: number[] };
+
+export type TimelineEvent = {
+	id: number; // u64
+	year: number;
+	entity_id: number;
+	entity_type: EntityType;
+	kind: EventKind;
+	payload: EventPayload;
+	narrative: string | null;
+};
+
+export type Timeline = TimelineEvent[];
+
+/** Phase 4.1: the projected world state at year Y (design §3.4 `WorldAt(Y)`).
+ * `cells_*` arrays are `u32` per cell (`0` = unassigned), ready for the
+ * renderer's data-texture upload. `pack` carries the entity snapshots with
+ * pop-scalar overrides and dissolved flags applied. */
+export type WorldAt = {
+	year: number;
+	cells_state: number[];
+	cells_culture: number[];
+	cells_religion: number[];
+	cells_burg: number[];
+	pack: Pack;
+};
+
 export function clampSeed(seed: number): number {
 	const s = Math.floor(Number.isFinite(seed) ? seed : 0);
 	if (s < 0) return 0;
@@ -525,9 +580,99 @@ export const coreApi = {
     }) as Promise<CulturesResult>;
   },
 
-  // Placeholders for future phases:
-  // projectWorld(pack, timeline, year): Promise<WorldAt>;
-  // generateTimeline(pack, seed, params): Promise<Event[]>;
+  /**
+   * Phase 4.1: full timeline projection — computes `WorldAt(target_year)` from
+   * the base `Pack` + year-0 cell arrays + timeline. O(events ≤ Y), allocates
+   * a fresh WorldAt. Use this for the initial scrub target or backward jumps.
+   *
+   * `cells_state`/`cells_culture`/`cells_religion` use the `i32` convention
+   * (`-1` = unassigned); `cells_burg` uses `i16` (`0` = none). The WASM layer
+   * normalizes them to `u32` internally.
+   *
+   * `target_year` is clamped to `i32` range to avoid silent wraparound.
+   */
+  projectWorld(
+    pack: Pack,
+    cells_state: number[] | Int32Array,
+    cells_culture: number[] | Int32Array,
+    cells_religion: number[] | Int32Array,
+    cells_burg: number[] | Int16Array,
+    timeline: Timeline,
+    target_year: number,
+  ): Promise<WorldAt> {
+    return call("project_world", {
+      pack,
+      cells_state: new Int32Array(cells_state),
+      cells_culture: new Int32Array(cells_culture),
+      cells_religion: new Int32Array(cells_religion),
+      cells_burg: new Int16Array(cells_burg),
+      timeline,
+      target_year: Math.floor(target_year),
+    }) as Promise<WorldAt>;
+  },
+
+  /**
+   * Phase 4.1: incremental forward scrubbing (prev_year → target_year).
+   * Applies only events in `(prev_year, target_year]` to a `WorldAt`, avoiding
+   * the full re-projection. **Backward jumps are a no-op** — the caller must
+   * call `projectWorld` to re-project from base when scrubbing backward.
+   *
+   * The `world` argument is the previous projection (from the last
+   * `projectWorld` or `projectDelta` call on the same timeline).
+   */
+  projectDelta(
+    world: WorldAt,
+    timeline: Timeline,
+    prev_year: number,
+    target_year: number,
+  ): Promise<WorldAt> {
+    return call("project_delta", {
+      world,
+      timeline,
+      prev_year: Math.floor(prev_year),
+      target_year: Math.floor(target_year),
+    }) as Promise<WorldAt>;
+  },
+
+  /**
+   * Phase 4.1 do #7: checkpoint-based scrubbing. The worker decides whether
+   * to full-reproject (project_world from base) or delta-apply (project_delta
+   * from its cached heldWorld), transparently handling checkpoint intervals.
+   *
+   * For forward scrubbing within the checkpoint interval, the worker uses the
+   * cached WorldAt delta. For backward scrubbing or crossing a checkpoint
+   * boundary, it reprojects from base. The caller just provides the from/to
+   * years and the base Pack + cell arrays (needed for full reprojection).
+   *
+   * `from_year` is the year the caller's `world` was projected at (0 if
+   * this is the first scrub). `target_year` is the destination.
+   *
+   * `world` is optional on first call (when heldWorld is null on the worker);
+   * the worker will full-reproject via project_world.
+   */
+  scrubWorld(
+    pack: Pack,
+    cells_state: number[] | Int32Array,
+    cells_culture: number[] | Int32Array,
+    cells_religion: number[] | Int32Array,
+    cells_burg: number[] | Int16Array,
+    timeline: Timeline,
+    from_year: number,
+    target_year: number,
+    world?: WorldAt,
+  ): Promise<WorldAt> {
+    return call("scrub_world", {
+      pack,
+      cells_state: new Int32Array(cells_state),
+      cells_culture: new Int32Array(cells_culture),
+      cells_religion: new Int32Array(cells_religion),
+      cells_burg: new Int16Array(cells_burg),
+      timeline,
+      from_year: Math.floor(from_year),
+      target_year: Math.floor(target_year),
+      world,
+    }) as Promise<WorldAt>;
+  },
 };
 
 /**

@@ -181,6 +181,29 @@ export function pick_cell(grid_js: any, x: number, y: number): number;
 export function pick_cell_h(x: number, y: number): number;
 
 /**
+ * Phase 4.1: incremental forward scrubbing. Applies only the events in
+ * `(prev_year, target_year]` to a `WorldAt`, mutating it in place and
+ * returning the updated `WorldAt` (serialized via serde).
+ *
+ * **Backward jumps** (`target_year <= prev_year`) are a no-op on cell arrays
+ * — the caller must call `project_world` to re-project from base for those.
+ * This fn only bumps `world.year` on a backward target.
+ */
+export function project_delta(world_js: any, timeline_js: any, prev_year: number, target_year: number): any;
+
+/**
+ * Phase 4.1: project `WorldAt(target_year)` from a base `Pack` + year-0 cell
+ * arrays + `timeline`. This is O(events ≤ Y) and allocates a fresh `WorldAt`.
+ *
+ * `pack_js`, `cells_state`, `cells_culture`, `cells_religion`,
+ * `cells_burg`, and `timeline` are all deserialized from JsValue. The cell
+ * arrays use the `i32` (`-1` = unassigned) and `i16` (`0` = none) conventions;
+ * this fn normalizes them to the `u32` (`0` = unassigned) form `WorldAt`
+ * returns to JS.
+ */
+export function project_world(pack_js: any, cells_state: Int32Array, cells_culture: Int32Array, cells_religion: Int32Array, cells_burg: Int16Array, timeline_js: any, target_year: number): any;
+
+/**
  * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
  *
  * Runs the complete drainage → climate → biome → entity-repair cascade on an
@@ -311,6 +334,8 @@ export interface InitOutput {
     readonly init: () => void;
     readonly pick_cell: (a: any, b: number, c: number) => number;
     readonly pick_cell_h: (a: number, b: number) => number;
+    readonly project_delta: (a: any, b: any, c: number, d: number) => any;
+    readonly project_world: (a: any, b: any, c: any, d: any, e: any, f: any, g: number) => any;
     readonly recompute_dependents: (a: any, b: any) => any;
     readonly recompute_dependents_h: (a: any) => any;
     readonly recompute_dependents_h2: (a: any) => any;

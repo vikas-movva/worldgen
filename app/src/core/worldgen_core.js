@@ -286,6 +286,48 @@ export function pick_cell_h(x, y) {
 }
 
 /**
+ * Phase 4.1: incremental forward scrubbing. Applies only the events in
+ * `(prev_year, target_year]` to a `WorldAt`, mutating it in place and
+ * returning the updated `WorldAt` (serialized via serde).
+ *
+ * **Backward jumps** (`target_year <= prev_year`) are a no-op on cell arrays
+ * — the caller must call `project_world` to re-project from base for those.
+ * This fn only bumps `world.year` on a backward target.
+ * @param {any} world_js
+ * @param {any} timeline_js
+ * @param {number} prev_year
+ * @param {number} target_year
+ * @returns {any}
+ */
+export function project_delta(world_js, timeline_js, prev_year, target_year) {
+    const ret = wasm.project_delta(world_js, timeline_js, prev_year, target_year);
+    return ret;
+}
+
+/**
+ * Phase 4.1: project `WorldAt(target_year)` from a base `Pack` + year-0 cell
+ * arrays + `timeline`. This is O(events ≤ Y) and allocates a fresh `WorldAt`.
+ *
+ * `pack_js`, `cells_state`, `cells_culture`, `cells_religion`,
+ * `cells_burg`, and `timeline` are all deserialized from JsValue. The cell
+ * arrays use the `i32` (`-1` = unassigned) and `i16` (`0` = none) conventions;
+ * this fn normalizes them to the `u32` (`0` = unassigned) form `WorldAt`
+ * returns to JS.
+ * @param {any} pack_js
+ * @param {Int32Array} cells_state
+ * @param {Int32Array} cells_culture
+ * @param {Int32Array} cells_religion
+ * @param {Int16Array} cells_burg
+ * @param {any} timeline_js
+ * @param {number} target_year
+ * @returns {any}
+ */
+export function project_world(pack_js, cells_state, cells_culture, cells_religion, cells_burg, timeline_js, target_year) {
+    const ret = wasm.project_world(pack_js, cells_state, cells_culture, cells_religion, cells_burg, timeline_js, target_year);
+    return ret;
+}
+
+/**
  * Step 2.5.3: full dependent recompute after a heightmap edit stroke.
  *
  * Runs the complete drainage → climate → biome → entity-repair cascade on an
@@ -568,6 +610,16 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_instanceof_Map_9a4d6ead180ae3a9: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof Map;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
         __wbg_instanceof_Uint8Array_f935dbb0aa7cdeed: function(arg0) {
             let result;
             try {
@@ -591,6 +643,14 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbg_length_36bd29c6848c2144: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_3dd43fb42eed37e0: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_c812b8efd064d998: function(arg0) {
             const ret = arg0.length;
             return ret;
         },
@@ -654,8 +714,14 @@ function __wbg_get_imports() {
             const ret = arg0.next;
             return ret;
         },
+        __wbg_prototypesetcall_dd7f5a50e44602ff: function(arg0, arg1, arg2) {
+            Int16Array.prototype.set.call(getArrayI16FromWasm0(arg0, arg1), arg2);
+        },
         __wbg_prototypesetcall_de8e0d9553586985: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
+        __wbg_prototypesetcall_e30a3abb428d3d47: function(arg0, arg1, arg2) {
+            Int32Array.prototype.set.call(getArrayI32FromWasm0(arg0, arg1), arg2);
         },
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             arg0[arg1] = arg2;
@@ -689,12 +755,17 @@ function __wbg_get_imports() {
             const ret = arg0;
             return ret;
         },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000002: function(arg0) {
+            // Cast intrinsic for `I64 -> Externref`.
+            const ret = arg0;
+            return ret;
+        },
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return ret;
         },
-        __wbindgen_cast_0000000000000003: function(arg0) {
+        __wbindgen_cast_0000000000000004: function(arg0) {
             // Cast intrinsic for `U64 -> Externref`.
             const ret = BigInt.asUintN(64, arg0);
             return ret;

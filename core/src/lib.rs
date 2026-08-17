@@ -755,6 +755,98 @@ pub fn generate_cultures_religions(
     serde_wasm_bindgen::to_value(&result).expect("generate_cultures_religions: serde to JsValue")
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4.1: Timeline WASM boundary.
+//
+// `project_world` — full projection from year-0 base to `target_year`.
+// `project_delta` — incremental forward scrubbing (prev_year → target_year).
+//
+// Both take JsValue inputs (deserialized via serde-wasm-bindgen) and return
+// a `JsValue` `WorldAt`. The worker holds the `Timeline` + cell arrays on its
+// JS side (they're cheap to keep in JS memory) and passes them per call.
+// ---------------------------------------------------------------------------
+
+/// Phase 4.1: project `WorldAt(target_year)` from a base `Pack` + year-0 cell
+/// arrays + `timeline`. This is O(events ≤ Y) and allocates a fresh `WorldAt`.
+///
+/// `pack_js`, `cells_state`, `cells_culture`, `cells_religion`,
+/// `cells_burg`, and `timeline` are all deserialized from JsValue. The cell
+/// arrays use the `i32` (`-1` = unassigned) and `i16` (`0` = none) conventions;
+/// this fn normalizes them to the `u32` (`0` = unassigned) form `WorldAt`
+/// returns to JS.
+#[wasm_bindgen]
+pub fn project_world(
+    pack_js: JsValue,
+    cells_state: js_sys::Int32Array,
+    cells_culture: js_sys::Int32Array,
+    cells_religion: js_sys::Int32Array,
+    cells_burg: js_sys::Int16Array,
+    timeline_js: JsValue,
+    target_year: i32,
+) -> JsValue {
+    let pack: entities::Pack =
+        serde_wasm_bindgen::from_value(pack_js).expect("project_world: failed to deserialize Pack");
+    let timeline: timeline::Timeline =
+        serde_wasm_bindgen::from_value(timeline_js).expect("project_world: failed to deserialize Timeline");
+
+    let cs: Vec<i32> = cells_state.to_vec();
+    let cc: Vec<i32> = cells_culture.to_vec();
+    let cr: Vec<i32> = cells_religion.to_vec();
+    let cb: Vec<i16> = cells_burg.to_vec();
+
+    let world = timeline::project_world(&pack, &cs, &cc, &cr, &cb, &timeline, target_year);
+    serde_wasm_bindgen::to_value(&world).expect("project_world: WorldAt serde to JsValue")
+}
+
+/// Phase 4.1: incremental forward scrubbing. Applies only the events in
+/// `(prev_year, target_year]` to a `WorldAt`, mutating it in place and
+/// returning the updated `WorldAt` (serialized via serde).
+///
+/// **Backward jumps** (`target_year <= prev_year`) are a no-op on cell arrays
+/// — the caller must call `project_world` to re-project from base for those.
+/// This fn only bumps `world.year` on a backward target.
+#[wasm_bindgen]
+pub fn project_delta(
+    world_js: JsValue,
+    timeline_js: JsValue,
+    prev_year: i32,
+    target_year: i32,
+) -> JsValue {
+    let mut world: timeline::WorldAt =
+        serde_wasm_bindgen::from_value(world_js).expect("project_delta: failed to deserialize WorldAt");
+    let timeline: timeline::Timeline =
+        serde_wasm_bindgen::from_value(timeline_js).expect("project_delta: failed to deserialize Timeline");
+
+    timeline::project_delta(&mut world, &timeline, prev_year, target_year);
+    serde_wasm_bindgen::to_value(&world).expect("project_delta: WorldAt serde to JsValue")
+}
+
+/// Phase 4.1: full projection of a `WorldAt` from base, returning a `JsValue`.
+/// Convenience wrapper around `project_world` for tests that can't call
+/// `#[wasm_bindgen]` functions returning JsValue on non-WASM targets.
+pub fn project_world_inner(
+    pack: &entities::Pack,
+    cells_state: &[i32],
+    cells_culture: &[i32],
+    cells_religion: &[i32],
+    cells_burg: &[i16],
+    timeline: &timeline::Timeline,
+    target_year: i32,
+) -> timeline::WorldAt {
+    timeline::project_world(pack, cells_state, cells_culture, cells_religion, cells_burg, timeline, target_year)
+}
+
+/// Phase 4.1: inner (test-callable) incremental projection. Mutates `world`
+/// in place and returns it.
+pub fn project_delta_inner(
+    world: &mut timeline::WorldAt,
+    timeline: &timeline::Timeline,
+    prev_year: i32,
+    target_year: i32,
+) {
+    timeline::project_delta(world, timeline, prev_year, target_year)
+}
+
 /// Pure-data inner implementation of `generate_world` — used by the WASM
 /// boundary wrapper above and by `cargo test` (which cannot call
 /// `#[wasm_bindgen]` functions returning `JsValue` on non-WASM targets).

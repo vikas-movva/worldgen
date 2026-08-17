@@ -29,6 +29,8 @@ import init, {
 	has_grid_h,
 	pick_cell,
 	pick_cell_h,
+	project_delta,
+	project_world,
 	recompute_dependents,
 	recompute_dependents_h2,
 	recompute_temp_biome_local,
@@ -54,6 +56,19 @@ function ensureWasm(): Promise<void> {
 // held grid (no JsValue at all); this JS-side copy is kept in sync for
 // backward-compat reads (e.g. cell info display).
 let heldGrid: Grid | null = null;
+
+// Phase 4.1: cached WorldAt projection + checkpoint year for scrubbing.
+// `heldWorld` is the most recent projection (from project_world or project_delta).
+// `checkpointYear` is the year of the last full project_world call. When scrubbing
+// forward, if the gap from checkpointYear exceeds CHECKPOINT_INTERVAL, the worker
+// re-projects from base via project_world instead of chaining project_delta calls
+// (avoids O(N²) drift — design §4.1 do #7 do #8).
+let heldWorld: WorldAt | null = null;
+let checkpointYear: number = 0;
+
+// Checkpoint interval in years. Events are sparse at medieval timescales; 25 years
+// balances reprojection cost (~O(events ≤ Y)) against delta overhead.
+const CHECKPOINT_INTERVAL = 25;
 
 type WorkerRequest =
 	| { kind: "add"; reqId: number; a: number; b: number }
@@ -137,25 +152,105 @@ type WorkerRequest =
 	| { kind: "get_drainage_geometry"; reqId: number }
 	// Phase 3.4: entity layer generation
 	| {
-			kind: "generate_states";
-			reqId: number;
-			seed: number;
-			count: number;
-			/** The Grid to operate on (required; no held-grid shortcut for this). */
-			grid: unknown;
-	  }
+		kind: "generate_states";
+		reqId: number;
+		seed: number;
+		count: number;
+		grid: unknown;
+	}
 	| {
-			kind: "generate_cultures_religions";
-			reqId: number;
-			seed: number;
-			cultureCount: number;
-			religionCount: number;
-			/** The Grid to operate on (required). */
-			grid: unknown;
-			/** The StatesResult from generate_states (required). */
-			statesResult: unknown;
-	  };
+		kind: "generate_cultures_religions";
+		reqId: number;
+		seed: number;
+		cultureCount: number;
+		religionCount: number;
+		grid: unknown;
+		statesResult: unknown;
+	}
+	// Phase 4.1: timeline projection
+	| {
+		kind: "project_world";
+		reqId: number;
+		pack: unknown;
+		cells_state: Int32Array;
+		cells_culture: Int32Array;
+		cells_religion: Int32Array;
+		cells_burg: Int16Array;
+		timeline: Timeline;
+		target_year: number;
+	}
+	| {
+		kind: "project_delta";
+		reqId: number;
+		world: WorldAt;
+		timeline: Timeline;
+		prev_year: number;
+		target_year: number;
+	}
+	// Phase 4.1 do #7: checkpoint-based scrubbing. The worker decides whether
+	// to full-reproject (project_world from base) or delta-apply (project_delta
+	// from the cached heldWorld), updating the checkpoint cache as needed.
+	| {
+		kind: "scrub_world";
+		reqId: number;
+		pack: unknown;
+		cells_state: Int32Array;
+		cells_culture: Int32Array;
+		cells_religion: Int32Array;
+		cells_burg: Int16Array;
+		timeline: Timeline;
+		from_year: number;
+		target_year: number;
+		/** Optional: the caller's cached WorldAt (for delta from heldWorld). */
+		world?: WorldAt;
+	};
 
+// Phase 4.1 types: timeline + WorldAt (mirror Rust timeline.rs).
+// These cross the JS↔WASM boundary via serde-wasm-bindgen.
+type EventKind =
+	| "Found"
+	| "Conquer"
+	| "Disband"
+	| "Raise"
+	| "Plague"
+	| "GoldenAge"
+	| "Schism"
+	| "Secession"
+	| "Dissolve";
+
+type EntityType = "State" | "Province" | "Culture" | "Religion" | "Burg";
+
+type EventPayload =
+	| { kind: "none" }
+	| { kind: "found"; cells: number[] }
+	| { kind: "conquer"; from_state: number; to_state: number; cells: number[] }
+	| { kind: "disband"; army: number }
+	| { kind: "raise"; army: number }
+	| { kind: "plague"; target_state: number; mortality: number }
+	| { kind: "golden_age"; target_state: number; decade: number }
+	| { kind: "schism"; parent_religion: number; child_religion: number }
+	| { kind: "secession"; cells: number[] };
+
+type Event = {
+	id: number; // u64
+	year: number;
+	entity_id: number;
+	entity_type: EntityType;
+	kind: EventKind;
+	payload: EventPayload;
+	narrative: string | null;
+};
+
+type Timeline = Event[];
+
+type WorldAt = {
+	year: number;
+	cells_state: number[]; // u32 per cell
+	cells_culture: number[];
+	cells_religion: number[];
+	cells_burg: number[];
+	pack: Pack;
+};
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
 	points: [number, number][];
@@ -266,6 +361,10 @@ type WorkerResponse =
 			ok: true;
 			result: CulturesResult;
 	  }
+	// Phase 4.1: timeline projection responses
+	| { kind: "project_world"; reqId: number; ok: true; result: WorldAt }
+	| { kind: "project_delta"; reqId: number; ok: true; result: WorldAt }
+	| { kind: "scrub_world"; reqId: number; ok: true; result: WorldAt }
 	| { kind: "error"; reqId: number; ok: false; message: string };
 
 // River + lake geometry (mirrors api.ts RiverGeo/LakeGeo).
@@ -572,6 +671,85 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				heldGrid.cells.religion = Array.from(result.cells_religion);
 			}
 			send({ kind: "generate_cultures_religions", reqId, ok: true, result });
+		} else if (req.kind === "project_world") {
+			// Phase 4.1: full timeline projection — WorldAt(target_year) from
+			// base Pack + year-0 cell arrays + timeline. O(events ≤ Y).
+			const result = project_world(
+				req.pack,
+				req.cells_state as Int32Array,
+				req.cells_culture as Int32Array,
+				req.cells_religion as Int32Array,
+				req.cells_burg as Int16Array,
+				req.timeline,
+				req.target_year,
+			) as WorldAt;
+			// Cache the projection + checkpoint year (do #8).
+			heldWorld = result;
+			checkpointYear = result.year;
+			send({ kind: "project_world", reqId, ok: true, result });
+		} else if (req.kind === "project_delta") {
+			// Phase 4.1: incremental forward scrubbing (prev_year → target_year).
+			// Backward jumps are a no-op on cell arrays — caller must re-project.
+			const result = project_delta(
+				req.world,
+				req.timeline,
+				req.prev_year,
+				req.target_year,
+			) as WorldAt;
+			send({ kind: "project_delta", reqId, ok: true, result });
+		} else if (req.kind === "scrub_world") {
+			// Phase 4.1 do #7: checkpoint-based scrubbing. Decides whether to
+			// full-reproject (project_world from base) or delta-apply
+			// (project_delta from the cached heldWorld).
+			const toYear = req.target_year;
+			const fromYear = req.from_year;
+			const forward = toYear > fromYear;
+
+			if (forward && heldWorld) {
+				// Forward scrub: use delta from checkpoint if within interval,
+				// otherwise reproject from base.
+				const gap = toYear - checkpointYear;
+				if (gap > 0 && gap <= CHECKPOINT_INTERVAL) {
+					// Within checkpoint interval — cheap delta from heldWorld.
+					const result = project_delta(
+						req.world || heldWorld,
+						req.timeline,
+						heldWorld.year,
+						toYear,
+					) as WorldAt;
+					heldWorld = result;
+					send({ kind: "scrub_world", reqId, ok: true, result });
+				} else {
+					// Beyond checkpoint interval — reproject from base.
+					const result = project_world(
+						req.pack,
+						req.cells_state as Int32Array,
+						req.cells_culture as Int32Array,
+						req.cells_religion as Int32Array,
+						req.cells_burg as Int16Array,
+						req.timeline,
+						toYear,
+					) as WorldAt;
+					heldWorld = result;
+					checkpointYear = result.year;
+					send({ kind: "scrub_world", reqId, ok: true, result });
+				}
+			} else {
+				// Backward scrub (or no cache yet): always reproject from base
+				// (events are not safely invertible — do #6).
+				const result = project_world(
+					req.pack,
+					req.cells_state as Int32Array,
+					req.cells_culture as Int32Array,
+					req.cells_religion as Int32Array,
+					req.cells_burg as Int16Array,
+					req.timeline,
+					toYear,
+				) as WorldAt;
+				heldWorld = result;
+				checkpointYear = result.year;
+				send({ kind: "scrub_world", reqId, ok: true, result });
+			}
 		} else {
 			const unknownReq = req as { kind: string };
 			send({
