@@ -437,8 +437,10 @@ let nextReqId = 1;
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 	const req = e.data;
 	const reqId = req.reqId ?? nextReqId++;
+	console.log("[worker] onmessage received:", req.kind, "reqId:", reqId);
 
 	const send = (res: WorkerResponse) => {
+		console.log("[worker] send:", res.kind, "reqId:", res.reqId, "ok:", res.ok);
 		self.postMessage(res);
 	};
 
@@ -735,6 +737,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			const toYear = req.target_year;
 			const fromYear = req.from_year;
 			const forward = toYear > fromYear;
+			console.log("[worker] scrub_world: toYear=", toYear, "fromYear=", fromYear, "forward=", forward, "heldWorld=", !!heldWorld, "checkpointYear=", checkpointYear);
 
 			if (forward && heldWorld) {
 				// Forward scrub: use delta from checkpoint if within interval,
@@ -781,27 +784,27 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				checkpointYear = result.year;
 				send({ kind: "scrub_world", reqId, ok: true, result });
 				}
-				} else if (req.kind === "generate_timeline") {
-				// Phase 4.2: generate a deterministic timeline from a base Pack
-				// + year-0 cell arrays + era bounds + seed. Returns a sorted Timeline.
-				const params = {
-					eraStart: req.era_start,
-					eraEnd: req.era_end,
-					...(req.params ?? {}),
-				};
-				const result = generate_timeline(
-					req.pack,
-					req.cells_state,
-					req.cells_culture,
-					req.cells_religion,
-					req.cells_burg,
-					req.cells_h,
-					BigInt(req.seed),
-					params,
-				) as Timeline;
-				send({ kind: "generate_timeline", reqId, ok: true, result });
-				} else {
-				const unknownReq = req as { kind: string };
+		} else if (req.kind === "generate_timeline") {
+			// Phase 4.2: generate a deterministic timeline from a base Pack
+			// + year-0 cell arrays + era bounds + seed. Returns a sorted Timeline.
+			const params = {
+				eraStart: req.era_start,
+				eraEnd: req.era_end,
+				...(req.params ?? {}),
+			};
+			const result = generate_timeline(
+				req.pack,
+				req.cells_state,
+				req.cells_culture,
+				req.cells_religion,
+				req.cells_burg,
+				req.cells_h,
+				BigInt(req.seed),
+				params,
+			) as Timeline;
+			send({ kind: "generate_timeline", reqId, ok: true, result });
+		} else {
+			const unknownReq = req as { kind: string };
 			send({
 				kind: "error",
 				reqId,

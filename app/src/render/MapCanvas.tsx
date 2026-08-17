@@ -35,6 +35,7 @@ function pushEntities(
 				provinces: { color: number }[];
 				cultures: { color: number }[];
 				religions: { color: number }[];
+				burgs: { cell: number; population: number; capital: number }[];
 			};
 			cells_state: number[];
 			cells_province: number[];
@@ -61,6 +62,8 @@ function pushEntities(
 		cells_culture: st.culturesResult.cells_culture,
 		cells_religion: st.culturesResult.cells_religion,
 	});
+	// Step 3.4: push burg markers (capitals + towns) to the point overlay.
+	worldMap.setBurgs(grid, st.statesResult.pack.burgs);
 }
 
 // Dark map background (matches the app theme) so the canvas is visible before
@@ -356,9 +359,13 @@ export function MapCanvas({
 				// Step 5.2: projected world changed (timeline scrub). Live-morph
 				// the entity data textures + borders without rebuilding geometry.
 				if (state.projectedWorld !== prev.projectedWorld) {
+					console.log("[MapCanvas] projectedWorld changed:", state.projectedWorld?.year, "worldMap:", !!worldMap, "grid:", !!state.grid);
 					if (worldMap && state.projectedWorld && state.grid) {
-					worldMap.updateEntities(state.projectedWorld, state.grid);
-				}
+						worldMap.updateEntities(state.projectedWorld, state.grid);
+						console.log("[MapCanvas] updateEntities called for year", state.projectedWorld.year);
+					} else {
+						console.log("[MapCanvas] can't update — worldMap:", !!worldMap, "projectedWorld:", !!state.projectedWorld, "grid:", !!state.grid);
+					}
 				}
 				// Step 3.5: a panel-driven entity selection. Mirror the store
 				// selection onto the map (highlights the entity's cells; for

@@ -340,6 +340,7 @@ export function clampReligionCount(n: number): number {
 
 function call<T, R>(kind: string, payload: T): Promise<R> {
 	const reqId = nextId();
+	console.log("[api] call:", kind, "reqId:", reqId);
 	return new Promise((resolve, reject) => {
 		pending.set(reqId, { resolve, reject });
 		getWorker().postMessage({ kind, reqId, ...payload } as any);

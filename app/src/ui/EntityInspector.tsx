@@ -5,23 +5,28 @@
 // the map) and renders:
 //   - an Attributes tab — the entity's base fields (id, name, color, capital,
 //     population, founded/dissolved year, ...) as a labelled readout, and
-//   - a History tab — a placeholder for the Phase 4 timeline. Today there is
-//     no `timeline` in the store, so this tab shows the entity's year-0
-//     anchor facts (founded_year / dissolved_year / population) and a note
-//     that the chronicle fills in once `generateTimeline` lands (Phase 4,
-//     plan Step 4.2). The component is structured so the History tab can be
-//     swapped for a TipTap editor (Step 6.1) with no prop changes.
+//   - a History tab — renders timeline events (Phase 5.1) filtered to the
+//     selected entity. If no timeline exists yet or no events match this
+//     entity, shows a placeholder + the year-0 anchor facts. Once
+//     `generateTimeline` runs, the chronicle fills in the entity's
+//     succession / schism / conquest events. The component is structured so
+//     the History tab can be swapped for a TipTap editor (Step 6.1) with no
+//     prop changes.
 //
 // The inspector renders nothing when no entity is selected — it is purely a
 // readout, never an editor (entity name/color edits live in EntityPanel).
 
 import { useMemo } from "react";
 import type {
-  Culture,
-  Religion,
-  State,
+	TimelineEvent,
+} from "../core/api";
+import type {
+	Culture,
+	Religion,
+	State,
 } from "../state/types";
 import { useWorldgenStore } from "../state/worldgenStore";
+import { useTimelineScrub } from "./useTimelineScrub";
 
 type EntityKind = "state" | "province" | "culture" | "religion";
 
@@ -113,9 +118,11 @@ export function EntityInspector(): React.ReactElement | null {
   const selectedEntity = useWorldgenStore((s) => s.selectedEntity);
   const statesResult = useWorldgenStore((s) => s.statesResult);
   const culturesResult = useWorldgenStore((s) => s.culturesResult);
+  const timeline = useWorldgenStore((s) => s.timeline);
+  const scrubTo = useTimelineScrub();
 
-  const { kind, entity, attrs } = useMemo(() => {
-    if (!selectedEntity) return { kind: null, entity: null, attrs: [] };
+  const { kind, entity, attrs, events } = useMemo(() => {
+    if (!selectedEntity) return { kind: null, entity: null, attrs: [], events: [] };
     const k = selectedEntity.kind as EntityKind;
     const i = selectedEntity.id;
     let ent: State | Culture | Religion | { id: number; name: string; color: number } | null = null;
@@ -130,8 +137,23 @@ export function EntityInspector(): React.ReactElement | null {
         : culturesResult?.religions;
       ent = vec?.find((e) => e.id === i) ?? null;
     }
-    return { kind: k, entity: ent, attrs: ent ? buildAttrs(k, ent) : [] };
-  }, [selectedEntity, statesResult, culturesResult]);
+    // Phase 5.1: filter timeline events matching this entity. Map the
+    // EntityKind to the capitalized EntityType used by TimelineEvent.
+    const entityTypeMap: Record<EntityKind, string> = {
+      state: "State",
+      province: "Province",
+      culture: "Culture",
+      religion: "Religion",
+    };
+    const targetType = entityTypeMap[k];
+    const filtered = timeline
+      ? timeline.filter(
+          (ev: TimelineEvent) =>
+            ev.entity_type === targetType && ev.entity_id === i,
+        )
+      : [];
+    return { kind: k, entity: ent, attrs: ent ? buildAttrs(k, ent) : [], events: filtered };
+  }, [selectedEntity, statesResult, culturesResult, timeline]);
 
   if (!kind || !entity) {
     return (
@@ -227,7 +249,7 @@ export function EntityInspector(): React.ReactElement | null {
         </tbody>
       </table>
 
-      {/* History tab — placeholder until Phase 4 wires the timeline. */}
+      {/* History tab — populated from timeline events (Phase 5.1). */}
       <div
         style={{
           borderTop: "1px solid #21262d",
@@ -246,19 +268,71 @@ export function EntityInspector(): React.ReactElement | null {
         >
           History
         </span>
-        <div
-          style={{
-            fontSize: "0.78rem",
-            color: "#6e7681",
-            fontStyle: "italic",
-            lineHeight: 1.5,
-          }}
-        >
-          No chronicle yet. The timeline engine (Phase 4, plan Step 4.2) will
-          populate this tab with the entity's succession / schism / conquest
-          events once <code>generateTimeline</code> runs. Today the year-0
-          anchor facts above are the only history available.
-        </div>
+        {events.length > 0 ? (
+          <div
+            style={{
+              fontSize: "0.78rem",
+              color: "#e6edf3",
+            }}
+          >
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: "0.76rem",
+                fontFamily: "monospace",
+              }}
+            >
+              <tbody>
+                {events.map((ev: TimelineEvent) => (
+                  <tr key={ev.id}>
+                    <td
+                      style={{
+                        color: "#8b949e",
+                        paddingRight: "0.4rem",
+                        verticalAlign: "top",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        textUnderlineOffset: "1px",
+                      }}
+                      onClick={() => scrubTo(ev.year)}
+                      title={`Jump to year ${ev.year}`}
+                    >
+                      {ev.year}
+                    </td>
+                    <td
+                      style={{
+                        color: "#6e7681",
+                        paddingRight: "0.4rem",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {ev.kind}
+                    </td>
+                    <td style={{ color: "#e6edf3" }}>
+                      {ev.narrative ?? <span style={{ fontStyle: "italic", opacity: 0.6 }}>No narrative.</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div
+            style={{
+              fontSize: "0.78rem",
+              color: "#6e7681",
+              fontStyle: "italic",
+              lineHeight: 1.5,
+            }}
+          >
+            No chronicle events for this entity yet. The timeline engine
+            (Phase 5.1) populates this tab with the entity's succession /
+            schism / conquest events once <code>generateTimeline</code>
+            runs. Today the year-0 anchor facts above are the only history
+            available.
+          </div>
+        )}
         <div
           style={{
             marginTop: "0.3rem",

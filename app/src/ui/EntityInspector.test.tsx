@@ -6,17 +6,22 @@
 //     province / culture / religion) — every row the component promises is
 //     present and carries the right value.
 //   - the History tab shows the year-0 anchor line (founded / dissolved).
+//   - the History tab renders timeline events filtered to the selected
+//     entity, or an empty placeholder when none exist.
+//   - clicking a year in the History tab triggers a scrub_world message
+//     (via the shared useTimelineScrub hook) so the map morphs to that year.
 //   - the component is a pure readout: selecting an entity that doesn't exist
 //     in the current pack renders the hint, not a crash.
 //
 // The inspector is rendered into a jsdom container via `react-dom/client`
-// (same harness as `CellInspector.test.tsx`). No fake worker is needed —
-// the inspector never calls `coreApi`.
+// (same harness as `CellInspector.test.tsx`). A fake worker is injected for
+// the click-to-scrub test via `__setWorkerForTest`.
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Religion } from "../state/types";
+import { __setWorkerForTest } from "../core/api";
 import { useWorldgenStore } from "../state/worldgenStore";
 import { EntityInspector } from "./EntityInspector";
 
@@ -53,6 +58,7 @@ beforeEach(() => {
       provinces: false,
       cultures: false,
       religions: false,
+			burgs: false,
     },
     selectedEntity: null,
     statesResult: null,
@@ -209,6 +215,139 @@ describe("EntityInspector — state readout", () => {
     expect(text).toMatch(/History/);
     expect(text).toMatch(/founded -200/);
     expect(text).toMatch(/dissolved extant/);
+    unmount();
+  });
+
+  it("renders timeline events filtered to the selected state", () => {
+    useWorldgenStore.setState({
+      selectedEntity: { kind: "state", id: 1 },
+      statesResult: fakeStatesResult(),
+      culturesResult: fakeCulturesResult(),
+      timeline: [
+        {
+          id: 101,
+          year: 250,
+          entity_id: 1,
+          entity_type: "State",
+          kind: "Conquer",
+          payload: { kind: "none" },
+          narrative: "Annexed the northern provinces.",
+        },
+        {
+          id: 102,
+          year: 300,
+          entity_id: 1,
+          entity_type: "State",
+          kind: "Dissolve",
+          payload: { kind: "none" },
+          narrative: null,
+        },
+        {
+          id: 103,
+          year: 500,
+          entity_id: 2,
+          entity_type: "State",
+          kind: "GoldenAge",
+          payload: { kind: "golden_age", target_state: 2, decade: 5 },
+          narrative: "A different state's event.",
+        },
+      ],
+    });
+    const { container, unmount } = renderInspector();
+    const text = container.textContent ?? "";
+    // Events for entity 1 should appear.
+    expect(text).toMatch(/250/);
+    expect(text).toMatch(/Conquer/);
+    expect(text).toMatch(/Annexed the northern provinces/);
+    expect(text).toMatch(/300/);
+    expect(text).toMatch(/Dissolve/);
+    // Null narrative falls back to placeholder text.
+    expect(text).toMatch(/No narrative/);
+    // The event for entity 2 is filtered out.
+    expect(text).not.toMatch(/500/);
+    expect(text).not.toMatch(/GoldenAge/);
+    expect(text).not.toMatch(/A different state/);
+    unmount();
+  });
+
+  it("shows the empty placeholder when no timeline events match", () => {
+    useWorldgenStore.setState({
+      selectedEntity: { kind: "state", id: 1 },
+      statesResult: fakeStatesResult(),
+      culturesResult: fakeCulturesResult(),
+      timeline: [],
+    });
+    const { container, unmount } = renderInspector();
+    const text = container.textContent ?? "";
+    expect(text).toMatch(/No chronicle events for this entity yet/);
+    unmount();
+  });
+
+  it("clicking a year in the History tab triggers a scrub_world message", async () => {
+    type AnyReq = { kind: string; reqId: number; [k: string]: unknown };
+    class FakeWorker {
+      public lastMessage: AnyReq | null = null;
+      public onmessage: ((e: MessageEvent) => void) | null = null;
+      postMessage(msg: AnyReq) { this.lastMessage = msg; }
+      reply(result: unknown) {
+        const evt = {
+          data: { kind: this.lastMessage!.kind, reqId: this.lastMessage!.reqId, ok: true, result },
+        } as unknown as MessageEvent;
+        this.onmessage?.(evt);
+      }
+    }
+    const fake = new FakeWorker();
+    __setWorkerForTest(fake as unknown as Worker);
+
+    useWorldgenStore.setState({
+      selectedEntity: { kind: "state", id: 1 },
+      statesResult: fakeStatesResult(),
+      culturesResult: fakeCulturesResult(),
+      timeline: [
+        {
+          id: 101,
+          year: 250,
+          entity_id: 1,
+          entity_type: "State",
+          kind: "Conquer",
+          payload: { kind: "none" },
+          narrative: "Annexed the northern provinces.",
+        },
+      ],
+      eraStart: 0,
+      eraEnd: 1000,
+    });
+
+    const { container, unmount } = renderInspector();
+
+    // The year cell is clickable in the History events table. Find it by
+    // its title attribute (set on click-target <td>s).
+    const yearCells = container.querySelectorAll('td[title^="Jump to year"]');
+    expect(yearCells.length).toBeGreaterThan(0);
+    await act(async () => {
+      yearCells[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // The scrubTo hook calls setCurrentYear + posts scrub_world.
+    expect(fake.lastMessage).toBeDefined();
+    expect(useWorldgenStore.getState().currentYear).toBe(250);
+    expect(fake.lastMessage?.kind).toBe("scrub_world");
+    expect(fake.lastMessage?.target_year).toBe(250);
+
+    // Reply so the promise resolves and projectedWorld gets set.
+    fake.reply({
+      year: 250,
+      cells_state: [], cells_province: [], cells_culture: [],
+      cells_religion: [], cells_burg: [], pack: fakeStatesResult().pack,
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useWorldgenStore.getState().projectedWorld?.year).toBe(250);
+
+    __setWorkerForTest(null);
     unmount();
   });
 });

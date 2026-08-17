@@ -153,6 +153,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		},
 		rivers: [],
 		lakes: [],

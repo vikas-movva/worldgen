@@ -139,6 +139,7 @@ beforeEach(() => {
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		},
 		editorTool: "raise",
 		brushRadius: 30,

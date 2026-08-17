@@ -35,7 +35,8 @@ export type LayerName =
 	| "states"
 	| "provinces"
 	| "cultures"
-	| "religions";
+	| "religions"
+	| "burgs";
 export type LayerState = Record<LayerName, boolean>;
 
 /** The four anthropological entity kinds (states/provinces/cultures/religions). */
@@ -80,6 +81,7 @@ export class WorldMap {
 		provinces: false,
 		cultures: false,
 		religions: false,
+		burgs: false,
 	};
 	private worldW: number;
 	private worldH: number;
@@ -136,6 +138,19 @@ export class WorldMap {
 	private lakeGfx: Graphics | null = null;
 	/** Last on-screen width (px) of river polylines; exposed for tests. */
 	private riverStrokeWidth = 0;
+	/**
+	 * Step 3.4: burgs point overlay. Draws a marker per burg scaled by
+	 * population, with capitals drawn distinctly (larger + crown color).
+	 * Markers are scale-compensated so on-screen size stays ~constant
+	 * across zoom (same pattern as rivers/selection). Re-drawn on every
+	 * pan/zoom/resize via `fitToScreen`.
+	 */
+	private burgGfx: Graphics | null = null;
+	/** Last on-screen radius (px) of burg markers; exposed for tests. */
+	private burgRadius = 0;
+	/** Stashed burg data + grid for re-drawing on camera change. */
+	private burgGrid: Grid | null = null;
+	private burgPoints: { cell: number; population: number; capital: number }[] = [];
 	/**
 	 * Step 2.5.6: stashed river + lake geometry + the grid it was computed
 	 * for, so `fitToScreen` can re-stroke the polylines at the new camera
@@ -223,6 +238,8 @@ export class WorldMap {
 		});
 
 		this.view = new Container({ isRenderGroup: true });
+		this.burgGfx = new Graphics();
+		this.burgGfx.label = "burgs";
 		this.view.addChild(
 			this.terrainMesh,
 			this.biomeMesh,
@@ -230,6 +247,7 @@ export class WorldMap {
 			this.provinceMesh,
 			this.cultureMesh,
 			this.religionMesh,
+			this.burgGfx,
 		);
 		this.applyLayers();
 	}
@@ -296,6 +314,8 @@ export class WorldMap {
 		this.drawRiversLakes();
 		// Re-stroke state borders (Provinces layer) at the new scale.
 		this.drawStateBorders();
+		// Re-draw burg markers at the new scale (scale-compensated).
+		this.drawBurgs();
 	}
 
 	/**
@@ -713,6 +733,38 @@ export class WorldMap {
 	}
 
 	/**
+	 * Step 3.4: the on-screen radius (px) of the current burg markers — the
+	 * value the scale-compensated local radius renders at. Exposed for tests
+	 * to assert the markers stay a thin hairline (~4 px) across zoom. Returns
+	 * 0 when no burgs are drawn.
+	 */
+	getBurgRadius(): number {
+		return this.layers.burgs ? this.burgRadius : 0;
+	}
+
+	/**
+	 * Step 3.4: set the burg markers to overlay on the map. Each burg is drawn
+	 * as a circle centered on its cell's centroid, with radius scaled by
+	 * population (FMG scales marker size by `population`). Capitals are drawn
+	 * with a distinct gold crown color and a larger base radius.
+	 *
+	 * The geometry is stashed so `fitToScreen` can re-draw at the new camera
+	 * scale (marker radius is in view-local units, same scale-compensation
+	 * pattern as rivers/selection/state-borders).
+	 *
+	 * @param grid  the Grid (for `mesh.points` cell centroids).
+	 * @param burgs the burg list from `pack.burgs` (Phase 3.4).
+	 */
+	setBurgs(
+		grid: Grid | null,
+		burgs: { cell: number; population: number; capital: number }[],
+	): void {
+		this.burgGrid = grid;
+		this.burgPoints = burgs;
+		this.drawBurgs();
+	}
+
+	/**
 	 * Step 3.5: the on-screen width (px) of the current state-border
 	 * strokes — the value the scale-compensated local width renders at.
 	 * Exposed for tests to assert the borders stay a thin hairline (~1.5 px)
@@ -845,7 +897,75 @@ export class WorldMap {
 	}
 
 	/**
-	 * Build the per-edge TRUE-neighbor map from geometry.
+	 * Step 3.4: draw burg markers as circles on the burgGfx overlay.
+	 *
+	 * Each burg is a circle centered on its cell's centroid (`mesh.points[c]`),
+	 * projected to normalized [0,1] space (same nx/ny as the rest of the map).
+	 * The radius is in view-local units — the on-screen size is
+	 * `localRadius * meanScale`, so we divide the desired px by meanScale to
+	 * get a scale-compensated local radius (same pattern as rivers/selection).
+	 *
+	 * Marker radius grows with population: capitals get a larger base + gold
+	 * crown color; towns get a smaller radius proportional to `sqrt(pop)`.
+	 *
+	 * `fitToScreen` re-calls this on every pan/zoom/resize so the on-screen
+	 * Marker radius grows with population: capitals get a larger base + gold
+	 * crown stroke; towns get a smaller radius proportional to `sqrt(pop)`.
+	 *
+	 * `fitToScreen` re-calls this on every pan/zoom/resize.
+	 */
+	private drawBurgs(): void {
+		if (!this.burgGfx) return;
+		const gfx = this.burgGfx;
+		gfx.clear();
+		gfx.visible = this.layers.burgs;
+		this.burgRadius = 0;
+		if (!this.layers.burgs || !this.burgGrid || this.burgPoints.length === 0) {
+			return;
+		}
+		const grid = this.burgGrid;
+		const worldW = grid.mesh.world_w || 1;
+		const worldH = grid.mesh.world_h || 1;
+		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
+		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		// World-normalized radius. baseScaleX/Y is the fit-to-screen px scale;
+		// dividing by it converts a desired px size into [0,1] world units.
+		// The zoom multiplier is NOT applied here (unlike rivers/selection),
+		// because burg markers should be part of the world — they scale with
+		// view.scale (which already includes zoom). A minimum floor keeps them
+		// visible at max-out zoom.
+		const meanScale = (this.baseScaleX + this.baseScaleY) / 2;
+		// Desired on-screen radius in px: capitals ~5px, towns scaled by pop.
+		const desiredPx = (pop: number, capital: number) =>
+			capital > 0 ? 5 : 2.5 + Math.min(2.5, Math.sqrt(pop) / 25);
+		// Floor: at minimum zoom (0.15), keep burg ≥ ~2 px on screen so it's
+		// never lost in the terrain.
+		const minScreenPx = 2;
+		const localRadius = (pop: number, capital: number) =>
+			Math.max(
+				minScreenPx / meanScale / Math.max(this.zoom, 0.15),
+				desiredPx(pop, capital) / meanScale,
+			);
+		const pts = grid.mesh.points as unknown as [number, number][];
+		gfx.beginFill(0x222222, 0.85);
+		gfx.lineStyle(1 / 4096, 0xd4af37, 0.7);
+		let maxScreen = 0;
+		for (let i = 0; i < this.burgPoints.length; i++) {
+			const b = this.burgPoints[i];
+			if (!b || b.cell < 0 || b.cell >= pts.length) continue;
+			const pt = pts[b.cell];
+			if (!pt) continue;
+			const r = localRadius(b.population, b.capital);
+			gfx.drawCircle(nx(pt[0]), ny(pt[1]), r);
+			if (b.capital > 0)
+				maxScreen = Math.max(maxScreen, r * this.baseScaleX * this.zoom);
+		}
+		gfx.endFill();
+		// Track the largest on-screen radius for capitals (for tests).
+		this.burgRadius = maxScreen;
+	}
+
+	/** Build the per-edge TRUE-neighbor map from geometry.
 	 *
 	 * The mesh's `cells.c` is NOT edge-aligned to `cells.v` (it's rotated by
 	 * one per cell), so `cells.c[r]` is the wrong neighbor for segment
@@ -1025,6 +1145,9 @@ export class WorldMap {
 		if (this.stateBorderGfx)
 			this.stateBorderGfx.visible = this.layers.provinces;
 		this.drawStateBorders();
+		// Burgs overlay: re-draw at the current scale (visible flag checked
+		// inside drawBurgs).
+		this.drawBurgs();
 	}
 
 	/** Toggle layer visibility. No geometry rebuild -- pure visibility swap. */
@@ -1269,13 +1392,14 @@ export class WorldMap {
 		);
 
 		// Upload all four textures.
-		this.textures[2]?.source.update();
-		this.textures[3]?.source.update();
-		this.textures[4]?.source.update();
-		this.textures[5]?.source.update();
+	console.log("[updateEntities] uploading textures for year", world.year, "stateCells[0..5]:", stateCells.slice(0, 5), "world.cells_state[0..5]:", world.cells_state?.slice(0, 5), "pack.states.length:", world.pack.states?.length);
+	this.textures[2]?.source.update();
+	this.textures[3]?.source.update();
+	this.textures[4]?.source.update();
+	this.textures[5]?.source.update();
 
-		// Re-draw state borders from projected ownership.
-		this.drawStateBorders();
+	// Re-draw state borders from projected ownership.
+	this.drawStateBorders();
 	}
 
 	/**
@@ -1374,6 +1498,11 @@ export class WorldMap {
 		this.drainageRivers = [];
 		this.drainageLakes = [];
 		this.riverStrokeWidth = 0;
+		// Step 3.4: drop the burg overlay refs so a dangling re-draw finds
+		// no data and no-ops.
+		this.burgGrid = null;
+		this.burgPoints = [];
+		this.burgRadius = 0;
 	}
 }
 

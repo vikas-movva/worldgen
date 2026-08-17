@@ -11,7 +11,8 @@
 //! (TODO markers inline).
 //!
 //! Port of FMG `states-generator.ts` (`expandStates`), `burgs-generator.ts`
-//! (`generateCapitals`), and `provinces-generator.ts` (`generateProvinces`).
+//! (`generateCapitals` + `generateTowns` + `definePopulation`), and
+//! `provinces-generator.ts` (`generateProvinces`).
 
 use crate::entities::{Burg, Pack, Province, State};
 use crate::grid::Grid;
@@ -154,6 +155,12 @@ pub fn generate_states_with_rates(
 
     // --- 3. Expand state frontiers (Dijkstra) -------------------------------
     expand_states(grid, &suitability, &pack, &mut cells_state, growth, states_growth);
+
+    // --- 3b. Seed additional town burgs (FMG `generateTowns`) ----------------
+    // Run after state expansion so towns inherit their cell's state ownership.
+    // Capitals already exist in pack.burgs from seed_capitals; generate_towns
+    // appends non-capital burgs and writes their ids into cells_burg.
+    generate_towns(grid, &mut rng, &suitability, &mut pack, &mut cells_burg);
 
     // Assign burgs to states based on their cell's state ownership.
     for burg in &mut pack.burgs {
@@ -362,7 +369,7 @@ fn seed_capitals(
             state: state_id,
             culture: 0, // TODO Phase 3.3
             religion: 0, // TODO Phase 3.3
-            population: (suitability[cell] / 5.0).max(1.0), // FMG: pop = s/5
+            population: define_population(rng, suitability, cell, true, 1.0), // FMG: pop = s/5, capital x1.5
             feature: 0, // TODO: no feature field on CellData yet (Phase 2.5.3 uses LakeGeo)
             capital: 1,
             founded_year: 0,
@@ -397,6 +404,210 @@ fn seed_capitals(
         );
         cells_burg[cell] = burg_id as i16;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Seed towns — FMG `generateTowns` (non-capital burgs)
+// ---------------------------------------------------------------------------
+
+/// Generate a Gaussian-randomized score multiplier for town placement.
+///
+/// FMG `gauss(mean, stdDev, min, max, rng)` — a truncated Gaussian via the
+/// Box-Muller transform with the output clamped to `[min, max]`. The Rust
+/// port uses the project RNG (seeded deterministically) and is consumed in
+/// the same call order as FMG so the result set is reproducible.
+fn gauss(rng: &mut StdRng, mean: f64, std_dev: f64, min: f64, max: f64) -> f64 {
+    // Box-Muller polar form (avoid sin/cos; Marsaglia's method).
+    let mut s = 1.0;
+    let mut u = 0.0;
+    while s >= 1.0 || s == 0.0 {
+        u = rng.gen::<f64>() * 2.0 - 1.0;
+        let v = rng.gen::<f64>() * 2.0 - 1.0;
+        s = u * u + v * v;
+    }
+    let mag = s.sqrt();
+    let z = u * mag;
+    let val = mean + std_dev * z;
+    val.clamp(min, max)
+}
+
+/// Count the number of towns to place for this world, mirroring FMG's
+/// `getTownsNumber()`. When `manors` is `None` the count is auto-computed as
+/// `populated / 5 / (N / 10000)^0.8`; otherwise it is `min(manors, populated)`.
+fn compute_town_count(populated: usize, n: u32, manors: Option<u32>) -> u32 {
+    if let Some(m) = manors {
+        return m.min(populated as u32);
+    }
+    let scale = (n as f64 / 10000.0).max(1.0);
+    let raw = (populated as f64) / 5.0 / scale.powf(0.8);
+    raw.round().max(0.0) as u32
+}
+
+/// Place non-capital town burgs on suitable land cells, mirroring FMG's
+/// `generateTowns()`. Cities are scored by `suitability * gauss(1, 3, 0, 20, 3)`,
+/// sorted descending, then placed with a minimum-spacing constraint enforced
+/// by a spatial hash grid (same pattern as `seed_capitals`). Each placed town
+/// gets its population assigned via `define_population`.
+///
+/// `cells_burg` is read AND written: cells already holding a capital (burg > 0)
+/// are skipped, and newly-placed towns write their burg id into `cells_burg`.
+fn generate_towns(
+    grid: &Grid,
+    rng: &mut StdRng,
+    suitability: &[f64],
+    pack: &mut Pack,
+    cells_burg: &mut [i16],
+) {
+    let n = grid.cell_count();
+    let world_w = grid.mesh.world_w;
+    let world_h = grid.mesh.world_h;
+
+    // FMG `populatedCells`: land cells with suitability > 0 and a culture id.
+    // Our MVP has no per-cell culture at this stage (culture generation runs
+    // after states), so we use suitability > 0 as the populated-cell proxy —
+    // matching the spirit of FMG's filter.
+    let populated: Vec<usize> = (0..n)
+        .filter(|&i| grid.cells.h[i] >= SEA_LEVEL && suitability[i] > 0.0)
+        .collect();
+
+    if populated.is_empty() {
+        return;
+    }
+
+    // Score + sort descending (FMG: score * gauss(1, 3, 0, 20, 3)).
+    let mut scored: Vec<(usize, f64)> = populated
+        .iter()
+        .map(|&cell| {
+            let score = suitability[cell] * gauss(rng, 1.0, 3.0, 0.0, 20.0);
+            (cell, score)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let town_count = compute_town_count(populated.len(), n as u32, None);
+    if town_count == 0 {
+        return;
+    }
+
+    // Minimum-spacing for towns (FMG: `(W+H)/2/150 / (burgsNumber^0.7 / 66)`).
+    let spacing = (world_w + world_h) / 2.0 / 150.0 / (town_count as f64).powf(0.7) / 66.0;
+    let spacing = if spacing.is_finite() && spacing > 0.0 {
+        spacing
+    } else {
+        // Fallback for very small town counts.
+        (world_w + world_h) / 2.0 / town_count as f64
+    };
+    let bucket_size = spacing.max(1.0);
+    let cols = (world_w / bucket_size).ceil().max(1.0) as usize;
+    let rows = (world_h / bucket_size).ceil().max(1.0) as usize;
+
+    let mut occupied: Vec<Vec<[f64; 2]>> = vec![Vec::new(); cols * rows];
+
+    let mut placed: Vec<usize> = Vec::new();
+
+    for &(cell, _score) in &scored {
+        if placed.len() >= town_count as usize {
+            break;
+        }
+        // Skip cells that already hold a capital or town.
+        if cells_burg[cell] > 0 {
+            continue;
+        }
+        let [x, y] = grid.mesh.points[cell];
+        let bx = (x / bucket_size).floor() as usize;
+        let by = (y / bucket_size).floor() as usize;
+        let bx = bx.min(cols.saturating_sub(1));
+        let by = by.min(rows.saturating_sub(1));
+
+        let min_spacing = spacing * gauss(rng, 1.0, 0.3, 0.2, 2.0);
+        let min_spacing2 = min_spacing * min_spacing;
+
+        let mut too_close = false;
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let nx = bx as i32 + dx;
+                let ny = by as i32 + dy;
+                if nx < 0 || ny < 0 || nx >= cols as i32 || ny >= rows as i32 {
+                    continue;
+                }
+                let bucket = &occupied[ny as usize * cols + nx as usize];
+                for &[px, py] in bucket {
+                    let dist2 = (px - x).powi(2) + (py - y).powi(2);
+                    if dist2 < min_spacing2 {
+                        too_close = true;
+                        break;
+                    }
+                }
+                if too_close {
+                    break;
+                }
+            }
+            if too_close {
+                break;
+            }
+        }
+
+        if too_close {
+            continue;
+        }
+
+        occupied[by * cols + bx].push([x, y]);
+        placed.push(cell);
+    }
+
+    // Create Burg records for each placed town (non-capital). FMG assigns ids
+    // sequentially — capitals already occupy ids `1..=pack.states.len()`, so
+    // towns start at `states.len() + 1`.
+    for (idx, &cell) in placed.iter().enumerate() {
+        let burg_id = (pack.states.len() + idx + 1) as u32;
+        let population = define_population(rng, suitability, cell, false, 1.0);
+
+        let burg = Burg {
+            id: burg_id,
+            name: format!("Town {}", burg_id),
+            cell: cell as u32,
+            state: 0, // assigned below from cells_state
+            culture: 0, // TODO Phase 3.3
+            religion: 0, // TODO Phase 3.3
+            population,
+            feature: 0,
+            capital: 0, // non-capital
+            founded_year: 0,
+            dissolved_year: None,
+        };
+        pack.burgs.push(burg);
+
+        debug_assert!(burg_id <= i16::MAX as u32, "burg id {} exceeds i16::MAX", burg_id);
+        cells_burg[cell] = burg_id as i16;
+    }
+}
+
+/// Assign a burg's population from cell suitability, mirroring FMG's
+/// `definePopulation()`. Formula: `pop = suitability / 5`, multiplied by 1.5
+/// for capitals, then randomized by `gauss(1, 1, 0.25, 4, 5)`.
+///
+/// Uses the shared `rng` stream (same as FMG) so the Gaussian jitter is
+/// reproducible across the same seeding. `connectivity_rate` is a placeholder
+/// for FMG's `Routes.getConnectivityRate` (Phase 5 routes engine); it is
+/// fixed at `1.0` (identity) until that lands.
+fn define_population(
+    rng: &mut StdRng,
+    suitability: &[f64],
+    cell: usize,
+    is_capital: bool,
+    connectivity_rate: f64,
+) -> f64 {
+    let mut pop = suitability[cell] / 5.0;
+    if is_capital {
+        pop *= 1.5;
+    }
+    pop *= connectivity_rate;
+    // Randomize: gauss(1, 1, 0.25, 4, 5).
+    pop *= gauss(rng, 1.0, 1.0, 0.25, 4.0);
+    pop.max(0.01)
 }
 
 /// Generate a packed RGB color for a state. Derives color deterministically
@@ -1226,8 +1437,13 @@ mod tests {
         );
         if !result.pack.states.is_empty() {
             assert_eq!(result.pack.states[0].id, 1);
-            assert_eq!(result.pack.burgs.len(), 1, "expected exactly 1 burg");
-            assert_eq!(result.pack.burgs[0].capital, 1);
+            // At least 1 burg (the capital). With town generation, a single
+            // state on a 1000-cell world also gets non-capital towns appended
+            // by generate_towns — assert the capital is burg #1 and is marked
+            // capital.
+            assert!(!result.pack.burgs.is_empty(), "expected at least 1 burg");
+            assert_eq!(result.pack.burgs[0].capital, 1, "expected first burg to be a capital");
+            assert_eq!(result.pack.burgs[0].id, 1);
         }
     }
 
@@ -1248,5 +1464,135 @@ mod tests {
                 i
             );
         }
+    }
+
+    /// Step 3.4: generateTowns ports — verify the town generation logic
+    /// produces additional non-capital burgs and they satisfy invariants.
+    #[test]
+    fn towns_generate_more_burgs_than_capitals_only() {
+        let grid = test_grid(42, 10_000);
+        let result = generate_states(&grid, 42, 12);
+        // There should be more burgs than states (capitals = states.len()).
+        assert!(
+            result.pack.burgs.len() > result.pack.states.len(),
+            "expected towns: burgs={} states={}",
+            result.pack.burgs.len(),
+            result.pack.states.len(),
+        );
+        // All burgs on land.
+        for burg in &result.pack.burgs {
+            let cell = burg.cell as usize;
+            assert!(cell < grid.cell_count(), "burg cell out of bounds");
+            assert!(
+                grid.cells.h[cell] >= SEA_LEVEL,
+                "burg {} on water cell {}",
+                burg.id,
+                cell,
+            );
+        }
+        // Exactly `states.len()` capitals exist.
+        let capitals = result.pack.burgs.iter().filter(|b| b.capital == 1).count();
+        assert_eq!(
+            capitals,
+            result.pack.states.len(),
+            "expected {} capitals, got {}",
+            result.pack.states.len(),
+            capitals,
+        );
+    }
+
+    /// Step 3.4: towns that sit on state-claimed land cells are assigned to
+    /// that state. Some towns may land on unclaimed land (islands the state
+    /// expansion didn't reach); those keep state=0, matching FMG's behavior.
+    #[test]
+    fn towns_assigned_to_states() {
+        let grid = test_grid(42, 10_000);
+        let result = generate_states(&grid, 42, 12);
+        let towns: Vec<_> = result.pack.burgs.iter().filter(|b| b.capital == 0).collect();
+        if towns.is_empty() {
+            return; // small world — skip
+        }
+        let mut assigned = 0;
+        for town in &towns {
+            let cell = town.cell as usize;
+            if cell < grid.cell_count() {
+                let s = result.cells_state[cell];
+                if s > 0 {
+                    assigned += 1;
+                    // The burg.state must match the cell's owning state.
+                    assert_eq!(
+                        town.state, s as u32,
+                        "town {} state mismatch: burg.state={} cell state={}",
+                        town.id, town.state, s,
+                    );
+                }
+                // s <= 0 (unclaimed land) → town.state stays 0; that's valid.
+            }
+        }
+        // At least some towns must have been assigned for the test to be meaningful.
+        assert!(
+            assigned > 0,
+            "no towns assigned to any state (expected at least 1 on a 10k world)",
+        );
+    }
+
+    /// Step 3.4: town generation is deterministic — same seed yields identical
+    /// burg list (same ids, cells, populations, capitals flag).
+    #[test]
+    fn town_generation_is_deterministic() {
+        let grid = test_grid(42, 10_000);
+        let r1 = generate_states(&grid, 42, 12);
+        let r2 = generate_states(&grid, 42, 12);
+        assert_eq!(r1.pack.burgs.len(), r2.pack.burgs.len(), "burg count differs");
+        for (a, b) in r1.pack.burgs.iter().zip(r2.pack.burgs.iter()) {
+            assert_eq!(a.id, b.id, "burg id mismatch");
+            assert_eq!(a.cell, b.cell, "burg cell mismatch");
+            assert_eq!(a.capital, b.capital, "burg capital mismatch");
+            assert_eq!(a.population.to_bits(), b.population.to_bits(), "pop mismatch");
+        }
+        assert_eq!(r1.cells_burg, r2.cells_burg);
+    }
+
+    /// Step 3.4: burgs have non-zero population (definePopulation).
+    #[test]
+    fn burg_populations_are_positive() {
+        let grid = test_grid(42, 10_000);
+        let result = generate_states(&grid, 42, 12);
+        for burg in &result.pack.burgs {
+            assert!(
+                burg.population >= 0.01,
+                "burg {} has non-positive population {}",
+                burg.id,
+                burg.population,
+            );
+        }
+    }
+
+    /// Step 3.4: the gauss() truncated Gaussian respects its [min, max] clamp.
+    #[test]
+    fn gauss_respects_clamp() {
+        let mut rng = StdRng::seed_from_u64(42);
+        for _ in 0..1000 {
+            let v = gauss(&mut rng, 1.0, 1.0, 0.25, 4.0);
+            assert!(
+                v >= 0.25 && v <= 4.0,
+                "gauss output {} out of [0.25, 4.0]",
+                v,
+            );
+        }
+    }
+
+    /// Step 3.4: compute_town_count with an explicit manors cap clamps to populated.
+    #[test]
+    fn town_count_respects_manors_cap() {
+        assert_eq!(compute_town_count(1000, 10_000, Some(50)), 50);
+        // Capped by populated.
+        assert_eq!(compute_town_count(100, 10_000, Some(500)), 100);
+        // Auto mode: populated / 5 / (N/10000)^0.8
+        // N=10000 → scale=1.0 → 1000/5/1 = 200
+        assert_eq!(compute_town_count(1000, 10_000, None), 200);
+        // N=40000 → scale=4 → 1000/5 / 4^0.8 ≈ 200 / 3.03 ≈ 66
+        let expected = (1000.0 / 5.0 / (40000.0_f64 / 10000.0).powf(0.8)).round() as u32;
+        assert_eq!(compute_town_count(1000, 40_000, None), expected);
     }
 }

@@ -11,10 +11,10 @@
 // one (design §5.1 verification: "Old worker responses cannot overwrite newer
 // years").
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { coreApi } from "../core/api";
-import type { WorldAt } from "../core/api";
 import { useWorldgenStore } from "../state/worldgenStore";
+import { useTimelineScrub } from "./useTimelineScrub";
 
 /** Playback speed options in years/sec. */
 const SPEED_OPTIONS = [1, 5, 10, 25, 50];
@@ -35,69 +35,10 @@ export function Timeline(): React.ReactElement | null {
 	const setIsPlaying = useWorldgenStore((s) => s.setIsPlaying);
 	const setPlaybackSpeed = useWorldgenStore((s) => s.setPlaybackSpeed);
 	const setScrubStatus = useWorldgenStore((s) => s.setScrubStatus);
-	const setProjectedWorld = useWorldgenStore((s) => s.setProjectedWorld);
 
-	// The monotonically increasing reqId for the most recent scrub call.
-	// Stored in a ref so the guard doesn't trigger re-renders — only the
-	// `currentYear` change (which actually changes the projection) matters.
-	const scrubReqIdRef = useRef(0);
-	// Last projected year, so we know which direction (forward vs jump) to
-	// request from the worker. The worker's `scrub_world` handler decides
-	// checkpoint-vs-delta internally; we just pass fromYear + targetYear.
-	const lastProjectedYearRef = useRef<number | null>(null);
-
-	// Scrub to `targetYear` via the worker. Returns a promise that resolves
-	// only if no newer scrub request supersedes this one (by reqId).
-	const scrubTo = (targetYear: number) => {
-		const reqId = ++scrubReqIdRef.current;
-		setCurrentYear(targetYear);
-		setScrubStatus("loading");
-
-		const pack = statesResult?.pack;
-		const cells_state = statesResult?.cells_state ?? [];
-		const cells_culture = culturesResult?.cells_culture ?? [];
-		const cells_religion = culturesResult?.cells_religion ?? [];
-		const cells_burg = statesResult?.cells_burg ?? [];
-		const tl = timeline;
-		if (!pack || !tl) {
-			setScrubStatus("idle");
-			return;
-		}
-
-		const fromYear = lastProjectedYearRef.current ?? eraStart;
-		const prevWorld =
-			lastProjectedYearRef.current != null
-				? useWorldgenStore.getState().projectedWorld ?? undefined
-				: undefined;
-
-		coreApi
-			.scrubWorld(
-				pack,
-				cells_state,
-				cells_culture,
-				cells_religion,
-				cells_burg,
-				tl,
-				fromYear,
-				targetYear,
-				prevWorld,
-			)
-			.then((world: WorldAt) => {
-				// Stale guard: only commit if this is the most recent request.
-				if (reqId !== scrubReqIdRef.current) return;
-				lastProjectedYearRef.current = world.year;
-				setProjectedWorld(world);
-				setScrubStatus("idle");
-			})
-			.catch(() => {
-				// Stale guard: only report error if no newer request superseded.
-				if (reqId !== scrubReqIdRef.current) return;
-				setScrubStatus("error");
-			});
-	};
-
-	// Generate the timeline once we have a grid + entities, then project to
-	// year 0 (the baseline).
+	// Shared scrub function (extracted to useTimelineScrub.ts) used by both
+	// the slider and the play/pause tick below.
+	const scrubTo = useTimelineScrub();
 	useEffect(() => {
 		if (!grid || !statesResult || !culturesResult) {
 			setTimeline(null, 0, 1000);

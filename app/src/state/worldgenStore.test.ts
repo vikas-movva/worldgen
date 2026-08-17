@@ -33,6 +33,7 @@ beforeEach(() => {
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		},
 	});
 });
@@ -108,6 +109,7 @@ describe("worldgenStore initial state", () => {
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		});
 	});
 });
@@ -187,6 +189,7 @@ describe("worldgenStore.toggleLayer", () => {
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		});
 	});
 });
@@ -228,6 +231,7 @@ describe("worldgenStore.clear", () => {
 			provinces: false,
 			cultures: false,
 			religions: false,
+			burgs: false,
 		});
 	});
 });

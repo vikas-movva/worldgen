@@ -405,6 +405,11 @@ function App() {
 					active={layerEnabled.religions}
 					onClick={() => toggleEntityLayer("religion")}
 				/>
+				<LayerToggle
+					label="Burgs"
+					active={layerEnabled.burgs}
+					onClick={() => toggleLayer("burgs")}
+				/>
 				<button
 					type="button"
 					onClick={runRegenerateEntities}
