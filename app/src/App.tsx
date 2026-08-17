@@ -201,6 +201,64 @@ function App() {
 			setBusy(false);
 		}
 	}
+	async function runRegenerateEntities() {
+		if (busy || !grid) return;
+		setBusy(true);
+		const t0 = performance.now();
+		try {
+			// Re-run the entity generators on the CURRENT grid with a fresh
+			// entity seed so the user can reshuffle states/provinces/burgs +
+			// cultures/religions without regenerating the terrain. The terrain
+			// (mesh + heightmap + climate + biomes) is untouched — only the
+			// per-cell entity index arrays and the pack vectors change.
+			// NOTE: the worker's heldGrid is the post-`generateWorld` grid;
+			// we pass the store grid explicitly so the local serde path is
+			// used and the held grid stays in sync with the returned arrays.
+			const entSeed = Math.floor(Math.random() * 1_000_000);
+			const statesResult = await coreApi.generateStates(
+				grid,
+				entSeed,
+				12,
+				);
+			setStatesResult(statesResult);
+			const culturesResult = await coreApi.generateCulturesReligions(
+				grid,
+				entSeed,
+				18,
+				12,
+				statesResult,
+				);
+			setCulturesResult(culturesResult);
+			// Splice the fresh per-cell entity arrays back into the store grid
+			// so click-to-select and the state-border overlay see them.
+			setGrid({
+					...grid,
+					cells: {
+						...grid.cells,
+						state: Array.from(statesResult.cells_state),
+						province: Array.from(statesResult.cells_province),
+						culture: Array.from(culturesResult.cells_culture),
+						religion: Array.from(culturesResult.cells_religion),
+					},
+				});
+			const t1 = performance.now();
+			setResult(
+					(prev: string) =>
+						prev +
+						`  | regenerate entities: states=${statesResult.pack.states.length} ` +
+						`cultures=${culturesResult.cultures.length} ` +
+						`religions=${culturesResult.religions.length} ` +
+						`(${(t1 - t0).toFixed(0)}ms)`,
+				);
+		} catch (err) {
+			setResult(
+				(prev: string) =>
+					`${prev}  | regenerate entities Error: ${String(err)}`,
+			);
+		} finally {
+			setBusy(false);
+		}
+	}
 
 	return (
 		<div
@@ -345,6 +403,22 @@ function App() {
 					active={layerEnabled.religions}
 					onClick={() => toggleEntityLayer("religion")}
 				/>
+				<button
+					type="button"
+					onClick={runRegenerateEntities}
+					disabled={busy || !grid}
+					style={{
+						padding: "0.3rem 0.6rem",
+						fontSize: "0.8rem",
+						cursor: busy || !grid ? "wait" : "pointer",
+						border: "1px solid #30363d",
+						background: "transparent",
+						color: "#8b949e",
+					}}
+					title="Re-run states/provinces/burgs + cultures/religions with a new entity seed"
+				>
+					Regenerate entities
+				</button>
 				<span style={{ fontSize: "0.8rem", color: "#8b949e" }}>
 					rAF: {tickCount}{" "}
 					{grid ? `| grid.cells=${grid.cells.h.length} seed=${seed}` : ""}
