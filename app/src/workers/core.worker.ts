@@ -216,70 +216,104 @@ type WorkerRequest =
 		cells_religion: Int32Array;
 		cells_burg: Int16Array;
 		cells_h: Uint8Array;
+		mesh: unknown;          // serialized Mesh (serde-wasm-bindgen) for Delaunay neighbors
 		seed: number;          // u64 as JS number (safe for ≤ 2^53)
 		era_start: number;     // i32
 		era_end: number;       // i32
 		params?: TimelineParams;
 	};
 
-	// Phase 4.1 types: timeline + WorldAt (mirror Rust timeline.rs).
-// These cross the JS↔WASM boundary via serde-wasm-bindgen.
-type EventKind =
-	| "Found"
-	| "Conquer"
-	| "Disband"
-	| "Raise"
-	| "Plague"
-	| "GoldenAge"
-	| "Schism"
-	| "Secession"
-	| "Dissolve";
+	// Phase 4.1/4.2 types: timeline + WorldAt + EventPayload (mirror Rust timeline.rs).
+	// These cross the JS<->WASM boundary via serde-wasm-bindgen. Field names must
+	// match the Rust serde serialization exactly.
+	type EventKind =
+		| "Found"
+		| "Conquer"
+		| "Secession"
+		| "Succession"
+		| "CivilWar"
+		| "War"
+		| "Battle"
+		| "Treaty"
+		| "Plague"
+		| "GoldenAge"
+		| "Migrate"
+		| "Schism"
+		| "Raise"
+		| "March"
+		| "Disband"
+		| "Raze"
+		| "Dissolve";
 
-type EntityType = "State" | "Province" | "Culture" | "Religion" | "Burg";
+	type EntityType = "State" | "Province" | "Culture" | "Religion" | "Burg" | "Army" | "Pop";
 
-type EventPayload =
-	| { kind: "none" }
-	| { kind: "found"; cells: number[] }
-	| { kind: "conquer"; from_state: number; to_state: number; cells: number[] }
-	| { kind: "disband"; army: number }
-	| { kind: "raise"; army: number }
-	| { kind: "plague"; target_state: number; mortality: number }
-	| { kind: "golden_age"; target_state: number; decade: number }
-	| { kind: "schism"; parent_religion: number; child_religion: number }
-	| { kind: "secession"; cells: number[] };
+	/** War event outcome (mirrors Rust `WarOutcome`). */
+	type WarOutcome = {
+		result: number; // u8: 0=attacker wins, 1=defender wins, 2=stalemate
+		attrition: number; // f64
+		conquered_cells: number[]; // u32[]
+	};
 
-type Event = {
-	id: number; // u64
-	year: number;
-	entity_id: number;
-	entity_type: EntityType;
-	kind: EventKind;
-	payload: EventPayload;
-	narrative: string | null;
-};
+	/** EventPayload uses the Rust `#[serde(tag = "kind", content = "data")]` wire
+	 * format: non-unit variants serialize as `{ kind: "<Variant>", data: {...} }`,
+	 * unit variants as `{ kind: "<Variant>" }`. */
+	type EventPayload =
+		| { kind: "None" }
+		| { kind: "Found"; data: { cell: number } }
+		| { kind: "Succession"; data: { heir_name: string | null } }
+		| { kind: "War"; data: { opponent_state_id: number; outcome: WarOutcome } }
+		| { kind: "Conquer"; data: { payload: { cells: number[] } } }
+		| { kind: "Schism"; data: { payload: { follower_fraction: number; child_religion_id: number } } }
+		| { kind: "PopScalar"; data: { factor: number } }
+		| { kind: "Migrate"; data: { payload: { cells: number[]; target_id: number } } }
+		| { kind: "Raise"; data: { army_size: number; cell: number } }
+		| { kind: "March"; data: { cell: number } }
+		| { kind: "Disband" }
+		| { kind: "Raze"; data: { cell: number } }
+		| { kind: "Dissolve" }
+		| { kind: "Unknown" };
 
-type Timeline = Event[];
+	type Event = {
+		id: number; // u64
+		year: number;
+		entity_id: number;
+		entity_type: EntityType;
+		kind: EventKind;
+		payload: EventPayload;
+		narrative: string | null;
+	};
 
-type WorldAt = {
-	year: number;
-	cells_state: number[]; // u32 per cell
-	cells_culture: number[];
-	cells_religion: number[];
-	cells_burg: number[];
-	pack: Pack;
-};
-// Phase 4.2: parameters for timeline generation (mirror Rust TimelineParams).
-type TimelineParams = {
-	eraStart?: number;
-	eraEnd?: number;
-	foundingRate?: number;
-	warRate?: number;
-	plagueProbability?: number;
-	schismProbability?: number;
-	migrationRate?: number;
-	successionRate?: number;
-	goldenAgeProbability?: number;
-};
+	type Timeline = Event[];
+
+	type WorldAt = {
+		year: number;
+		cells_state: number[]; // u32 per cell (0 = unassigned)
+		cells_culture: number[];
+		cells_religion: number[];
+		cells_burg: number[];
+		pack: Pack;
+	};
+
+	// Phase 4.2: parameters for timeline generation (mirror Rust TimelineParams).
+	// Field names use snake_case to match the Rust serde fields exactly.
+	type TimelineParams = {
+		era_start?: number;
+		era_end?: number;
+		found_rate?: number;
+		war_rate?: number;
+		plague_prob?: number;
+		schism_prob?: number;
+		migration_prob?: number;
+		succession_rate?: number;
+		golden_age_prob?: number;
+		founding_population?: number;
+		plague_mortality?: number;
+		golden_age_growth?: number;
+		schism_fraction?: number;
+		migration_fraction?: number;
+		min_state_pop?: number;
+		rng_override?: number;
+	};
 // The Mesh shape (serialized from Rust via serde-wasm-bindgen).
 type Mesh = {
 	points: [number, number][];
@@ -788,10 +822,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 			// Phase 4.2: generate a deterministic timeline from a base Pack
 			// + year-0 cell arrays + era bounds + seed. Returns a sorted Timeline.
 			const params = {
-				eraStart: req.era_start,
-				eraEnd: req.era_end,
-				...(req.params ?? {}),
-			};
+					era_start: req.era_start,
+					era_end: req.era_end,
+					...(req.params ?? {}),
+				};
 			const result = generate_timeline(
 				req.pack,
 				req.cells_state,
@@ -799,6 +833,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
 				req.cells_religion,
 				req.cells_burg,
 				req.cells_h,
+				req.mesh,
 				BigInt(req.seed),
 				params,
 			) as Timeline;

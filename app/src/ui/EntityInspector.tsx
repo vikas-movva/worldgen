@@ -19,6 +19,7 @@
 import { useMemo } from "react";
 import type {
 	TimelineEvent,
+	WarOutcome,
 } from "../core/api";
 import type {
 	Culture,
@@ -53,6 +54,75 @@ function fmtPop(n: number | undefined): string {
 }
 
 type Attr = { label: string; value: string };
+
+/** Produce a human-readable summary of an event's payload for the History tab.
+ * Renders conquest outcomes, plague mortality, golden-age growth, schism
+ * fractions, migration, etc. Returns null when the payload has no data. */
+function formatEventPayload(ev: TimelineEvent): string | null {
+  const p = ev.payload;
+  switch (ev.kind) {
+    case "War": {
+      if (p.kind !== "War") return null;
+      const outcome: WarOutcome = p.data.outcome;
+      const resultStr =
+        outcome.result === 0
+          ? "attacker won"
+          : outcome.result === 1
+            ? "defender won"
+            : "stalemate (treaty)";
+      const cells = outcome.conquered_cells;
+      const cellsStr = cells.length > 0 ? ` — ${cells.length} cell${cells.length === 1 ? "" : "s"} conquered` : "";
+      return `${resultStr}${cellsStr} (attrition ${Math.round(outcome.attrition * 100)}%)`;
+    }
+    case "Found":
+      return p.kind === "Found" ? `founded on cell ${p.data.cell}` : "founded";
+    case "Conquer":
+      return p.kind === "Conquer" ? `claimed ${p.data.payload.cells.length} cell${p.data.payload.cells.length === 1 ? "" : "s"}` : "conquered territory";
+    case "Secession":
+      return `seceded from ${ev.entity_id}`;
+    case "Succession":
+      if (p.kind === "Succession") {
+        const heir = p.data.heir_name;
+        return heir ? `heir ${heir} inherits` : "heir inherits";
+      }
+      return "heir inherits";
+    case "CivilWar":
+      return "civil war erupts";
+    case "Plague":
+      return p.kind === "PopScalar" ? `plague (factor ${p.data.factor.toFixed(2)})` : "plague";
+    case "GoldenAge":
+      return p.kind === "PopScalar" ? `golden age (growth ×${p.data.factor.toFixed(2)})` : "golden age";
+    case "Schism":
+      if (p.kind === "Schism") {
+        const fr = p.data.payload.follower_fraction;
+        const child = p.data.payload.child_religion_id;
+        return `schism — ${Math.round(fr * 100)}% follow ${child}`;
+      }
+      return "schism";
+    case "Migrate":
+      if (p.kind === "Migrate") {
+        const n = p.data.payload.cells.length;
+        return `migration: ${n} cell${n === 1 ? "" : "s"} → entity ${p.data.payload.target_id}`;
+      }
+      return "migration";
+    case "Raise":
+      return p.kind === "Raise" ? `raised army (size ${p.data.army_size}) at cell ${p.data.cell}` : "army raised";
+    case "March":
+      return p.kind === "March" ? `army marched to cell ${p.data.cell}` : "army marched";
+    case "Disband":
+      return "army disbanded";
+    case "Raze":
+      return p.kind === "Raze" ? `burg razed on cell ${p.data.cell}` : "burg razed";
+    case "Dissolve":
+      return "entity dissolved";
+    case "Treaty":
+      return "treaty signed";
+    case "Battle":
+      return "battle fought";
+    default:
+      return null;
+  }
+}
 
 function buildAttrs(
   kind: EntityKind,
@@ -330,6 +400,17 @@ export function EntityInspector(): React.ReactElement | null {
                       }}
                     >
                       {ev.kind}
+                    </td>
+                    <td
+                      style={{
+                        color: "#8b949e",
+                        paddingRight: "0.4rem",
+                        whiteSpace: "nowrap",
+                        fontStyle: "italic",
+                        opacity: 0.8,
+                      }}
+                    >
+                      {formatEventPayload(ev) ?? ""}
                     </td>
                     <td style={{ color: "#e6edf3" }}>
                       {ev.narrative ?? <span style={{ fontStyle: "italic", opacity: 0.6 }}>No narrative.</span>}

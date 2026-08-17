@@ -1,12 +1,19 @@
 //! Phase 4 Step 4.2 — `War` event module.
 //!
-//! Two land states that are neighbors (share at least one bordering cell)
-//! may go to war. With probability `ctx.params.war_rate` per eligible state
-//! per year, the attacker invades a bordering cell owned by a target state.
-//! On success, the target cell flips ownership to the attacker and a `War`
-//! event is emitted.
+//! Active land states may initiate wars against neighboring states.
+//! With probability `ctx.params.war_rate` per eligible state per year,
+//! an attacker selects one bordering enemy cell and resolves a battle.
 //!
-//! Extracted from the monolithic `event_engine.rs` (refactor §P4.2-modular).
+//! A successful invasion transfers the target cell to the attacker and
+//! emits a `War` event.
+//!
+//! Important invariants:
+//! - Cell adjacency comes from the world's actual topology, not a square grid.
+//! - Owned cells are recomputed after every mutation.
+//! - A battle may fail.
+//! - `war_rate` is validated before use.
+//!
+//! Extracted from `event_engine.rs` (refactor §P4.2-modular).
 
 use crate::event_engine::context::GenContext;
 use crate::event_engine::EventModule;
@@ -23,137 +30,245 @@ impl EventModule for WarModule {
     }
 
     fn run(&self, ctx: &mut GenContext, rng: &mut StdRng, year: i32) {
-        // Collect active state ids + their owned land cells, snapshotting
-        // so we can iterate without borrow conflicts.
-        let states: Vec<(u32, Vec<u32>)> = ctx
-            .pack
-            .states
-            .iter()
-            .filter(|s| s.dissolved_year.is_none())
-            .map(|s| {
-                let cells = ctx.cells_of_state(s.id);
-                (s.id, cells)
-            })
-            .collect();
+        // A probability outside [0, 1] is invalid for rand::gen_bool().
+        let war_rate = ctx.params.war_rate.clamp(0.0, 1.0);
 
-        if states.len() < 2 {
+        if war_rate <= 0.0 {
             return;
         }
 
-        for (attacker_id, attacker_cells) in &states {
-            // Skip if this state lacks the population threshold for war.
-            let att_pop = ctx
-                .find_state(*attacker_id)
-                .map(|s| s.rural_pop + s.urban_pop)
-                .unwrap_or(0.0);
+        // Snapshot only the state IDs. Their territory must be looked up
+        // again for every iteration because wars mutate ownership.
+        let state_ids: Vec<u32> = ctx
+            .pack
+            .states
+            .iter()
+            .filter(|state| state.dissolved_year.is_none())
+            .map(|state| state.id)
+            .collect();
 
-            if att_pop < ctx.params.min_state_pop {
+        if state_ids.len() < 2 {
+            return;
+        }
+
+        for attacker_id in state_ids {
+            // The state may have been dissolved by another event later in
+            // the pipeline, so always re-check current state existence.
+            let attacker_pop = match ctx.find_state(attacker_id) {
+                Some(state) if state.dissolved_year.is_none() => {
+                    state.rural_pop + state.urban_pop
+                }
+                _ => continue,
+            };
+
+            if attacker_pop < ctx.params.min_state_pop {
                 continue;
             }
 
-            if !rng.gen_bool(ctx.params.war_rate) {
+            // war_rate determines whether this state attempts a war this year.
+            if !rng.gen_bool(war_rate) {
                 continue;
             }
 
-            // Find bordering cells of the attacker (cells adjacent to a cell
-            // not owned by the attacker but owned by another state).
-            let border_cells = find_border_cells(ctx, attacker_cells);
+            // IMPORTANT:
+            // Recompute ownership here instead of using a snapshot created
+            // before previous wars mutated ctx.cells_state.
+            let attacker_cells = ctx.cells_of_state(attacker_id);
+
+            let border_cells = find_border_cells(ctx, attacker_id, &attacker_cells);
 
             if border_cells.is_empty() {
                 continue;
             }
 
-            // Pick a random border cell and attempt to conquer it.
-            let border_cell = border_cells[rng.gen_range(0..border_cells.len())];
-            let target_state_id = ctx.cells_state[border_cell as usize];
+            let target_cell =
+                border_cells[rng.gen_range(0..border_cells.len())] as usize;
 
-            // Don't attack ourselves or nobody.
-            if target_state_id == 0 || target_state_id == *attacker_id {
+            if target_cell >= ctx.cells_state.len() {
                 continue;
             }
 
-            // Check the target is still active (not dissolved).
+            let target_state_id = ctx.cells_state[target_cell];
+
+            // The ownership may theoretically have changed between finding
+            // the border and selecting it. Re-validate before attacking.
+            if target_state_id == 0 || target_state_id == attacker_id {
+                continue;
+            }
+
             let target_active = ctx
                 .pack
                 .states
                 .iter()
-                .any(|s| s.id == target_state_id && s.dissolved_year.is_none());
+                .any(|state| {
+                    state.id == target_state_id
+                        && state.dissolved_year.is_none()
+                });
 
             if !target_active {
                 continue;
             }
 
-            // Conquer: flip ownership.
-            ctx.cells_state[border_cell as usize] = *attacker_id;
+            // Resolve the actual battle.
+            let outcome = resolve_battle(
+                ctx,
+                attacker_id,
+                target_state_id,
+                rng,
+            );
 
-            // Build the war outcome payload — the attacker wins.
-            let outcome = WarOutcome {
-                result: 0, // attacker wins
-                attrition: 0.3,
-                conquered_cells: vec![border_cell],
-            };
+            let conquered = outcome.result == 0;
+
+            if conquered {
+                ctx.cells_state[target_cell] = attacker_id;
+            }
 
             ctx.push_event(
                 year,
-                *attacker_id,
+                attacker_id,
                 EntityType::State,
                 EventKind::War,
                 EventPayload::War {
                     opponent_state_id: target_state_id,
-                    outcome,
+                    outcome: WarOutcome {
+                        result: outcome.result,
+                        attrition: outcome.attrition,
+                        conquered_cells: if conquered {
+                            vec![target_cell as u32]
+                        } else {
+                            Vec::new()
+                        },
+                    },
                 },
             );
         }
     }
 }
 
-/// Find cells adjacent to the attacker that are owned by a different state —
-/// these are the conquest targets (cells the attacker can flip).
-fn find_border_cells(ctx: &GenContext, owned_cells: &[u32]) -> Vec<u32> {
-    let n = ctx.cell_count();
+/// Find enemy cells adjacent to cells currently owned by `attacker_id`.
+///
+/// This function deliberately does NOT assume the world is a square grid.
+/// `cell_neighbors()` must use the actual Voronoi/Delaunay topology.
+fn find_border_cells(
+    ctx: &GenContext,
+    attacker_id: u32,
+    owned_cells: &[u32],
+) -> Vec<u32> {
+    let cell_count = ctx.cell_count();
     let mut border = Vec::new();
 
     for &cell in owned_cells {
         let idx = cell as usize;
-        if idx >= n {
-            continue;
-        }
-        let owner = ctx.cells_state[idx];
-        if owner == 0 {
+
+        if idx >= cell_count || idx >= ctx.cells_state.len() {
             continue;
         }
 
-        // Check 4-neighbors (grid adjacency). The grid is treated as a 2D
-        // layout with `side` computed from the cell count. We use a
-        // rectangular adjacency; if a neighbor wraps around the grid edge
-        // we skip it.
-        let side = (n as f64).sqrt() as u32;
-        if side == 0 {
+        // The ownership snapshot may be stale if another war occurred earlier.
+        // Never use a cell that no longer belongs to this attacker.
+        if ctx.cells_state[idx] != attacker_id {
             continue;
         }
 
-        let r = idx as u32 / side;
-        let c = idx as u32 % side;
+        for neighbor in cell_neighbors(ctx, cell) {
+            let neighbor_idx = neighbor as usize;
 
-        let neighbors = [(r.wrapping_sub(1), c), (r, c.wrapping_sub(1)), (r, c + 1), (r + 1, c)];
-
-        for (nr, nc) in neighbors {
-            if nr >= side || nc >= side {
+            if neighbor_idx >= cell_count
+                || neighbor_idx >= ctx.cells_state.len()
+            {
                 continue;
             }
-            let nidx = (nr * side + nc) as usize;
-            if nidx >= n {
-                continue;
-            }
-            let n_owner = ctx.cells_state[nidx];
-            // A border target is a neighbor cell owned by a different,
-            // non-zero state. We want to conquer these cells.
-            if n_owner != 0 && n_owner != owner {
-                border.push(nidx as u32);
-                break;
+
+            let neighbor_owner = ctx.cells_state[neighbor_idx];
+
+            if neighbor_owner != 0 && neighbor_owner != attacker_id {
+                border.push(neighbor);
             }
         }
     }
 
+    border.sort_unstable();
+    border.dedup();
     border
+}
+
+/// Return the actual neighboring cells of a cell.
+///
+/// Replace the body of this function with the topology accessor already
+/// exposed by your Voronoi/world representation.
+///
+/// For a Voronoi mesh this should return cells sharing an edge with `cell`.
+fn cell_neighbors(ctx: &GenContext, cell: u32) -> Vec<u32> {
+    ctx.neighbors_of_cell(cell)
+}
+
+/// Resolve a battle between two states.
+///
+/// `war_rate` controls whether a war starts. It does NOT determine whether
+/// the attacker wins.
+///
+/// The current MVP resolution uses relative population strength plus a small
+/// random factor. This keeps the model deterministic given the RNG while
+/// avoiding guaranteed victories.
+fn resolve_battle(
+    ctx: &GenContext,
+    attacker_id: u32,
+    defender_id: u32,
+    rng: &mut StdRng,
+) -> BattleResult {
+    let attacker_power = state_power(ctx, attacker_id);
+    let defender_power = state_power(ctx, defender_id);
+
+    if attacker_power <= 0.0 {
+        return BattleResult {
+            result: 1,
+            attrition: 0.3,
+        };
+    }
+
+    if defender_power <= 0.0 {
+        return BattleResult {
+            result: 0,
+            attrition: 0.3,
+        };
+    }
+
+    // Population ratio determines the baseline probability of victory.
+    //
+    // attacker_power / (attacker_power + defender_power)
+    // naturally falls into [0, 1].
+    let base_win_probability =
+        attacker_power / (attacker_power + defender_power);
+
+    // Small random variation prevents identical states from always producing
+    // the same result while keeping population as the dominant factor.
+    let random_factor: f64 = rng.gen_range(0.90..=1.10);
+
+    let win_probability =
+        (base_win_probability * random_factor).clamp(0.05, 0.95);
+
+    let attacker_wins = rng.gen_bool(win_probability);
+
+    BattleResult {
+        result: if attacker_wins { 0 } else { 1 },
+        attrition: if attacker_wins { 0.30 } else { 0.15 },
+    }
+}
+
+/// Compute a state's military/economic power.
+///
+/// For now this uses population as the only strength signal.
+/// This is intentionally isolated so military strength can later incorporate
+/// wealth, technology, geography, infrastructure, etc.
+fn state_power(ctx: &GenContext, state_id: u32) -> f64 {
+    ctx.find_state(state_id)
+        .filter(|state| state.dissolved_year.is_none())
+        .map(|state| (state.rural_pop + state.urban_pop).max(0.0))
+        .unwrap_or(0.0)
+}
+
+struct BattleResult {
+    /// 0 = attacker wins, 1 = attacker loses.
+    result: u8,
+    attrition: f64,
 }

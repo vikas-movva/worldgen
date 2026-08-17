@@ -203,20 +203,25 @@ export function generate_states(grid_js, seed, count) {
  * heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
  * object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
  *
+ * `mesh_js` is the optional Voronoi `Mesh` (or just its `cells` topology).
+ * When provided, the war module's cell-neighbor lookups use the true
+ * Delaunay adjacency instead of the legacy square-grid assumption.
+ *
  * Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
- * cells_burg, cells_h, seed, params)` to JS.
+ * cells_burg, cells_h, mesh, seed, params)` to JS.
  * @param {any} pack_js
  * @param {Int32Array} cells_state
  * @param {Int32Array} cells_culture
  * @param {Int32Array} cells_religion
  * @param {Int16Array} cells_burg
  * @param {Uint8Array} cells_h
+ * @param {any} mesh_js
  * @param {bigint} seed
  * @param {any} params_js
  * @returns {any}
  */
-export function generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params_js) {
-    const ret = wasm.generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params_js);
+export function generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, mesh_js, seed, params_js) {
+    const ret = wasm.generate_timeline(pack_js, cells_state, cells_culture, cells_religion, cells_burg, cells_h, mesh_js, seed, params_js);
     return ret;
 }
 

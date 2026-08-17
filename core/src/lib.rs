@@ -869,8 +869,12 @@ pub fn project_delta_inner(
 /// heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
 /// object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
 ///
+/// `mesh_js` is the optional Voronoi `Mesh` (or just its `cells` topology).
+/// When provided, the war module's cell-neighbor lookups use the true
+/// Delaunay adjacency instead of the legacy square-grid assumption.
+///
 /// Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
-/// cells_burg, cells_h, seed, params)` to JS.
+/// cells_burg, cells_h, mesh, seed, params)` to JS.
 #[wasm_bindgen]
 pub fn generate_timeline(
     pack_js: JsValue,
@@ -879,6 +883,7 @@ pub fn generate_timeline(
     cells_religion: js_sys::Int32Array,
     cells_burg: js_sys::Int16Array,
     cells_h: js_sys::Uint8Array,
+    mesh_js: JsValue,
     seed: u64,
     params_js: JsValue,
 ) -> JsValue {
@@ -893,7 +898,19 @@ pub fn generate_timeline(
     let cb: Vec<i16> = cells_burg.to_vec();
     let ch: Vec<u8> = cells_h.to_vec();
 
-    let timeline = event_engine::generate_timeline(&pack, &cs, &cc, &cr, &cb, &ch, seed, &params);
+    // `mesh_js` is the Mesh (or its cells topology) — extract the `Cells` CSR
+    // adjacency. If absent or invalid, the engine falls back to the grid.
+    let cells: Option<crate::mesh::Cells> = if mesh_js.is_undefined() {
+        None
+    } else {
+        serde_wasm_bindgen::from_value::<crate::mesh::Mesh>(mesh_js)
+            .map(|m| m.cells)
+            .ok()
+    };
+
+    let timeline = event_engine::generate_timeline(
+        &pack, &cs, &cc, &cr, &cb, &ch, cells.as_ref(), seed, &params,
+    );
     serde_wasm_bindgen::to_value(&timeline).expect("generate_timeline: Timeline serde to JsValue")
 }
 
@@ -906,10 +923,14 @@ pub fn generate_timeline_inner(
     cells_religion: &[i32],
     cells_burg: &[i16],
     cells_h: &[u8],
+    cells: Option<&mesh::Cells>,
     seed: u64,
     params: &event_engine::TimelineParams,
 ) -> timeline::Timeline {
-    event_engine::generate_timeline(pack, cells_state, cells_culture, cells_religion, cells_burg, cells_h, seed, params)
+    event_engine::generate_timeline(
+        pack, cells_state, cells_culture, cells_religion, cells_burg, cells_h,
+        cells, seed, params,
+    )
 }
 
 /// Pure-data inner implementation of `generate_world` — used by the WASM

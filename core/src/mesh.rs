@@ -110,6 +110,26 @@ pub struct Vertices {
     pub p: Vec<[f64; 2]>,
 }
 
+impl Cells {
+    /// Return the neighbor cell ids of `cell` from the Delaunay/Voronoi CSR
+    /// topology.
+    ///
+    /// `i` is the CSR offset array of length `N+1`; cell `c`'s neighbor slice
+    /// is `c[i[c]..i[c+1]]` from `cells.c`. This returns the actual edge-sharing
+    /// neighbors of a Voronoi cell (the Delaunay adjacency), replacing the
+    /// square-grid assumption that the event engine previously used.
+    ///
+    /// Returns an empty slice if `cell` is out of bounds.
+    pub fn neighbors_of_cell(&self, cell: usize) -> &[u32] {
+        if cell >= self.i.len().saturating_sub(1) {
+            return &[];
+        }
+        let lo = self.i[cell] as usize;
+        let hi = self.i[cell + 1] as usize;
+        &self.c[lo..hi]
+    }
+}
+
 /// Generate a deterministic Voronoi mesh.
 ///
 /// `cell_count` is clamped to `[4, 1_000_000]` to stay sane (the app caps at

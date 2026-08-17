@@ -1046,7 +1046,7 @@ function makeFakeTimeline(year: number): Timeline {
     entity_id: 1,
     entity_type: "State",
     kind: "Found",
-    payload: { kind: "none" },
+    payload: { kind: "None" },
     narrative: null,
   };
   return [event];

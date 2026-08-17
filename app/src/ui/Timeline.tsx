@@ -62,6 +62,7 @@ export function Timeline(): React.ReactElement | null {
 				cells_religion,
 				cells_burg,
 				grid.cells.h,
+				grid.mesh,
 				grid.seed,
 				eraStart,
 				eraEnd,

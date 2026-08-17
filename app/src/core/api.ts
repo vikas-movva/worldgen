@@ -227,29 +227,73 @@ function nextId(): number {
 // the Rust structs exactly.
 // ---------------------------------------------------------------------------//
 
+/** Phase 4.1/4.2: the taxonomy of historical events (design §3.3 / §4.1).
+ * Mirrors `EventKind` in `core/src/timeline.rs` exactly — field names must
+ * match the Rust enum variant strings (serde serializes the variant name as-is).
+ */
 export type EventKind =
 	| "Found"
 	| "Conquer"
-	| "Disband"
-	| "Raise"
+	| "Secession"
+	| "Succession"
+	| "CivilWar"
+	| "War"
+	| "Battle"
+	| "Treaty"
 	| "Plague"
 	| "GoldenAge"
+	| "Migrate"
 	| "Schism"
-	| "Secession"
+	| "Raise"
+	| "March"
+	| "Disband"
+	| "Raze"
 	| "Dissolve";
 
-export type EntityType = "State" | "Province" | "Culture" | "Religion" | "Burg";
+export type EntityType =
+	| "State"
+	| "Province"
+	| "Culture"
+	| "Religion"
+	| "Burg"
+	| "Army"
+	| "Pop";
 
+/**
+ * Structured payload for a `War` / `Treaty` event (mirrors `WarOutcome` in
+ * `core/src/timeline.rs`). `result`: 0 = attacker wins, 1 = defender wins,
+ * 2 = stalemate (treaty).
+ */
+export type WarOutcome = {
+	result: number; // u8
+	attrition: number; // f64
+	conquered_cells: number[]; // u32[]
+};
+
+/**
+ * Phase 4.1: the `EventPayload` wire shape.
+ *
+ * The Rust `EventPayload` enum uses `#[serde(tag = "kind", content = "data")]`,
+ * so each non-unit variant serializes as `{ kind: "<VariantName>", data: {...} }`
+ * and unit variants (`None`, `Disband`, `Dissolve`) serialize as
+ * `{ kind: "<VariantName>" }`. Field names inside `data` are the Rust struct
+ * field names (snake_case, no rename).
+ */
 export type EventPayload =
-	| { kind: "none" }
-	| { kind: "found"; cells: number[] }
-	| { kind: "conquer"; from_state: number; to_state: number; cells: number[] }
-	| { kind: "disband"; army: number }
-	| { kind: "raise"; army: number }
-	| { kind: "plague"; target_state: number; mortality: number }
-	| { kind: "golden_age"; target_state: number; decade: number }
-	| { kind: "schism"; parent_religion: number; child_religion: number }
-	| { kind: "secession"; cells: number[] };
+	| { kind: "None" }
+	| { kind: "Found"; data: { cell: number } }
+	| { kind: "Succession"; data: { heir_name: string | null } }
+	| { kind: "War"; data: { opponent_state_id: number; outcome: WarOutcome } }
+	| { kind: "Conquer"; data: { payload: { cells: number[] } } }
+	| { kind: "Schism"; data: { payload: { follower_fraction: number; child_religion_id: number } } }
+	| { kind: "PopScalar"; data: { factor: number } }
+	| { kind: "Migrate"; data: { payload: { cells: number[]; target_id: number } } }
+	| { kind: "Raise"; data: { army_size: number; cell: number } }
+	| { kind: "March"; data: { cell: number } }
+	| { kind: "Disband" }
+	| { kind: "Raze"; data: { cell: number } }
+	| { kind: "Dissolve" }
+	| { kind: "Unknown" };
 
 export type TimelineEvent = {
 	id: number; // u64
@@ -268,34 +312,44 @@ export type Timeline = TimelineEvent[];
  * renderer's data-texture upload. `pack` carries the entity snapshots with
  * pop-scalar overrides and dissolved flags applied.
  *
- * `cells_state` uses the `i32` convention (`-1` = unassigned), state ids are
- * 1-based. `cells_province` mirrors `cells_state` (provinces are subdivisions
- * of states; their cell assignments are re-projected alongside states so the
- * province layer stays consistent with the state layer at year Y).
- * `cells_culture`/`cells_religion` use 0-based ids (`0` = none). `cells_burg`
- * uses `i16` (`0` = none). */
+ * `cells_state` uses the `u32` convention (`0` = unassigned), state ids are
+ * 1-based. `cells_province` is OPTIONAL — the Rust `WorldAt` struct does not
+ * carry it (province assignments are stable across projection); when present
+ * (e.g. from a test fixture), the renderer uses it, otherwise keeps the
+ * year-0 province layer. `cells_culture`/`cells_religion` use 0-based ids
+ * (`0` = none). `cells_burg` uses `u32` (`0` = none). */
 export type WorldAt = {
 	year: number;
 	cells_state: number[];
-	cells_province: number[];
+	/** Optional — absent on the real WASM wire (Rust `WorldAt` omits this). */
+	cells_province?: number[];
 	cells_culture: number[];
 	cells_religion: number[];
 	cells_burg: number[];
 	pack: Pack;
 };
 
-/** Phase 4.2: parameters for deterministic timeline generation. All fields
- * are optional — omitted fields use deterministic engine defaults. */
+/** Phase 4.2: parameters for deterministic timeline generation.
+ * Field names use snake_case to match the Rust `TimelineParams` serde fields
+ * exactly — serde-wasm-bindgen deserializes by field name, so camelCase keys
+ * would silently fall back to defaults. All fields are optional. */
 export type TimelineParams = {
-	eraStart?: number;
-	eraEnd?: number;
-	foundingRate?: number;
-	warRate?: number;
-	plagueProbability?: number;
-	schismProbability?: number;
-	migrationRate?: number;
-	successionRate?: number;
-	goldenAgeProbability?: number;
+	era_start?: number;
+	era_end?: number;
+	found_rate?: number;
+	war_rate?: number;
+	plague_prob?: number;
+	schism_prob?: number;
+	migration_prob?: number;
+	succession_rate?: number;
+	golden_age_prob?: number;
+	founding_population?: number;
+	plague_mortality?: number;
+	golden_age_growth?: number;
+	schism_fraction?: number;
+	migration_fraction?: number;
+	min_state_pop?: number;
+	rng_override?: number;
 };
 
 export function clampSeed(seed: number): number {
@@ -707,6 +761,7 @@ export const coreApi = {
     cells_religion: number[] | Int32Array,
     cells_burg: number[] | Int16Array,
     cells_h: number[] | Uint8Array,
+    mesh: Mesh,
     seed: number,
     era_start: number,
     era_end: number,
@@ -719,6 +774,7 @@ export const coreApi = {
       cells_religion: new Int32Array(cells_religion),
       cells_burg: new Int16Array(cells_burg),
       cells_h: new Uint8Array(cells_h),
+      mesh,
       seed,
       era_start: Math.floor(era_start),
       era_end: Math.floor(era_end),
