@@ -35,7 +35,12 @@ function pushEntities(
 				provinces: { color: number }[];
 				cultures: { color: number }[];
 				religions: { color: number }[];
-				burgs: { id: number; cell: number; population: number; capital: number }[];
+				burgs: {
+					id: number;
+					cell: number;
+					population: number;
+					capital: number;
+				}[];
 			};
 			cells_state: number[];
 			cells_province: number[];
@@ -181,6 +186,10 @@ export function MapCanvas({
 			}
 
 			host.appendChild(app.canvas);
+			// Let the camera own touch gestures (pinch-to-zoom / two-finger pan)
+			// instead of the browser intercepting them for page scroll/zoom. The
+			// app layout is full-bleed with its own scrolling containers anyway.
+			app.canvas.style.touchAction = "none";
 
 			// worldLayer is the root container for terrain/biome/entity layers
 			// added by later steps. Keeping it separate from app.stage means
@@ -424,7 +433,11 @@ export function MapCanvas({
 				// a state on the Provinces layer, also draws its border).
 				if (state.selectedEntity !== prev.selectedEntity) {
 					if (worldMap && state.grid && state.selectedEntity) {
-						worldMap.selectEntity(state.grid, state.selectedEntity.kind, state.selectedEntity.id);
+						worldMap.selectEntity(
+							state.grid,
+							state.selectedEntity.kind,
+							state.selectedEntity.id,
+						);
 					} else if (worldMap && state.grid) {
 						worldMap.setSelected(state.grid, -1);
 					}

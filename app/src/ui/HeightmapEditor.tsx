@@ -427,7 +427,10 @@ export function HeightmapEditor({
 				borderRadius: "6px",
 				fontSize: "0.85rem",
 				color: "#e6edf3",
-				minWidth: 220,
+				width: "100%",
+				maxWidth: "100%",
+				minWidth: 0,
+				minHeight: 220,
 				maxHeight: "100%",
 				overflowY: "auto",
 			}}

@@ -377,6 +377,7 @@ function ReadoutRow({
 				style={{
 					color: accent ?? "#e6edf3",
 					fontWeight: 500,
+					overflowWrap: "anywhere",
 				}}
 			>
 				{value}

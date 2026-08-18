@@ -11,7 +11,7 @@
 // one (design §5.1 verification: "Old worker responses cannot overwrite newer
 // years").
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { coreApi } from "../core/api";
 import { useWorldgenStore } from "../state/worldgenStore";
 import { useTimelineScrub } from "./useTimelineScrub";
@@ -39,6 +39,19 @@ export function Timeline(): React.ReactElement | null {
 	// Shared scrub function (extracted to useTimelineScrub.ts) used by both
 	// the slider and the play/pause tick below.
 	const scrubTo = useTimelineScrub();
+
+	// Keep the latest play state in refs so the single playback rAF loop (which
+	// runs for the whole isPlaying span) reads fresh values without restarting.
+	const isPlayingRef = useRef(isPlaying);
+	const currentYearRef = useRef(currentYear);
+	const playbackSpeedRef = useRef(playbackSpeed);
+	const eraEndRef = useRef(eraEnd);
+	isPlayingRef.current = isPlaying;
+	currentYearRef.current = currentYear;
+	playbackSpeedRef.current = playbackSpeed;
+	eraEndRef.current = eraEnd;
+	const scrubToRef = useRef(scrubTo);
+	scrubToRef.current = scrubTo;
 	useEffect(() => {
 		if (!grid || !statesResult || !culturesResult) {
 			setTimeline(null, 0, 1000);
@@ -81,7 +94,11 @@ export function Timeline(): React.ReactElement | null {
 			});
 	}, [grid, statesResult, culturesResult, timeline, setTimeline]);
 
-	// Playback tick: advance year by speed * dt each rAF.
+	// Playback tick: advance the year by speed * dt each rAF. Runs a single
+	// loop for the whole isPlaying span — the increment reads the latest year /
+	// speed / era-end from refs so the loop isn't torn down and recreated on
+	// every currentYear update (which is what flooded the worker with redundant
+	// scrub requests per frame).
 	useEffect(() => {
 		if (!isPlaying || !timeline) return;
 		let raf: number;
@@ -90,21 +107,24 @@ export function Timeline(): React.ReactElement | null {
 			if (lastT === 0) lastT = t;
 			const dt = (t - lastT) / 1000; // seconds
 			lastT = t;
-			const deltaYears = playbackSpeed * dt;
-			const next = Math.min(eraEnd, currentYear + deltaYears);
-			if (next >= eraEnd) {
+			const deltaYears = playbackSpeedRef.current * dt;
+			const next = Math.min(
+				eraEndRef.current,
+				currentYearRef.current + deltaYears,
+			);
+			if (next >= eraEndRef.current) {
 				setIsPlaying(false);
-				setCurrentYear(eraEnd);
-				scrubTo(eraEnd);
+				setCurrentYear(eraEndRef.current);
+				scrubToRef.current(eraEndRef.current);
 				return;
 			}
 			setCurrentYear(next);
-			scrubTo(next);
+			scrubToRef.current(next);
 			raf = requestAnimationFrame(tick);
 		};
 		raf = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(raf);
-	}, [isPlaying, currentYear, playbackSpeed]);
+	}, [isPlaying, timeline, setIsPlaying, setCurrentYear]);
 
 	if (!grid || !timeline) return null;
 
@@ -121,7 +141,14 @@ export function Timeline(): React.ReactElement | null {
 				color: "#e6edf3",
 			}}
 		>
-			<div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+			<div
+				style={{
+					display: "flex",
+					alignItems: "center",
+					flexWrap: "wrap",
+					gap: "0.5rem",
+				}}
+			>
 				<button
 					type="button"
 					onClick={() => {
@@ -164,12 +191,20 @@ export function Timeline(): React.ReactElement | null {
 						))}
 					</select>
 				</label>
-				<span style={{ fontSize: "0.75rem", color: "#8b949e", marginLeft: "auto" }}>
-					{scrubStatus === "loading" ? "loading…" : scrubStatus === "error" ? "error" : ""}
+				<span
+					style={{ fontSize: "0.75rem", color: "#8b949e", marginLeft: "auto" }}
+				>
+					{scrubStatus === "loading"
+						? "loading…"
+						: scrubStatus === "error"
+							? "error"
+							: ""}
 				</span>
 			</div>
 			<div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-				<span style={{ fontSize: "0.72rem", color: "#8b949e", minWidth: "3ch" }}>
+				<span
+					style={{ fontSize: "0.72rem", color: "#8b949e", minWidth: "3ch" }}
+				>
 					{eraStart}
 				</span>
 				<input
@@ -188,7 +223,9 @@ export function Timeline(): React.ReactElement | null {
 						height: "4px",
 					}}
 				/>
-				<span style={{ fontSize: "0.72rem", color: "#8b949e", minWidth: "3ch" }}>
+				<span
+					style={{ fontSize: "0.72rem", color: "#8b949e", minWidth: "3ch" }}
+				>
 					{eraEnd}
 				</span>
 			</div>

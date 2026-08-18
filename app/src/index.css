@@ -39,12 +39,24 @@ body {
 }
 
 #root {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	min-height: 100vh;
-	padding: 2rem;
+	/* The app owns its full-bleed layout; don't center or pad the mount. */
+	height: 100%;
+	overflow: hidden;
+}
+
+html,
+body {
+	/* Prevent horizontal scroll when a drawer/toggle is open on small screens. */
+	overflow-x: hidden;
+	touch-action: manipulation;
+}
+
+/* Prefer dvh when supported so 100vh content isn't clipped behind mobile
+   browser chrome (address bar / toolbar). */
+@supports (height: 100dvh) {
+	#root {
+		height: 100dvh;
+	}
 }
 
 h1 {

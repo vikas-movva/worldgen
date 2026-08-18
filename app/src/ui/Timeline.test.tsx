@@ -21,13 +21,15 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	__setWorkerForTest,
-	coreApi,
-	type WorldAt,
+import type {
+	CulturesResult,
+	Grid,
+	StatesResult,
+	TimelineEvent,
+	Timeline as TimelineType,
 } from "../core/api";
+import { __setWorkerForTest, coreApi, type WorldAt } from "../core/api";
 import { useWorldgenStore } from "../state/worldgenStore";
-import type { Grid, StatesResult, CulturesResult, TimelineEvent, Timeline as TimelineType } from "../core/api";
 import { Timeline as TimelineComp } from "./Timeline";
 
 // ---- fake worker harness ---------------------------------------------------
@@ -81,7 +83,14 @@ function makeFakeGrid(seed: number): Grid {
 				cells_x: 2,
 				cells_y: 2,
 			},
-			vertices: { p: [[0, 0], [1, 1], [2, 0], [1, -1]] },
+			vertices: {
+				p: [
+					[0, 0],
+					[1, 1],
+					[2, 0],
+					[1, -1],
+				],
+			},
 			world_w: 2,
 			world_h: 2,
 		},
@@ -376,34 +385,46 @@ describe("Timeline (Step 5.1)", () => {
 		) as HTMLInputElement;
 		expect(slider).toBeTruthy();
 
-		// Two rapid scrubs → two scrub_world messages with incrementing reqIds.
 		const nativeSet = Object.getOwnPropertyDescriptor(
 			HTMLInputElement.prototype,
 			"value",
 		)!.set!;
 
+		// Two rapid scrubs. The first dispatches a request to the worker; the
+		// second is coalesced because a request is already in flight, so it must
+		// NOT emit a second scrub_world message (only the newest year is kept).
 		act(() => {
 			nativeSet.call(slider, "50");
 			slider.dispatchEvent(new Event("input", { bubbles: true }));
 		});
 		const firstReqId = fake.lastMessage!.reqId;
-
 		act(() => {
 			nativeSet.call(slider, "60");
 			slider.dispatchEvent(new Event("input", { bubbles: true }));
 		});
-		const secondReqId = fake.lastMessage!.reqId;
-		expect(secondReqId).toBeGreaterThan(firstReqId);
-
-		// currentYear should be 60 (the latest).
+		// Coalesced: no new worker message; the pending target is 60.
+		expect(fake.lastMessage!.reqId).toBe(firstReqId);
+		expect(fake.lastMessage!.target_year).toBe(50);
 		expect(useWorldgenStore.getState().currentYear).toBe(60);
 
-		// Deliver the newer response (year 60) — it should be committed.
+		// Let the in-flight request (year 50) resolve. It is the latest
+		// *dispatched* request (the year-60 call was coalesced, not dispatched),
+		// so its response advances the projection to year 50 (monotonic forward).
+		fake.reply(makeFakeWorldAt(50));
+		await flushMicrotasks();
+		expect(useWorldgenStore.getState().projectedWorld?.year).toBe(50);
+		// The handoff dispatches the pending year 60 as a fresh request.
+		const secondReqId = fake.lastMessage!.reqId;
+		expect(secondReqId).toBeGreaterThan(firstReqId);
+		expect(fake.lastMessage!.target_year).toBe(60);
+
+		// Deliver the year-60 response — it should now be committed.
 		fake.reply(makeFakeWorldAt(60));
 		await flushMicrotasks();
+		expect(useWorldgenStore.getState().projectedWorld?.year).toBe(60);
 
-		// Now deliver a stale response (year 50) with the OLD reqId.
-		// The guard should reject it — projectedWorld should stay at year 60.
+		// Deliver a stale response (year 50) tagged with the OLD reqId. The guard
+		// must reject it — projectedWorld should stay at year 60.
 		const oldEvt = {
 			data: {
 				kind: "scrub_world",
@@ -414,10 +435,7 @@ describe("Timeline (Step 5.1)", () => {
 		} as unknown as MessageEvent;
 		fake.onmessage?.(oldEvt);
 		await flushMicrotasks();
-
-		// The projection should still be year 60 (the newer one was committed).
-		const projected = useWorldgenStore.getState().projectedWorld;
-		expect(projected?.year).toBe(60);
+		expect(useWorldgenStore.getState().projectedWorld?.year).toBe(60);
 	});
 
 	it("play starts a tick loop that advances the year and triggers scrub; pause stops it", async () => {
@@ -458,9 +476,7 @@ describe("Timeline (Step 5.1)", () => {
 	it("speed control updates playbackSpeed in the store", () => {
 		renderTimeline();
 
-		const speedSelect = container.querySelector(
-			"select",
-		) as HTMLSelectElement;
+		const speedSelect = container.querySelector("select") as HTMLSelectElement;
 		expect(speedSelect).toBeTruthy();
 
 		act(() => {
@@ -469,5 +485,58 @@ describe("Timeline (Step 5.1)", () => {
 		});
 
 		expect(useWorldgenStore.getState().playbackSpeed).toBe(25);
+	});
+
+	it("coalesces rapid scrubs: at most one scrub_world request is in flight", async () => {
+		renderTimeline();
+
+		// Consume the onMount scrubTo(0) message if present.
+		if (fake.lastMessage) {
+			fake.reply(makeFakeWorldAt(0));
+			await flushMicrotasks();
+		}
+
+		const slider = container.querySelector(
+			'input[type="range"]',
+		) as HTMLInputElement;
+		expect(slider).toBeTruthy();
+
+		const nativeSet = Object.getOwnPropertyDescriptor(
+			HTMLInputElement.prototype,
+			"value",
+		)!.set!;
+		const fireDrag = (year: number) => {
+			act(() => {
+				nativeSet.call(slider, String(year));
+				slider.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+		};
+
+		// A burst of scrubs with NO worker reply in between. Only the first may
+		// emit a request; the rest are coalesced and must not accumulate messages.
+		const messagesAtStart = fake.messages.length;
+		fireDrag(10);
+		const firstReqId = fake.lastMessage!.reqId;
+		expect(fake.messages.length).toBe(messagesAtStart + 1);
+
+		fireDrag(30);
+		fireDrag(55);
+		fireDrag(80);
+		// Still only one request emitted — the rest were coalesced.
+		expect(fake.messages.length).toBe(messagesAtStart + 1);
+		// And the in-flight request is still the first one.
+		expect(fake.lastMessage!.reqId).toBe(firstReqId);
+		expect(useWorldgenStore.getState().currentYear).toBe(80);
+
+		// Resolve the in-flight request → coalesced year 80 is dispatched next.
+		fake.reply(makeFakeWorldAt(10));
+		await flushMicrotasks();
+		expect(fake.lastMessage!.reqId).toBeGreaterThan(firstReqId);
+		expect(fake.lastMessage!.target_year).toBe(80);
+
+		// Resolve that one → year 80 is committed.
+		fake.reply(makeFakeWorldAt(80));
+		await flushMicrotasks();
+		expect(useWorldgenStore.getState().projectedWorld?.year).toBe(80);
 	});
 });

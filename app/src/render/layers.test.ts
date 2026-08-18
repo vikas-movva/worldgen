@@ -425,6 +425,23 @@ describe("attachCamera", () => {
 		return new KeyboardEvent(type, { code, bubbles: true });
 	}
 
+	// Multi-pointer variant for pinch/pan gesture tests: like `pointerEvent`
+	// but takes an explicit pointerId + pointerType so we can simulate a second
+	// finger landing on the canvas.
+	function touchEvent(
+		type: string,
+		{
+			clientX = 0,
+			clientY = 0,
+			pointerId = 0,
+		}: { clientX?: number; clientY?: number; pointerId?: number },
+	): Event {
+		const ev = new MouseEvent(type, { clientX, clientY, bubbles: false });
+		Object.defineProperty(ev, "pointerId", { value: pointerId, configurable: true });
+		Object.defineProperty(ev, "pointerType", { value: "touch", configurable: true });
+		return ev;
+	}
+
 	it("registers wheel + pointer listeners on the target", () => {
 		const spy = vi.spyOn(target, "addEventListener");
 		attachCamera(target, {
@@ -578,6 +595,95 @@ describe("attachCamera", () => {
 		const startY2 = wm.view.y;
 		target.dispatchEvent(
 			pointerEvent("pointermove", { clientX: 200, clientY: 200 }),
+		);
+		expect(wm.view.x).toBe(startX);
+		expect(wm.view.y).toBe(startY2);
+	});
+
+	it("two-finger pinch zooms the view (mobile gesture, no Space needed)", () => {
+		wm.fitToScreen(1280, 720);
+		const rectSpy = vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+			x: 0,
+			y: 0,
+			left: 0,
+			top: 0,
+			width: 1280,
+			height: 720,
+			right: 1280,
+			bottom: 720,
+			toJSON: () => ({}),
+		} as DOMRect);
+		attachCamera(target, {
+			worldMap: wm,
+			screenSize: () => ({ w: 1280, h: 720 }),
+		});
+		const zoomBefore = wm.getZoom();
+		// Two fingers land 100px apart.
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 500, clientY: 360, pointerId: 1 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 600, clientY: 360, pointerId: 2 }),
+		);
+		// Spread to 200px apart -> distance ratio 2x -> zoom doubles.
+		target.dispatchEvent(
+			touchEvent("pointermove", { clientX: 450, clientY: 360, pointerId: 1 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointermove", { clientX: 650, clientY: 360, pointerId: 2 }),
+		);
+		expect(wm.getZoom()).toBeGreaterThan(zoomBefore * 1.5);
+		rectSpy.mockRestore();
+	});
+
+	it("two-finger drag pans the view (mobile gesture, no Space needed)", () => {
+		wm.fitToScreen(1280, 720);
+		attachCamera(target, {
+			worldMap: wm,
+			screenSize: () => ({ w: 1280, h: 720 }),
+		});
+		const startX = wm.view.x;
+		const startY2 = wm.view.y;
+		// Two fingers land, then both move +20px right / +10px down together.
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 500, clientY: 300, pointerId: 1 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 600, clientY: 360, pointerId: 2 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointermove", { clientX: 520, clientY: 310, pointerId: 1 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointermove", { clientX: 620, clientY: 370, pointerId: 2 }),
+		);
+		expect(wm.view.x).toBeCloseTo(startX + 20, 2);
+		expect(wm.view.y).toBeCloseTo(startY2 + 10, 2);
+	});
+
+	it("lifting a finger ends the pinch gesture cleanly (pointercancel)", () => {
+		wm.fitToScreen(1280, 720);
+		attachCamera(target, {
+			worldMap: wm,
+			screenSize: () => ({ w: 1280, h: 720 }),
+		});
+		// Start a two-finger gesture, then lift one finger via pointercancel.
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 500, clientY: 360, pointerId: 1 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointerdown", { clientX: 600, clientY: 360, pointerId: 2 }),
+		);
+		target.dispatchEvent(
+			touchEvent("pointercancel", { clientX: 600, clientY: 360, pointerId: 2 }),
+		);
+		// With a single finger left (no Space), a move must NOT pan like an
+		// accidental drag — the gesture reverted to the Space-gated single-pointer
+		// behavior.
+		const startX = wm.view.x;
+		const startY2 = wm.view.y;
+		target.dispatchEvent(
+			touchEvent("pointermove", { clientX: 540, clientY: 380, pointerId: 1 }),
 		);
 		expect(wm.view.x).toBe(startX);
 		expect(wm.view.y).toBe(startY2);

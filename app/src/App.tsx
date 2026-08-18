@@ -9,10 +9,11 @@ import type { WorldMap } from "./render/layers";
 import { MapCanvas, type MapCanvasHandle } from "./render/MapCanvas";
 import { useWorldgenStore } from "./state/worldgenStore";
 import { CellInspector } from "./ui/CellInspector";
+import EntityInspector from "./ui/EntityInspector";
 import { EntityPanel } from "./ui/EntityPanel";
 import { HeightmapEditor } from "./ui/HeightmapEditor";
-import EntityInspector from "./ui/EntityInspector";
 import { Timeline } from "./ui/Timeline";
+import { useIsMobile } from "./ui/useIsMobile";
 
 function App() {
 	const [result, setResult] = useState<string>("Loading WASM...");
@@ -36,6 +37,17 @@ function App() {
 	const canvasHandleRef = useRef<MapCanvasHandle | null>(null);
 	const [worldMap, setWorldMap] = useState<WorldMap | null>(null);
 	const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+
+	// Responsive layout: mobile (≤767px) uses a stacked map + slide-over panel
+	// drawer; desktop keeps the side-by-side map/sidebar columns.
+	const isMobile = useIsMobile();
+	const [panelOpen, setPanelOpen] = useState(false);
+
+	// Reset the drawer when resizing up to desktop so it doesn't linger open in
+	// the always-visible side-column layout.
+	useEffect(() => {
+		if (!isMobile) setPanelOpen(false);
+	}, [isMobile]);
 
 	useEffect(() => {
 		let raf = 0;
@@ -217,11 +229,7 @@ function App() {
 			// we pass the store grid explicitly so the local serde path is
 			// used and the held grid stays in sync with the returned arrays.
 			const entSeed = Math.floor(Math.random() * 1_000_000);
-			const statesResult = await coreApi.generateStates(
-				grid,
-				entSeed,
-				12,
-				);
+			const statesResult = await coreApi.generateStates(grid, entSeed, 12);
 			setStatesResult(statesResult);
 			const culturesResult = await coreApi.generateCulturesReligions(
 				grid,
@@ -229,29 +237,29 @@ function App() {
 				18,
 				12,
 				statesResult,
-				);
+			);
 			setCulturesResult(culturesResult);
 			// Splice the fresh per-cell entity arrays back into the store grid
 			// so click-to-select and the state-border overlay see them.
 			setGrid({
-					...grid,
-					cells: {
-						...grid.cells,
-						state: Array.from(statesResult.cells_state),
-						province: Array.from(statesResult.cells_province),
-						culture: Array.from(culturesResult.cells_culture),
-						religion: Array.from(culturesResult.cells_religion),
-					},
-				});
+				...grid,
+				cells: {
+					...grid.cells,
+					state: Array.from(statesResult.cells_state),
+					province: Array.from(statesResult.cells_province),
+					culture: Array.from(culturesResult.cells_culture),
+					religion: Array.from(culturesResult.cells_religion),
+				},
+			});
 			const t1 = performance.now();
 			setResult(
-					(prev: string) =>
-						prev +
-						`  | regenerate entities: states=${statesResult.pack.states.length} ` +
-						`cultures=${culturesResult.cultures.length} ` +
-						`religions=${culturesResult.religions.length} ` +
-						`(${(t1 - t0).toFixed(0)}ms)`,
-				);
+				(prev: string) =>
+					prev +
+					`  | regenerate entities: states=${statesResult.pack.states.length} ` +
+					`cultures=${culturesResult.cultures.length} ` +
+					`religions=${culturesResult.religions.length} ` +
+					`(${(t1 - t0).toFixed(0)}ms)`,
+			);
 		} catch (err) {
 			setResult(
 				(prev: string) =>
@@ -280,7 +288,8 @@ function App() {
 				style={{
 					display: "flex",
 					alignItems: "center",
-					gap: "0.75rem",
+					flexWrap: "wrap",
+					gap: "0.4rem 0.75rem",
 					padding: "0.5rem 1rem",
 					borderBottom: "1px solid #30363d",
 					flex: "0 0 auto",
@@ -378,7 +387,6 @@ function App() {
 					style={{
 						fontSize: "0.7rem",
 						color: "#8b949e",
-						marginLeft: "0.5rem",
 						borderLeft: "1px solid #30363d",
 						paddingLeft: "0.5rem",
 					}}
@@ -449,12 +457,111 @@ function App() {
 							setCanvasEl(el);
 						}}
 					/>
+					{/* On mobile the editor/inspector sidebar lives in a slide-over
+					    drawer. A floating button (shown only on small screens) opens it
+					    so the map stays full-bleed. */}
+					{isMobile && grid && (
+						<button
+							type="button"
+							onClick={() => setPanelOpen(true)}
+							aria-haspopup="dialog"
+							aria-expanded={panelOpen}
+							style={{
+								position: "absolute",
+								top: "0.75rem",
+								right: "0.75rem",
+								zIndex: 30,
+								padding: "0.5rem 0.9rem",
+								fontSize: "0.85rem",
+								cursor: "pointer",
+								border: "1px solid #30363d",
+								background: "#161b22",
+								color: "#e6edf3",
+								borderRadius: "6px",
+								boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+							}}
+						>
+							Inspector
+						</button>
+					)}
+					{/* Mobile slide-over drawer + backdrop. */}
+					{isMobile && grid && (
+						<>
+							{panelOpen && (
+								<button
+									type="button"
+									aria-label="Close inspector panel"
+									onClick={() => setPanelOpen(false)}
+									style={{
+										position: "absolute",
+										inset: 0,
+										zIndex: 40,
+										border: "none",
+										background: "rgba(0,0,0,0.5)",
+										cursor: "pointer",
+									}}
+								/>
+							)}
+							<aside
+								role="dialog"
+								aria-label="Inspector panel"
+								aria-modal={panelOpen}
+								style={{
+									position: "absolute",
+									top: 0,
+									right: 0,
+									bottom: 0,
+									zIndex: 50,
+									width: "88%",
+									maxWidth: 340,
+									padding: "0.5rem",
+									overflowY: "auto",
+									borderLeft: "1px solid #30363d",
+									background: "#0d1117",
+									boxShadow: "-4px 0 16px rgba(0,0,0,0.5)",
+									transform: panelOpen ? "translateX(0)" : "translateX(105%)",
+									transition: "transform 0.22s ease",
+									visibility: panelOpen ? "visible" : "hidden",
+								}}
+							>
+								<div
+									style={{
+										display: "flex",
+										justifyContent: "flex-end",
+										marginBottom: "0.5rem",
+									}}
+								>
+									<button
+										type="button"
+										onClick={() => setPanelOpen(false)}
+										aria-label="Close inspector"
+										style={{
+											padding: "0.3rem 0.6rem",
+											fontSize: "0.85rem",
+											cursor: "pointer",
+											border: "1px solid #30363d",
+											background: "transparent",
+											color: "#8b949e",
+											borderRadius: "4px",
+										}}
+									>
+										Close ✕
+									</button>
+								</div>
+								<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
+								<CellInspector worldMap={worldMap} />
+								<EntityPanel worldMap={worldMap} />
+								<EntityInspector />
+							</aside>
+						</>
+					)}
 				</div>
-				{grid && (
+				{!isMobile && grid && (
 					<div
 						style={{
 							flex: "0 0 auto",
-							maxWidth: 260,
+							width: 272,
+							maxWidth: "100%",
 							padding: "0.5rem",
 							overflowY: "auto",
 							borderLeft: "1px solid #30363d",
@@ -463,7 +570,7 @@ function App() {
 						<HeightmapEditor worldMap={worldMap} canvasEl={canvasEl} />
 						<CellInspector worldMap={worldMap} />
 						<EntityPanel worldMap={worldMap} />
-					<EntityInspector />
+						<EntityInspector />
 					</div>
 				)}
 			</main>

@@ -180,7 +180,12 @@ export class WorldMap {
 	private burgRadius = 0;
 	/** Stashed burg data + grid for re-drawing on camera change. */
 	private burgGrid: Grid | null = null;
-	private burgPoints: { id: number; cell: number; population: number; capital: number }[] = [];
+	private burgPoints: {
+		id: number;
+		cell: number;
+		population: number;
+		capital: number;
+	}[] = [];
 	/**
 	 * Step 2.5.6: stashed river + lake geometry + the grid it was computed
 	 * for, so `fitToScreen` can re-stroke the polylines at the new camera
@@ -529,7 +534,8 @@ export class WorldMap {
 			kind: "state" | "province" | "culture" | "religion" | "burg",
 			id: number,
 		) => id > (kind === "state" || kind === "province" ? -1 : 0);
-		let kind: "state" | "province" | "culture" | "religion" | "burg" | null = null;
+		let kind: "state" | "province" | "culture" | "religion" | "burg" | null =
+			null;
 		let id = -1;
 		const stash = this.entityCells;
 		// Burg click-to-select: if the burgs layer is visible and the clicked
@@ -1272,7 +1278,7 @@ export class WorldMap {
 	}
 
 	/**
-	 * 
+	 *
 	 *
 	 * `pack` holds the entity color vectors (`states[i].color` etc., packed
 	 * 0xRRGGBB). `cells_state[i]` is the owning entity id for cell `i` (-1 if
@@ -1425,14 +1431,7 @@ export class WorldMap {
 			1,
 		);
 		this.fillEntityBuffer(this.cultureData, n, pack.cultures, culture, 0, 0);
-		this.fillEntityBuffer(
-			this.religionData,
-			n,
-			pack.religions,
-			religion,
-			0,
-			0,
-		);
+		this.fillEntityBuffer(this.religionData, n, pack.religions, religion, 0, 0);
 
 		this.textures[2]?.source.update();
 		this.textures[3]?.source.update();
@@ -1454,19 +1453,13 @@ export class WorldMap {
 	 *              culture/religion)
 	 * @param color packed 0xRRGGBB
 	 */
-	updateEntityColor(
-		kind: EntityKind,
-		id: number,
-		color: number,
-	): void {
+	updateEntityColor(kind: EntityKind, id: number, color: number): void {
 		const pack = this.activePack;
 		const cells = this.entityCells;
 		if (!pack || !cells) return;
 		let buf: Uint8Array | null = null;
 		let cellArr: number[];
-		let vector:
-			| { color: number }[]
-			| undefined;
+		let vector: { color: number }[] | undefined;
 		switch (kind) {
 			case "state":
 				buf = this.stateData;
@@ -1571,9 +1564,7 @@ export class WorldMap {
 		// non-empty (the Rust WorldAt struct does not carry province cells).
 		const provinceCells: number[] | null =
 			world.cells_province && world.cells_province.length > 0
-				? Array.from(world.cells_province, (v: number) =>
-						v <= 0 ? -1 : v,
-					)
+				? Array.from(world.cells_province, (v: number) => (v <= 0 ? -1 : v))
 				: null;
 
 		// Culture/religion: 0 = none/Wildlands — same sentinel in both
@@ -1784,12 +1775,40 @@ export function attachCamera(
 	let dragging = false;
 	let lastX = 0;
 	let lastY = 0;
-	// Spacebar-to-pan: the camera only drag-pans while Space is held, so the
-	// editor get clean pointer events for brush/select when Space is up. This
-	// matches Figma/Photoshop's hand-tool modifier. We track Space with a
-	// window keydown/keyup pair (not the canvas) so a held Space is recognized
-	// even if focus is on a sibling control.
+	// Spacebar-to-pan: the camera only drag-pans a single pointer while Space is
+	// held, so the editor gets clean pointer events for brush/select when Space
+	// is up. This matches Figma/Photoshop's hand-tool modifier. We track Space
+	// with a window keydown/keyup pair (not the canvas) so a held Space is
+	// recognized even if focus is on a sibling control.
 	let spaceDown = false;
+
+	// Multi-touch gesture state (mobile): track every active pointer so two
+	// fingers give pinch-to-zoom + two-finger pan. Single-finger gestures are
+	// left to the editor (brush/select) — the camera deliberately does NOT
+	// single-pointer-pan unless Space is held, so editing stays intact on touch.
+	const pointers = new Map<number, { x: number; y: number }>();
+	let gestureActive = false;
+	let lastDist = 0;
+	let lastMidX = 0;
+	let lastMidY = 0;
+
+	const activePointers = () => [...pointers.values()];
+	const gestureMidpoint = (): { x: number; y: number } => {
+		const pts = activePointers();
+		let x = 0;
+		let y = 0;
+		for (const p of pts) {
+			x += p.x;
+			y += p.y;
+		}
+		const n = pts.length || 1;
+		return { x: x / n, y: y / n };
+	};
+	const gestureDistance = (): number => {
+		const pts = activePointers();
+		if (pts.length < 2) return 0;
+		return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+	};
 	const onKeyDown = (e: KeyboardEvent) => {
 		if (e.code === "Space" && !spaceDown) {
 			spaceDown = true;
@@ -1821,8 +1840,21 @@ export function attachCamera(
 		});
 	};
 	const onDown = (e: PointerEvent) => {
-		// Only start a pan drag while Space is held. Without Space, the editor
-		// owns the pointer (brush / select / macro). Wheel-zoom stays always-on.
+		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		// A second finger enters pinch-to-zoom / two-finger pan mode. Record
+		// the starting distance + midpoint so onMove can compute deltas.
+		if (pointers.size >= 2) {
+			gestureActive = true;
+			dragging = false;
+			lastDist = gestureDistance();
+			const m = gestureMidpoint();
+			lastMidX = m.x;
+			lastMidY = m.y;
+			target.setPointerCapture?.(e.pointerId);
+			return;
+		}
+		// Single pointer only pans while Space is held (editor owns the pointer
+		// otherwise). Without Space, plain pointerdown does not start a pan.
 		if (!spaceDown) return;
 		dragging = true;
 		lastX = e.clientX;
@@ -1830,22 +1862,51 @@ export function attachCamera(
 		target.setPointerCapture?.(e.pointerId);
 	};
 	const onMove = (e: PointerEvent) => {
-		if (!dragging) return;
+		if (!pointers.has(e.pointerId)) return;
+		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 		const { w, h } = screenSize();
+		// Multi-touch gesture: pinch-to-zoom around the midpoint + pan by
+		// midpoint movement (two-finger drag). No Space needed.
+		if (gestureActive && pointers.size >= 2) {
+			const d = gestureDistance();
+			const m = gestureMidpoint();
+			const rect = target.getBoundingClientRect();
+			if (lastDist > 0 && d > 0) {
+				worldMap.setZoom(worldMap.getZoom() * (d / lastDist), w, h, {
+					x: m.x - rect.left,
+					y: m.y - rect.top,
+				});
+			}
+			worldMap.panBy(m.x - lastMidX, m.y - lastMidY, w, h);
+			lastDist = d;
+			lastMidX = m.x;
+			lastMidY = m.y;
+			return;
+		}
+		if (!dragging) return;
 		worldMap.panBy(e.clientX - lastX, e.clientY - lastY, w, h);
 		lastX = e.clientX;
 		lastY = e.clientY;
 	};
-	const onUp = (e: PointerEvent) => {
-		if (!dragging) return;
-		dragging = false;
-		target.releasePointerCapture?.(e.pointerId);
+	const endPointer = (e: PointerEvent) => {
+		pointers.delete(e.pointerId);
+		if (pointers.size < 2) {
+			gestureActive = false;
+			lastDist = 0;
+		}
+		if (dragging) {
+			dragging = false;
+			target.releasePointerCapture?.(e.pointerId);
+		}
 	};
+	const onUp = (e: PointerEvent) => endPointer(e);
+	const onCancel = (e: PointerEvent) => endPointer(e);
 
 	target.addEventListener("wheel", onWheel, { passive: false });
 	target.addEventListener("pointerdown", onDown);
 	target.addEventListener("pointermove", onMove);
 	target.addEventListener("pointerup", onUp);
+	target.addEventListener("pointercancel", onCancel);
 	target.addEventListener("pointerleave", onUp);
 
 	return () => {
@@ -1853,6 +1914,7 @@ export function attachCamera(
 		target.removeEventListener("pointerdown", onDown);
 		target.removeEventListener("pointermove", onMove);
 		target.removeEventListener("pointerup", onUp);
+		target.removeEventListener("pointercancel", onCancel);
 		target.removeEventListener("pointerleave", onUp);
 		window.removeEventListener("keydown", onKeyDown);
 		window.removeEventListener("keyup", onKeyUp);
