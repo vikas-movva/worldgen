@@ -30,6 +30,23 @@ export const ENTITY_LAYER_KEYS: Record<Exclude<EntityKind, "burg">, LayerName> =
 	religion: "religions",
 };
 
+/**
+ * Phase 1.2: the pristine per-layer visibility set. Shared by the store's
+ * initial state and by `clear()` so a reset restores the renderer's default
+ * layers instead of leaving a stale/arbitrary toggle state behind.
+ */
+export const DEFAULT_LAYER_ENABLED: LayerState = {
+	terrain: true,
+	biome: false,
+	rivers: false,
+	lakes: false,
+	states: false,
+	provinces: false,
+	cultures: false,
+	religions: false,
+	burgs: false,
+};
+
 export type WorldgenState = {
 	grid: Grid | null;
 	mesh: Mesh | null;
@@ -75,6 +92,16 @@ export type WorldgenState = {
 	scrubStatus: "idle" | "loading" | "error";
 	/** Phase 5: the projected WorldAt for the currentYear (or null). */
 	projectedWorld: WorldAt | null;
+	/**
+	 * The most recent store-driven entity edit (`updateEntity`), persisted so
+	 * the MapCanvas subscriber can route it to the renderer even while a
+	 * projected world is the active source. `color` is present only when the
+	 * edit changed the colour (name-only edits still carry `{kind,id}` so the
+	 * renderer can skip a redundant full re-upload). Consumed via the
+	 * `prev`-compare in MapCanvas — not cleared, so later identical frames
+	 * no-op.
+	 */
+	entityEdit: { kind: EntityKind; id: number; color?: number } | null;
 };
 
 export type EditorTool =
@@ -149,17 +176,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		mesh: null,
 		climate: null,
 		generation: null,
-		layerEnabled: {
-			terrain: true,
-			biome: false,
-			rivers: false,
-			lakes: false,
-			states: false,
-			provinces: false,
-			cultures: false,
-			religions: false,
-			burgs: false,
-		},
+		layerEnabled: { ...DEFAULT_LAYER_ENABLED },
 		rivers: [],
 		lakes: [],
 		statesResult: null,
@@ -177,6 +194,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		playbackSpeed: 5,
 		scrubStatus: "idle",
 		projectedWorld: null,
+		entityEdit: null,
 		setGrid: (grid) => set({ grid }),
 		setMesh: (mesh) => set({ mesh }),
 		setClimate: (climate) => set({ climate }),
@@ -203,10 +221,19 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 			}),
 		selectEntity: (sel) => set({ selectedEntity: sel }),
 		// Mutate the matching entity in the relevant pack result. We replace
-		// the result object (new reference) so React/MapCanvas subscribers
-		// re-run pushEntities and re-upload the entity color texture.
+		// the result object (new reference) so React re-renders the entity
+		// panel. We also set `entityEdit` so the MapCanvas subscriber can route
+		// the change into `WorldMap.updateEntityColor` instead of a full
+		// four-layer re-upload, and can keep applying a colour edit even while a
+		// projected world is the active source. `entityEdit` carries the
+		// kind+id and, for colour edits, the new colour.
 		updateEntity: (kind, id, patch) =>
 			set((s) => {
+				const edit = {
+					kind,
+					id,
+					...(patch.color !== undefined ? { color: patch.color } : {}),
+				};
 				if (kind === "state") {
 					if (!s.statesResult) return {};
 					const pack = s.statesResult.pack;
@@ -224,6 +251,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 							...s.statesResult,
 							pack: { ...pack, states: newStates },
 						},
+						entityEdit: edit,
 					};
 				}
 				if (kind === "province") {
@@ -243,6 +271,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 							...s.statesResult,
 							pack: { ...pack, provinces: newProvinces },
 						},
+						entityEdit: edit,
 					};
 				}
 				if (kind === "culture") {
@@ -258,6 +287,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					newCultures[idx] = updated;
 					return {
 						culturesResult: { ...s.culturesResult, cultures: newCultures },
+						entityEdit: edit,
 					};
 				}
 				if (kind === "religion") {
@@ -273,6 +303,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 					newReligions[idx] = updated;
 					return {
 						culturesResult: { ...s.culturesResult, religions: newReligions },
+						entityEdit: edit,
 					};
 				}
 				return {};
@@ -305,6 +336,11 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				mesh: null,
 				climate: null,
 				generation: null,
+				// Phase 1.2: reset the layer toggles + selection so a fresh
+				// WorldMap (built after a later generate) starts from the
+				// pristine defaults rather than stale toggles.
+				layerEnabled: { ...DEFAULT_LAYER_ENABLED },
+				selectedEntity: null,
 				selectedCellId: -1,
 				rivers: [],
 				lakes: [],
@@ -318,6 +354,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				playbackSpeed: 5,
 				scrubStatus: "idle",
 				projectedWorld: null,
+				entityEdit: null,
 			}),
 	}),
 );

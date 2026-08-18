@@ -83,6 +83,19 @@ function quadGrid(n = 1, worldW = 1000, worldH = 1000): Grid {
 
 let wm: WorldMap;
 
+/** Read the RGBA texels written into a data-texture buffer. (Module scope so
+ * every describe can assert on the raw Uint8Array backing each layer.) */
+function readTexels(
+	buf: Uint8Array | null,
+): Array<[number, number, number, number]> {
+	if (!buf) return [];
+	const out: Array<[number, number, number, number]> = [];
+	for (let i = 0; i < buf.length; i += 4) {
+		out.push([buf[i]!, buf[i + 1]!, buf[i + 2]!, buf[i + 3]!]);
+	}
+	return out;
+}
+
 beforeEach(() => {
 	wm = new WorldMap(quadGrid(1, 1000, 1000));
 });
@@ -1050,16 +1063,6 @@ describe("updateEntities (Step 5.2 live morph)", () => {
 		vi.restoreAllMocks();
 	});
 
-	/** Read the RGBA texels written into a data-texture buffer. */
-	function readTexels(buf: Uint8Array | null): Array<[number, number, number, number]> {
-		if (!buf) return [];
-		const out: Array<[number, number, number, number]> = [];
-		for (let i = 0; i < buf.length; i += 4) {
-			out.push([buf[i]!, buf[i + 1]!, buf[i + 2]!, buf[i + 3]!]);
-		}
-		return out;
-	}
-
 	/** Cast the private WorldMap fields to a testable shape. */
 	function getDataBuffers(wm: WorldMap) {
 		return wm as unknown as {
@@ -1421,5 +1424,196 @@ describe("WorldMap burgs overlay", () => {
 		wm.setBurgs(null, []);
 		wm.fitToScreen(800, 600);
 		expect(wm.getBurgRadius()).toBe(0);
+	});
+});
+
+// ---- Phase 1.3: patchEntityCells (height-edit -> entity-layer refresh) ----
+describe("WorldMap.patchEntityCells (post-edit refresh)", () => {
+	const setBase = (g: Grid) => {
+		const wm = new WorldMap(g);
+		wm.setEntities(g, {
+			pack: {
+				states: [{ color: 0xff0000 }, { color: 0x00ff00 }],
+				provinces: [{ color: 0x0000ff }],
+				cultures: [{ color: 0xffffff }, { color: 0x111111 }],
+				religions: [{ color: 0x222222 }],
+			},
+			cells_state: [1, 2],
+			cells_province: [0, 1],
+			cells_culture: [1, 0],
+			cells_religion: [0, 0],
+		});
+		return wm;
+	};
+
+	it("re-fills the entity buffers from grid.cells after an in-place edit", () => {
+		const g = quadGrid(2, 1000, 1000);
+		const wm = setBase(g);
+		// Initial: cell0 -> state1 (red), cell1 -> state2 (green).
+		let b = wm as unknown as {
+			stateData: Uint8Array;
+			provinceData: Uint8Array;
+			cultureData: Uint8Array;
+			religionData: Uint8Array;
+			entityCells: { state: number[] };
+		};
+		expect(readTexels(b.stateData)[0]).toEqual([255, 0, 0, 255]);
+		expect(readTexels(b.stateData)[1]).toEqual([0, 255, 0, 255]);
+
+		// Simulate a height-edit repair: a land<->water flip changes cell1's
+		// state assignment (1-based -> -1 unassigned). grid.cells.state is the
+		// (possibly stale) per-cell array the editor respliced.
+		g.cells.state = [1, 0];
+		wm.patchEntityCells(g);
+
+		const t = readTexels(b.stateData);
+		// cell1 was dissolved (removed): its texel must go transparent, and the
+		// entityCells stash must reflect the new -1 sentinel so state borders +
+		// click-to-select no longer reference a removed entity exactly there.
+		expect(t[0]).toEqual([255, 0, 0, 255]);
+		// Alpha 0 = invisible; the old RGB bytes may linger but render nothing.
+		expect(t[1][3]).toBe(0);
+		expect(b.entityCells.state).toEqual([1, -1]);
+		wm.destroy();
+	});
+
+	it("re-fills from the ACTIVE source (projected pack), not the base pack", () => {
+		const g = quadGrid(2, 1000, 1000);
+		const wm = setBase(g);
+		// Project to a year where cell0 changes to state2 (green).
+		wm.updateEntities(
+			{
+				year: 500,
+				cells_state: [2, 0],
+				cells_province: [0, 0],
+				cells_culture: [0, 0],
+				cells_religion: [0, 0],
+				pack: {
+					states: [
+						{ color: 0xff0000 } as any,
+						{ color: 0x00ff00 } as any,
+					],
+					provinces: [],
+					cultures: [],
+					religions: [],
+					burgs: [],
+					armies: [],
+				} as any,
+			},
+			g,
+		);
+		// Post-scrub in-place edit (water->land in cell1). patchEntityCells
+		// must re-fill using the PROJECTED pack (the active source), so the
+		// projected view is preserved rather than reverting to year-0.
+		g.cells.state = [2, 2];
+		wm.patchEntityCells(g);
+		const b = wm as unknown as { stateData: Uint8Array; entityCells: { state: number[] } };
+		const t = readTexels(b.stateData);
+		expect(t[0]).toEqual([0, 255, 0, 255]); // state2 green from projected pack
+		expect(t[1]).toEqual([0, 255, 0, 255]);
+		expect(b.entityCells.state).toEqual([2, 2]);
+		wm.destroy();
+	});
+
+	it("is a no-op before any entity source is loaded", () => {
+		const g = quadGrid(1, 1000, 1000);
+		const wm = new WorldMap(g);
+		g.cells.state = [-1];
+		expect(() => wm.patchEntityCells(g)).not.toThrow();
+		wm.destroy();
+	});
+});
+
+// ---- Phase 2c/4c: updateEntityColor (patch-on-edit) -----------------------
+describe("WorldMap.updateEntityColor (patch-on-edit)", () => {
+	const make = (g: Grid) => {
+		const wm = new WorldMap(g);
+		wm.setEntities(g, {
+			pack: {
+				states: [{ color: 0xff0000 }, { color: 0x00ff00 }],
+				provinces: [],
+				cultures: [{ color: 0xffffff }, { color: 0x111111 }],
+				religions: [{ color: 0x222222 }, { color: 0x333333 }],
+			},
+			cells_state: [1, 2],
+			cells_province: [-1, -1],
+			cells_culture: [1, 0],
+			cells_religion: [0, 0],
+		});
+		return wm;
+	};
+
+	it("patches only the matching entity's texels in one layer", () => {
+		const g = quadGrid(2, 1000, 1000);
+		const wm = make(g);
+		wm.updateEntityColor("state", 1, 0x123456);
+		const b = wm as unknown as {
+			stateData: Uint8Array;
+			provinceData: Uint8Array;
+			activePack: { states: { color: number }[] };
+		};
+		const states = readTexels(b.stateData);
+		expect(states[0]).toEqual([0x12, 0x34, 0x56, 255]);
+		// cell1 still state2 green — untouched.
+		expect(states[1]).toEqual([0, 255, 0, 255]);
+		// activePack (source-of-truth) reflects the new color so a later
+		// patchEntityCells re-fill preserves it.
+		expect(b.activePack.states[0]!.color).toBe(0x123456);
+		wm.destroy();
+	});
+
+	it("culture edits patch the culture layer (0-based ids)", () => {
+		const g = quadGrid(2, 1000, 1000);
+		const wm = make(g);
+		wm.updateEntityColor("culture", 1, 0xaabbcc);
+		const b = wm as unknown as { cultureData: Uint8Array };
+		const t = readTexels(b.cultureData);
+		expect(t[0]).toEqual([0xaa, 0xbb, 0xcc, 255]);
+		expect(t[1]).toEqual([0, 0, 0, 0]); // cell1 culture0 = none
+		wm.destroy();
+	});
+
+	it("routes a colour edit into the projected pack when it is the active source", () => {
+		const g = quadGrid(2, 1000, 1000);
+		const wm = make(g);
+		const world = {
+			year: 500,
+			cells_state: [2, 2],
+			cells_province: [0, 0],
+			cells_culture: [0, 0],
+			cells_religion: [0, 0],
+			pack: {
+				states: [
+					{ color: 0xff0000 } as any,
+					{ color: 0x00ff00 } as any,
+				],
+				provinces: [],
+				cultures: [],
+				religions: [],
+				burgs: [],
+				armies: [],
+			} as any,
+		};
+		wm.updateEntities(world, g);
+		// Both cells are now state2 (green) in the projected year. Recolour
+		// state2 -> purple: must patch BOTH cells from the projected pack.
+		wm.updateEntityColor("state", 2, 0x884422);
+		const b = wm as unknown as {
+			stateData: Uint8Array;
+			activePack: { states: { color: number }[] };
+		};
+		const t = readTexels(b.stateData);
+		expect(t[0]).toEqual([0x88, 0x44, 0x22, 255]);
+		expect(t[1]).toEqual([0x88, 0x44, 0x22, 255]);
+		// And the projected activePack is updated (not the base vector).
+		expect(b.activePack.states[1]!.color).toBe(0x884422);
+		wm.destroy();
+	});
+
+	it("no-ops for a burg (point overlay, no fill texture)", () => {
+		const g = quadGrid(1, 1000, 1000);
+		const wm = make(g);
+		expect(() => wm.updateEntityColor("burg", 1, 0xff0000)).not.toThrow();
+		wm.destroy();
 	});
 });

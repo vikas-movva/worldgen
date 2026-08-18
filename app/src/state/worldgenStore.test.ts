@@ -217,14 +217,17 @@ describe("worldgenStore.clear", () => {
 		expect(s.generation).toBeNull();
 	});
 
-	it("preserves layerEnabled across clear (toggle survives regeneration)", () => {
-		// Turn both layers on, then clear - a regeneration should not reset
-		// the user's layer visibility choice.
+	it("resets layerEnabled to defaults across clear (stale toggles do not survive regeneration)", () => {
+		// Turn extra layers on, then clear - a fresh WorldMap (built after a
+		// later generate) must start from the pristine defaults rather than
+		// whatever toggles the user had active, so stale/arbitrary visibility
+		// doesn't leak from one world into the next.
 		useWorldgenStore.getState().toggleLayer("biome");
+		useWorldgenStore.getState().toggleLayer("states");
 		useWorldgenStore.getState().clear();
 		expect(useWorldgenStore.getState().layerEnabled).toEqual({
 			terrain: true,
-			biome: true,
+			biome: false,
 			rivers: false,
 			lakes: false,
 			states: false,
@@ -233,6 +236,32 @@ describe("worldgenStore.clear", () => {
 			religions: false,
 			burgs: false,
 		});
+	});
+
+	it("resets selection + timeline + projected world across clear", () => {
+		useWorldgenStore.getState().selectEntity({ kind: "state", id: 3 });
+		useWorldgenStore.getState().setProjectedWorld({
+			year: 500,
+			cells_state: [],
+			cells_province: [],
+			cells_culture: [],
+			cells_religion: [],
+			cells_burg: [],
+			pack: {
+				states: [],
+				provinces: [],
+				cultures: [],
+				religions: [],
+				burgs: [],
+			},
+		});
+		useWorldgenStore.getState().setTimeline([], 0, 500);
+		useWorldgenStore.getState().clear();
+		const s = useWorldgenStore.getState();
+		expect(s.selectedEntity).toBeNull();
+		expect(s.projectedWorld).toBeNull();
+		expect(s.timeline).toBeNull();
+		expect(s.currentYear).toBe(0);
 	});
 });
 

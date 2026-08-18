@@ -59,6 +59,23 @@ function dataTexture(data: Uint8Array, texDim: number): Texture {
 }
 
 /**
+ * Normalize a world-space coordinate to the [0,1]^2 mesh space the renderer
+ * draws in (x scaled by worldW, y flipped so north is up), clamped so a point
+ * slightly outside the world still lands on a valid texel. Hoisted to module
+ * scope — every overlay draw site (selection, rivers/lakes, state borders,
+ * burgs) computes the same closure, so it's defined once instead of being
+ * re-allocated as an arrow function per call/per loop iteration.
+ */
+function makeNormalizer(worldW: number, worldH: number) {
+	const w = worldW || 1;
+	const h = worldH || 1;
+	return {
+		nx: (x: number) => Math.min(1, Math.max(0, x / w)),
+		ny: (y: number) => Math.min(1, Math.max(0, 1 - y / h)),
+	};
+}
+
+/**
  * Owns the merged geometry + terrain/biome meshes for one `Grid`.
  *
  * `view` is the `Container` you add to your world layer; pan/zoom is applied to
@@ -93,7 +110,7 @@ export class WorldMap {
 	 * Step 3.4: entity-layer meshes + color buffers. Each mesh shares the
 	 * merged world `geometry` and carries its own 1×N RGBA data texture
 	 * indexed by cell id (texel `cellId` = the per-cell entity color). The
-	 * buffer is filled by `setEntities`/`updateEntities` from the Phase-3
+	 * buffer is filled by `setEntities`/`updateEntities` from the
 	 * `pack` + per-cell `state`/`province`/`culture`/`religion` arrays.
 	 * Unassigned cells are transparent (alpha 0) so the terrain shows through.
 	 */
@@ -116,6 +133,19 @@ export class WorldMap {
 		province: number[];
 		culture: number[];
 		religion: number[];
+	} | null = null;
+	/**
+	 * The ACTIVE source-of-truth for the entity color vectors —
+	 * the last pack applied via `setEntities` (base year-0) or `updateEntities`
+	 * (projected `WorldAt`). `patchEntityCells` re-fills the data textures from
+	 * THESE vectors after an in-place per-cell/height edit, so the base pack
+	 * never clobbers a projected view and vice-versa. Cleared on `destroy()`.
+	 */
+	private activePack: {
+		states: { color: number }[];
+		provinces: { color: number }[];
+		cultures: { color: number }[];
+		religions: { color: number }[];
 	} | null = null;
 	/** Step 3.4: the currently selected entity (for click-to-select highlight). */
 	private selectedEntity: {
@@ -266,6 +296,22 @@ export class WorldMap {
 	private baseScaleY = 1;
 
 	/**
+	 * apply ONLY the camera transform (`view.x/y/scale`) for the
+	 * current fit-scale × zoom and pan offset. Cheap — no overlay re-tessellation.
+	 * Used by `panBy` (drag) where neither the scale nor the stored overlays
+	 * change, so we don't re-run the expensive `drawStateBorders`/`drawBurgs`/
+	 * `drawRiversLakes` on every pointermove.
+	 */
+	private updateCameraView(screenW: number, screenH: number): void {
+		if (screenW <= 0 || screenH <= 0) return;
+		const zx = this.baseScaleX * this.zoom;
+		const zy = this.baseScaleY * this.zoom;
+		this.view.scale.set(zx, zy);
+		this.view.x = (screenW - zx) / 2 + this.panX;
+		this.view.y = (screenH - zy) / 2 + this.panY;
+	}
+
+	/**
 	 * Scale and center the world map to fill the given screen dimensions.
 	 *
 	 * The merged geometry is in normalized [0,1]^2 space: each cell's position
@@ -278,6 +324,11 @@ export class WorldMap {
 	 *
 	 * The user's pan offset is preserved: the final position is the centred
 	 * fit position plus (panX, panY). Only `resetView()` re-zeroes the pan.
+	 *
+	 * Because the fit (and therefore the local→screen scale) changes here, the
+	 * fixed-width overlays are re-tessellated so their on-screen stroke width
+	 * stays constant. Drag-pan via `panBy` does NOT call this, so those
+	 * re-tessellations are avoided on every pointermove (see `updateCameraView`).
 	 */
 	fitToScreen(screenW: number, screenH: number): void {
 		if (screenW <= 0 || screenH <= 0) return;
@@ -296,15 +347,7 @@ export class WorldMap {
 		}
 		this.baseScaleX = xScale;
 		this.baseScaleY = yScale;
-		// Apply the current user zoom multiplier on top of the fit scale.
-		// This separates "fit the map to the screen" from "let the user zoom
-		// in/out with the wheel", so the zoom bounds operate on a sane [0.15, 24]
-		// multiplier instead of the raw pixel scale (which is hundreds).
-		const zx = xScale * this.zoom;
-		const zy = yScale * this.zoom;
-		this.view.scale.set(zx, zy);
-		this.view.x = (screenW - zx) / 2 + this.panX;
-		this.view.y = (screenH - zy) / 2 + this.panY;
+		this.updateCameraView(screenW, screenH);
 		// Re-stroke the selection outline so its on-screen width stays
 		// constant (the stroke lives in view-local units, which the scale
 		// just changed). No-op when nothing is selected.
@@ -352,11 +395,15 @@ export class WorldMap {
 		this.fitToScreen(screenW, screenH);
 	}
 
-	/** Add a screen-space delta to the pan offset (drag). Re-applies the fit. */
+	/** Add a screen-space delta to the pan offset (drag). Only the
+	 * camera transform is re-applied here — the overlays hold no pan-dependent
+	 * geometry (their local→screen stroke width depends only on scale, which a
+	 * pan does not change), so we skip the expensive `fitToScreen` re-tessellation
+	 * that would otherwise run on every pointermove during a drag. */
 	panBy(dx: number, dy: number, screenW: number, screenH: number): void {
 		this.panX += dx;
 		this.panY += dy;
-		this.fitToScreen(screenW, screenH);
+		this.updateCameraView(screenW, screenH);
 	}
 
 	/** Reset pan and zoom to defaults (fit-to-screen, centred). */
@@ -370,6 +417,27 @@ export class WorldMap {
 	/** Get the current user zoom multiplier. */
 	getZoom(): number {
 		return this.zoom;
+	}
+
+	/**
+	 * return a stroke width in view-local (normalized [0,1]) units
+	 * that renders at approximately `desiredPx` screen pixels under the current
+	 * camera. Scale-compensation is `localWidth = desiredPx / meanScale`, floored
+	 * so a tiny local width never collapses to 0. Previously copy-pasted at every
+	 * overlay draw site — centralized here. Returns the local width; callers
+	 * multiply by `currentMeanScale()` to recover the on-screen px for tests/
+	 * inspectors.
+	 */
+	private scaleCompensatedWidth(desiredPx: number): number {
+		return Math.max(desiredPx / this.currentMeanScale(), 1 / 4096);
+	}
+
+	/** The current average of the two camera scale axes (used to turn a
+	 * view-local stroke width back into on-screen px). */
+	private currentMeanScale(): number {
+		const sx = Math.abs(this.view.scale.x) || 1;
+		const sy = Math.abs(this.view.scale.y) || 1;
+		return (sx + sy) / 2;
 	}
 
 	/**
@@ -574,12 +642,8 @@ export class WorldMap {
 			const gfx = this.selectionGfx;
 			gfx.clear();
 
-			const sx = Math.abs(this.view.scale.x) || 1;
-			const sy = Math.abs(this.view.scale.y) || 1;
-			const meanScale = (sx + sy) / 2;
-			const desiredPx = 2;
-			const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
-			this.selectionStrokeWidth = localWidth * meanScale;
+			const localWidth = this.scaleCompensatedWidth(2);
+			this.selectionStrokeWidth = localWidth * this.currentMeanScale();
 
 			const arr =
 				entity.kind === "state"
@@ -620,12 +684,8 @@ export class WorldMap {
 		const gfx = this.selectionGfx;
 		gfx.clear();
 
-		const sx = Math.abs(this.view.scale.x) || 1;
-		const sy = Math.abs(this.view.scale.y) || 1;
-		const meanScale = (sx + sy) / 2;
-		const desiredPx = 2;
-		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
-		this.selectionStrokeWidth = localWidth * meanScale;
+		const localWidth = this.scaleCompensatedWidth(2);
+		this.selectionStrokeWidth = localWidth * this.currentMeanScale();
 
 		this.strokeCellOutline(gfx, grid, cellId, localWidth);
 	}
@@ -652,10 +712,7 @@ export class WorldMap {
 		const cellI = grid.mesh.cells.i as unknown as number[];
 		const cellV = grid.mesh.cells.v as unknown as number[];
 		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const { nx, ny } = makeNormalizer(grid.mesh.world_w, grid.mesh.world_h);
 		const edgeNb = this.edgeNeighbor;
 		const n = grid.mesh.points.length;
 		const inEntity = (c: number) => c >= 0 && c < n && arr[c] === id;
@@ -692,10 +749,7 @@ export class WorldMap {
 		const cellI = grid.mesh.cells.i as unknown as number[];
 		const cellV = grid.mesh.cells.v as unknown as number[];
 		const vpts = grid.mesh.vertices.p as unknown as [number, number][];
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const { nx, ny } = makeNormalizer(grid.mesh.world_w, grid.mesh.world_h);
 
 		const lo = cellI[cellId] as number;
 		const hi = cellI[cellId + 1] as number;
@@ -769,7 +823,7 @@ export class WorldMap {
 	 * pattern as rivers/selection/state-borders).
 	 *
 	 * @param grid  the Grid (for `mesh.points` cell centroids).
-	 * @param burgs the burg list from `pack.burgs` (Phase 3.4), including `id`.
+	 * @param burgs the burg list from `pack.burgs`, including `id`.
 	 */
 	setBurgs(
 		grid: Grid | null,
@@ -810,17 +864,22 @@ export class WorldMap {
 		this.drainageGrid = grid;
 		this.drainageRivers = rivers;
 		this.drainageLakes = lakes;
-		this.drawRiversLakes();
+		this.drawRiversLakes(true);
 	}
 
 	/**
 	 * Re-draw the river polylines + lake polygons from the stashed geometry
 	 * at the current camera scale. Stroke widths are scale-compensated
 	 * (`localWidth = desiredPx / meanScale`) so an on-screen target of ~2 px
-	 * survives zoom/pan/resize. Called from `setRiversLakes` (initial draw)
-	 * and from `fitToScreen` (re-stroke on camera change).
+	 * survives zoom/resize. Called from `setRiversLakes` (initial draw, with
+	 * `force` so the buffer is primed regardless of the current toggle) and
+	 * from `fitToScreen`/`applyLayers` (camera re-stroke). When not forced and
+	 * neither the Rivers nor the Lakes layer is visible, the cached buffer is
+	 * reused and this is a no-op — avoiding a full O(edges) re-tessellation on
+	 * every camera change while the overlays are hidden.
 	 */
-	private drawRiversLakes(): void {
+	private drawRiversLakes(force = false): void {
+		if (!force && !this.layers.rivers && !this.layers.lakes) return;
 		const grid = this.drainageGrid;
 		if (!grid) {
 			if (this.riverGfx) this.riverGfx.clear();
@@ -831,10 +890,7 @@ export class WorldMap {
 		const rivers = this.drainageRivers;
 		const lakes = this.drainageLakes;
 		const points = grid.mesh.points as unknown as [number, number][];
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const { nx, ny } = makeNormalizer(grid.mesh.world_w, grid.mesh.world_h);
 
 		// Lakes: render each lake cell as a filled polygon using its mesh
 		// quad vertices (`mesh.cells.v` groups + `cells.i` offsets). FMG
@@ -894,12 +950,8 @@ export class WorldMap {
 		// Scale-compensate the stroke width so on-screen thickness stays
 		// ~2 px regardless of camera zoom (mirrors the selection-outline
 		// fix in drawSelection; a child of `view` inherits the fit-scale).
-		const sx = Math.abs(this.view.scale.x) || 1;
-		const sy = Math.abs(this.view.scale.y) || 1;
-		const meanScale = (sx + sy) / 2;
-		const desiredPx = 2;
-		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
-		this.riverStrokeWidth = localWidth * meanScale; // store on-screen px
+		const localWidth = this.scaleCompensatedWidth(2);
+		this.riverStrokeWidth = localWidth * this.currentMeanScale(); // store on-screen px
 		for (const river of rivers) {
 			if (river.points.length < 2) continue;
 			const first = river.points[0];
@@ -918,17 +970,16 @@ export class WorldMap {
 	 * Each burg is a circle centered on its cell's centroid (`mesh.points[c]`),
 	 * projected to normalized [0,1] space (same nx/ny as the rest of the map).
 	 * The radius is in view-local units — the on-screen size is
-	 * `localRadius * meanScale`, so we divide the desired px by meanScale to
-	 * get a scale-compensated local radius (same pattern as rivers/selection).
+	 * `localRadius * meanScale`, so we divide the desired px by the base fit
+	 * scale to get a scale-compensated local radius (same pattern as
+	 * rivers/selection, but using the base fit scale so markers scale with the
+	 * world rather than staying absolutely fixed on zoom).
 	 *
 	 * Marker radius grows with population: capitals get a larger base + gold
 	 * crown color; towns get a smaller radius proportional to `sqrt(pop)`.
 	 *
-	 * `fitToScreen` re-calls this on every pan/zoom/resize so the on-screen
-	 * Marker radius grows with population: capitals get a larger base + gold
-	 * crown stroke; towns get a smaller radius proportional to `sqrt(pop)`.
-	 *
-	 * `fitToScreen` re-calls this on every pan/zoom/resize.
+	 * `fitToScreen` re-calls this on every camera change so markers stay
+	 * correctly positioned; it no-ops (and hides) when the Burgs layer is off.
 	 */
 	private drawBurgs(): void {
 		if (!this.burgGfx) return;
@@ -940,10 +991,7 @@ export class WorldMap {
 			return;
 		}
 		const grid = this.burgGrid;
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const { nx, ny } = makeNormalizer(grid.mesh.world_w, grid.mesh.world_h);
 		// World-normalized radius. baseScaleX/Y is the fit-to-screen px scale;
 		// dividing by it converts a desired px size into [0,1] world units.
 		// The zoom multiplier is NOT applied here (unlike rivers/selection),
@@ -1079,10 +1127,7 @@ export class WorldMap {
 		const cellV = grid.mesh.cells.v as unknown as number[];
 		const vpts = (grid.mesh.vertices?.p as unknown as [number, number][]) ?? [];
 		const n = grid.mesh.points.length;
-		const worldW = grid.mesh.world_w || 1;
-		const worldH = grid.mesh.world_h || 1;
-		const nx = (x: number) => Math.min(1, Math.max(0, x / worldW));
-		const ny = (y: number) => Math.min(1, Math.max(0, 1 - y / worldH));
+		const { nx, ny } = makeNormalizer(grid.mesh.world_w, grid.mesh.world_h);
 
 		// Use the entity cells from setEntities (the authoritative per-cell
 		// state assignment), NOT grid.cells.state (which is -1/unassigned
@@ -1135,12 +1180,8 @@ export class WorldMap {
 		}
 
 		// Scale-compensate the stroke width (~1.5 px on screen).
-		const sx = Math.abs(this.view.scale.x) || 1;
-		const sy = Math.abs(this.view.scale.y) || 1;
-		const meanScale = (sx + sy) / 2;
-		const desiredPx = 1.5;
-		const localWidth = Math.max(desiredPx / meanScale, 1 / 4096);
-		this.stateBorderStrokeWidth = localWidth * meanScale;
+		const localWidth = this.scaleCompensatedWidth(1.5);
+		this.stateBorderStrokeWidth = localWidth * this.currentMeanScale();
 
 		gfx.stroke({ color: 0x000000, width: localWidth, alpha: 0.95 });
 	}
@@ -1157,9 +1198,16 @@ export class WorldMap {
 		if (this.provinceMesh) this.provinceMesh.visible = this.layers.provinces;
 		if (this.cultureMesh) this.cultureMesh.visible = this.layers.cultures;
 		if (this.religionMesh) this.religionMesh.visible = this.layers.religions;
-		// State borders render on top of the provinces fill.
-		if (this.stateBorderGfx)
-			this.stateBorderGfx.visible = this.layers.provinces;
+		// Rivers/lakes: re-tessellate from the stashed geometry whenever a
+		// relevant layer is visible (no-op when both are hidden), so a toggle-on
+		// re-strokes at the current camera scale instead of showing a buffer
+		// primed at a stale scale. When hidden this is a cheap early-return.
+		this.drawRiversLakes();
+		// State borders render on top of the provinces fill. Their visibility is
+		// managed entirely by drawStateBorders (which also shows them when a
+		// state/province is selected even with the Provinces layer off, honoring
+		// selTriggersBorder) — do NOT force `visible = layers.provinces` here, or
+		// turning the layer off would hide borders that a selection still wants.
 		this.drawStateBorders();
 		// Burgs overlay: re-draw at the current scale (visible flag checked
 		// inside drawBurgs).
@@ -1224,7 +1272,7 @@ export class WorldMap {
 	}
 
 	/**
-	 * Step 3.4: populate the four entity layers from a Phase-3 result.
+	 * 
 	 *
 	 * `pack` holds the entity color vectors (`states[i].color` etc., packed
 	 * 0xRRGGBB). `cells_state[i]` is the owning entity id for cell `i` (-1 if
@@ -1238,8 +1286,7 @@ export class WorldMap {
 	 * is not needed — visibility is unchanged; only the texture data updates.
 	 *
 	 * @param grid  the Grid (used for cell count + to stash for selection).
-	 * @param result the combined Phase-3 result (states pack + per-cell arrays
-	 *               + culture/religion vectors + per-cell arrays).
+	 * @param result (states pack + per-cell arrays + culture/religion vectors + per-cell arrays).
 	 */
 	setEntities(
 		grid: Grid,
@@ -1258,6 +1305,15 @@ export class WorldMap {
 	): void {
 		this.stashGridForBorders = grid;
 		const n = grid.mesh.points.length;
+		// record the base pack as the active source-of-truth so a
+		// later in-place `patchEntityCells` re-fills from it (and a projected
+		// `updateEntities` supersedes it without leaving stale refs behind).
+		this.activePack = {
+			states: result.pack.states,
+			provinces: result.pack.provinces,
+			cultures: result.pack.cultures,
+			religions: result.pack.religions,
+		};
 		this.entityCells = {
 			state: result.cells_state,
 			province: result.cells_province,
@@ -1314,11 +1370,171 @@ export class WorldMap {
 		if (this.cultureData) this.cultureData.fill(0);
 		if (this.religionData) this.religionData.fill(0);
 		this.entityCells = null;
+		this.activePack = null;
 		this.selectedEntity = null;
 		this.textures[2]?.source.update();
 		this.textures[3]?.source.update();
 		this.textures[4]?.source.update();
 		this.textures[5]?.source.update();
+	}
+
+	/**
+	 * refresh the four entity data-texture buffers, the state
+	 * borders, and the burg markers from the CURRENT grid's per-cell entity
+	 * arrays after an in-place edit (heightmap/entity repair) that leaves the
+	 * mesh unchanged. No geometry rebuild — this is the entity-layer equivalent
+	 * of `updateHeight`/`updateBiome`.
+	 *
+	 * Fill colors come from `activePack`: the last source that
+	 * wrote the buffers — the base `setEntities` pack OR the projected
+	 * `WorldAt` pack — never a stale combination. This is what guarantees a
+	 * height-edit / timeline scrub never reverts the layer to the wrong year.
+	 *
+	 * Normalises the grid's per-cell conventions to the internal `i32` form
+	 * (`-1`/`0` sentinels) before re-filling, so border drawing + click-to-
+	 * select keep working unchanged.
+	 */
+	patchEntityCells(grid: Grid): void {
+		const pack = this.activePack;
+		if (!pack) return; // no entity source loaded yet — nothing to refresh
+		const n = grid.mesh.points.length;
+		this.stashGridForBorders = grid;
+
+		// Normalise each per-cell array to the `fillEntityBuffer` convention:
+		//   state/province: u32 0  -> -1  (unassigned sentinel; ids 1-based)
+		//   culture/religion: 0    -> 0   (id 0 IS the "none" sentinel)
+		const normState = grid.cells.state.map((v) => (v <= 0 ? -1 : v));
+		const normProvince = grid.cells.province.map((v) => (v <= 0 ? -1 : v));
+		const culture = grid.cells.culture;
+		const religion = grid.cells.religion;
+
+		this.entityCells = {
+			state: normState,
+			province: normProvince,
+			culture,
+			religion,
+		};
+
+		this.fillEntityBuffer(this.stateData, n, pack.states, normState, -1, 1);
+		this.fillEntityBuffer(
+			this.provinceData,
+			n,
+			pack.provinces,
+			normProvince,
+			-1,
+			1,
+		);
+		this.fillEntityBuffer(this.cultureData, n, pack.cultures, culture, 0, 0);
+		this.fillEntityBuffer(
+			this.religionData,
+			n,
+			pack.religions,
+			religion,
+			0,
+			0,
+		);
+
+		this.textures[2]?.source.update();
+		this.textures[3]?.source.update();
+		this.textures[4]?.source.update();
+		this.textures[5]?.source.update();
+		this.drawStateBorders();
+	}
+
+	/**
+	 * recolor ONE entity across every cell that belongs to it without
+	 * re-uploading all four entity layers. Scans only the matching per-cell
+	 * array, rewrites the affected texels' RGB in the buffer, then uploads just
+	 * that texture. When a projected `WorldAt` is the active source, the new
+	 * color is written straight into the stored `activePack` vector for that
+	 * entity so re-fills (`patchEntityCells`) stay consistent.
+	 *
+	 * @param kind  the entity kind (state/province/culture/religion)
+	 * @param id    the entity id (1-based for state/province, 0-based for
+	 *              culture/religion)
+	 * @param color packed 0xRRGGBB
+	 */
+	updateEntityColor(
+		kind: EntityKind,
+		id: number,
+		color: number,
+	): void {
+		const pack = this.activePack;
+		const cells = this.entityCells;
+		if (!pack || !cells) return;
+		let buf: Uint8Array | null = null;
+		let cellArr: number[];
+		let vector:
+			| { color: number }[]
+			| undefined;
+		switch (kind) {
+			case "state":
+				buf = this.stateData;
+				cellArr = cells.state;
+				vector = pack.states;
+				break;
+			case "province":
+				buf = this.provinceData;
+				cellArr = cells.province;
+				vector = pack.provinces;
+				break;
+			case "culture":
+				buf = this.cultureData;
+				cellArr = cells.culture;
+				vector = pack.cultures;
+				break;
+			case "religion":
+				buf = this.religionData;
+				cellArr = cells.religion;
+				vector = pack.religions;
+				break;
+			case "burg":
+				// Burgs are a point overlay, not a fill layer — no texture to
+				// patch here.
+				buf = null;
+				cellArr = [];
+				vector = undefined;
+				break;
+		}
+		if (!buf) return;
+
+		// idBias + unassigned sentinel per kind (mirrors fillEntityBuffer).
+		const idBias = kind === "state" || kind === "province" ? 1 : 0;
+		const idx = id - idBias;
+		const maxId = (vector?.length ?? 0) - 1;
+		if (idx < 0 || idx > maxId) return;
+
+		const r = (color >> 16) & 0xff;
+		const g = (color >> 8) & 0xff;
+		const b = color & 0xff;
+		const n = cellArr.length;
+		let changed = false;
+		for (let i = 0; i < n; i++) {
+			if (cellArr[i] === id) {
+				const o = i * 4;
+				buf[o + 0] = r;
+				buf[o + 1] = g;
+				buf[o + 2] = b;
+				buf[o + 3] = 255;
+				changed = true;
+			}
+		}
+		if (changed && vector) {
+			// Keep the active source in sync so a later full re-fill
+			// (`patchEntityCells`) preserves the edited color.
+			vector[idx] = { ...vector[idx], color };
+		}
+		// Upload just the affected texture (global texel index = the layer's
+		// data-buffer index).
+		const texIndex =
+			kind === "state"
+				? 2
+				: kind === "province"
+					? 3
+					: kind === "culture"
+						? 4
+						: 5;
+		if (changed) this.textures[texIndex]?.source.update();
 	}
 
 	/**
@@ -1373,6 +1589,16 @@ export class WorldMap {
 			religion: religionCells,
 		};
 
+		// The projected WorldAt supersedes the base pack as the
+		// active source-of-truth, so any later in-place `patchEntityCells`
+		// re-fills from the projected vectors, not the year-0 ones.
+		this.activePack = {
+			states: world.pack.states,
+			provinces: world.pack.provinces,
+			cultures: world.pack.cultures,
+			religions: world.pack.religions,
+		};
+
 		// Re-fill the four data-texture buffers (texture swap, no tessellation).
 		this.fillEntityBuffer(
 			this.stateData,
@@ -1408,14 +1634,13 @@ export class WorldMap {
 		);
 
 		// Upload all four textures.
-	console.log("[updateEntities] uploading textures for year", world.year, "stateCells[0..5]:", stateCells.slice(0, 5), "world.cells_state[0..5]:", world.cells_state?.slice(0, 5), "pack.states.length:", world.pack.states?.length);
-	this.textures[2]?.source.update();
-	this.textures[3]?.source.update();
-	this.textures[4]?.source.update();
-	this.textures[5]?.source.update();
+		this.textures[2]?.source.update();
+		this.textures[3]?.source.update();
+		this.textures[4]?.source.update();
+		this.textures[5]?.source.update();
 
-	// Re-draw state borders from projected ownership.
-	this.drawStateBorders();
+		// Re-draw state borders from projected ownership.
+		this.drawStateBorders();
 	}
 
 	/**
@@ -1441,17 +1666,26 @@ export class WorldMap {
 	): void {
 		if (!buf) return;
 		const maxId = entities.length - 1;
+		// Unassigned cell -> fully clear the texel (RGB + alpha 0) so a
+		// removed/re-dissolved entity leaves a completely blank texel rather
+		// than stale colour bytes that just happen to be hidden by alpha 0.
+		const clear = (offset: number) => {
+			buf[offset + 0] = 0;
+			buf[offset + 1] = 0;
+			buf[offset + 2] = 0;
+			buf[offset + 3] = 0;
+		};
 		for (let i = 0; i < count; i++) {
 			const eid = cells[i] ?? unassigned;
 			const o = i * 4;
 			if (eid === unassigned || eid < 0) {
-				buf[o + 3] = 0; // transparent
+				clear(o);
 				continue;
 			}
 			// Map the (possibly 1-based) wire id onto the 0-based entity vec.
 			const idx = eid - idBias;
 			if (idx < 0 || idx > maxId) {
-				buf[o + 3] = 0; // transparent
+				clear(o);
 				continue;
 			}
 			const color = entities[idx].color;
@@ -1501,6 +1735,7 @@ export class WorldMap {
 		// Step 3.4: drop entity-layer refs + selection so a dangling re-stroke
 		// finds no data and no-ops.
 		this.entityCells = null;
+		this.activePack = null;
 		this.selectedEntity = null;
 		// Drop the geometry-derived edge-neighbor map (depends on the mesh
 		// that backs this instance) so a dangling re-stroke finds nothing.

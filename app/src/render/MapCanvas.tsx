@@ -329,12 +329,41 @@ export function MapCanvas({
 			// `updateHeight` texture-update path — no geometry/mesh rebuild.
 			// Only a full world regeneration (new mesh reference) triggers
 			// the expensive `rebuildMap` (destroy + recreate WorldMap).
+			// One subscription drives every store→renderer update:
+			//   height/entity edits (same mesh)   -> in-place texture updates
+			//   grid regeneration (new mesh)       -> rebuild WorldMap
+			//   river/lake geometry                -> overlay refresh
+			//   layer visibility toggle            -> mesh.visible swap
+			//   states/cultures results change     -> entity-fill re-upload
+			//   projected world (timeline scrub)   -> live morph, no rebuild
+			//   selectedEntity (panel/click)       -> highlight re-stroke
 			const unsub = useWorldgenStore.subscribe((state, prev) => {
 				if (state.grid !== prev.grid) {
 					if (prev.grid && state.grid && state.grid.mesh === prev.grid.mesh) {
-						// Same mesh → height/temp/biome edit. Update textures in place.
+						// Same mesh → height/temp/biome and/or entity-cell edit.
+						// Update textures in place, no geometry/mesh rebuild.
 						worldMap?.updateHeight(state.grid);
 						worldMap?.updateBiome(state.grid);
+						// Phase 1.3: heightmap/entity edits can repair the
+						// per-cell entity arrays (land↔water flips remove
+						// burgs, dissolve states). Refresh the entity fill,
+						// state borders, and burg markers from the current
+						// grid so the overlays don't go stale. The WorldMap
+						// reads whichever entity pack (base or projected) is
+						// the active source.
+						const ec = state.grid.cells;
+						const p = prev.grid.cells;
+						const cellsChanged =
+							ec.state !== p.state ||
+							ec.province !== p.province ||
+							ec.culture !== p.culture ||
+							ec.religion !== p.religion ||
+							ec.burg !== p.burg;
+						if (cellsChanged) {
+							const g = state.grid;
+							worldMap?.patchEntityCells(g);
+							worldMap?.setBurgs(g, state.statesResult?.pack.burgs ?? []);
+						}
 					} else {
 						rebuildMap(state.grid);
 					}
@@ -348,23 +377,46 @@ export function MapCanvas({
 					worldMap?.setLayers(state.layerEnabled);
 				// Step 3.4: entity results changed (or first arrived). Push the
 				// combined payload to the WorldMap so the entity layers fill.
-				if (
+				// Phase 1.4: while a projected world is the active source, the
+				// base `statesResult`/`culturesResult` are NOT authoritative —
+				// re-pushing them here would clobber the projected view the
+				// timeline scrub just rendered. Skip so the projected pack
+				// stays in control until scrub ends (projectedWorld → null).
+				const resultChanged =
 					state.statesResult !== prev.statesResult ||
-					state.culturesResult !== prev.culturesResult
-				) {
+					state.culturesResult !== prev.culturesResult;
+				// Phase 1.5: a store-driven entity edit (`updateEntity`)
+				// changes the result reference AND sets `entityEdit`. We must
+				// NOT full re-upload all four layers for that — `updateEntityColor`
+				// patches only the affected entity's texels below — otherwise a
+				// single colour edit becomes a redundant O(4×N) re-upload and,
+				// while scrubbed, would stomp the projected view the update was
+				// meant to fix.
+				const editedThisFrame =
+					state.entityEdit !== prev.entityEdit && state.entityEdit !== null;
+				if (resultChanged && !state.projectedWorld && !editedThisFrame) {
 					if (worldMap && state.grid) {
-					pushEntities(worldMap, state.grid, state);
+						pushEntities(worldMap, state.grid, state);
+					}
 				}
+				// Phase 4c/1b: route a store-driven entity edit to the renderer.
+				// `updateEntityColor` reads WorldMap's `activePack` (the current
+				// source-of-truth — base OR projected), so a colour edit reaches
+				// whichever pack is active and touches only that entity's texels
+				// instead of re-uploading every entity layer. This is how a
+				// colour edit during a projected year lands in the projected
+				// pack, not just the base one.
+				if (editedThisFrame && worldMap) {
+					const e = state.entityEdit;
+					if (e && e.color !== undefined) {
+						worldMap.updateEntityColor(e.kind, e.id, e.color);
+					}
 				}
 				// Step 5.2: projected world changed (timeline scrub). Live-morph
 				// the entity data textures + borders without rebuilding geometry.
 				if (state.projectedWorld !== prev.projectedWorld) {
-					console.log("[MapCanvas] projectedWorld changed:", state.projectedWorld?.year, "worldMap:", !!worldMap, "grid:", !!state.grid);
 					if (worldMap && state.projectedWorld && state.grid) {
 						worldMap.updateEntities(state.projectedWorld, state.grid);
-						console.log("[MapCanvas] updateEntities called for year", state.projectedWorld.year);
-					} else {
-						console.log("[MapCanvas] can't update — worldMap:", !!worldMap, "projectedWorld:", !!state.projectedWorld, "grid:", !!state.grid);
 					}
 				}
 				// Step 3.5: a panel-driven entity selection. Mirror the store
@@ -372,11 +424,10 @@ export function MapCanvas({
 				// a state on the Provinces layer, also draws its border).
 				if (state.selectedEntity !== prev.selectedEntity) {
 					if (worldMap && state.grid && state.selectedEntity) {
-					const sel = state.selectedEntity;
-					worldMap.selectEntity(state.grid, sel.kind, sel.id);
-				} else if (worldMap && state.grid) {
-				worldMap.setSelected(state.grid, -1);
-				}
+						worldMap.selectEntity(state.grid, state.selectedEntity.kind, state.selectedEntity.id);
+					} else if (worldMap && state.grid) {
+						worldMap.setSelected(state.grid, -1);
+					}
 				}
 			});
 			unsubRef.current = unsub;
