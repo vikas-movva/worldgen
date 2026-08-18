@@ -829,7 +829,9 @@ mod tests {
         assert_eq!(burg.state, 1); // owner of cell 2
         assert_eq!(burg.culture, 1); // state 1's culture
         assert_eq!(burg.population, 6.0);
-        assert_eq!(burg.capital, 1); // state 1's first burg
+        // Not a capital: state 1 already has an undissolved capital burg (id 1
+        // in the base pack), and only a state's FIRST burg is its capital.
+        assert_eq!(burg.capital, 0);
 
         // After Conquer at year 20: cells 3,4 owned by state 99; 0,1,2 untouched.
         let w2 = project_world(&pack, &cs, &cc, &cr, &cb, &timeline, 25);

@@ -982,9 +982,11 @@ pub fn project_delta_inner(
 /// heightmap (`u8`, `< 20` = water). `params` is an optional `TimelineParams`
 /// object (defaults if omitted). All RNG is `StdRng::seed_from_u64(seed)`.
 ///
-/// `mesh_js` is the optional Voronoi `Mesh` (or just its `cells` topology).
-/// When provided, the war module's cell-neighbor lookups use the true
-/// Delaunay adjacency instead of the legacy square-grid assumption.
+/// `mesh_js` is the Voronoi `Mesh` (or just its `cells` topology) — REQUIRED.
+/// The engine uses the true Delaunay adjacency from the mesh; there is no
+/// square-grid fallback. If `mesh_js` is undefined or fails to deserialize to
+/// a valid `Mesh`, this function panics (`expect`), which surfaces as a thrown
+/// JS error to the caller.
 ///
 /// Exposed as `generate_timeline(pack, cells_state, cells_culture, cells_religion,
 /// cells_burg, cells_h, mesh, seed, params)` to JS.
@@ -1013,15 +1015,14 @@ pub fn generate_timeline(
     let ch: Vec<u8> = cells_h.to_vec();
     let cp: Vec<i32> = cells_province.to_vec();
 
-    // `mesh_js` is the Mesh (or its cells topology) — extract the `Cells` CSR
-    // adjacency. If absent or invalid, the engine falls back to the grid.
-    let cells: Option<crate::mesh::Cells> = if mesh_js.is_undefined() {
-        None
-    } else {
-        serde_wasm_bindgen::from_value::<crate::mesh::Mesh>(mesh_js)
-            .map(|m| m.cells)
-            .ok()
-    };
+    // `mesh_js` must be the Voronoi `Mesh` (or its `cells` topology). Extract
+    // the `Cells` CSR adjacency; there is no square-grid fallback, so a missing
+    // or invalid mesh is a hard error (surfaces as a thrown JS exception).
+    let mesh: crate::mesh::Mesh =
+        serde_wasm_bindgen::from_value(mesh_js.clone()).expect(
+            "generate_timeline: mesh_js must be a valid Voronoi Mesh (no square-grid fallback)",
+        );
+    let cells: &crate::mesh::Cells = &mesh.cells;
 
     let timeline = event_engine::generate_timeline(
         &pack,
@@ -1031,7 +1032,7 @@ pub fn generate_timeline(
         &cb,
         &ch,
         &cp,
-        cells.as_ref(),
+        cells,
         seed,
         &params,
     );
@@ -1040,6 +1041,8 @@ pub fn generate_timeline(
 
 /// Phase 4.2: inner (test-callable) timeline generation. Same as the WASM
 /// export but takes typed Rust references so `cargo test` can call it directly.
+/// `cells` is the REQUIRED real Voronoi/Delaunay topology (`mesh::Cells`);
+/// there is no square-grid fallback.
 pub fn generate_timeline_inner(
     pack: &entities::Pack,
     cells_state: &[i32],
@@ -1048,7 +1051,7 @@ pub fn generate_timeline_inner(
     cells_burg: &[i16],
     cells_h: &[u8],
     cells_province: &[i32],
-    cells: Option<&mesh::Cells>,
+    cells: &mesh::Cells,
     seed: u64,
     params: &event_engine::TimelineParams,
 ) -> timeline::Timeline {

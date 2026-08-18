@@ -397,16 +397,19 @@ mod tests {
     use super::*;
     use crate::event_engine::TimelineParams;
 
-    /// Build a minimal valid square-grid `Cells` topology for `n` cells, so a
-    /// synthetic test context has a valid (non-empty) neighbor graph without
-    /// a real Voronoi mesh.
-    fn grid_topology(n: usize) -> Cells {
-        crate::event_engine::square_grid_topology(n)
+    /// Build a REAL Voronoi `Cells` topology from a deterministic mesh, returning
+    /// the CSR topology and its exact cell count (`mesh.points.len()`, which can
+    /// be less than the requested count due to Poisson shortfall + top-up).
+    fn voronoi_topology(cell_count: u32, seed: u32) -> (Cells, usize) {
+        let mesh = crate::mesh::build(cell_count, seed);
+        (mesh.cells, mesh.points.len())
     }
 
-    /// Build a synthetic test context with `n` cells backed by a square-grid
-    /// topology.
-    fn make_ctx(n: usize) -> GenContext {
+    /// Build a synthetic test context backed by a real Voronoi topology from a
+    /// deterministic mesh. Returns the context and the exact cell count so
+    /// callers reference `neighbors_of_cell` against in-range ids.
+    fn make_ctx(cell_count: u32, seed: u32) -> (GenContext, usize) {
+        let (cells, n) = voronoi_topology(cell_count, seed);
         let world = GenWorld {
             pack: Pack::default(),
             cells_state: vec![1u32; n],
@@ -417,79 +420,30 @@ mod tests {
         };
         let map = GenMap {
             heights: vec![50u8; n],
-            topology: grid_topology(n),
+            topology: cells,
         };
         let timeline = GenTimeline::new(0, 1, TimelineParams::default(), 1);
-        GenContext {
-            world,
-            map,
-            timeline,
-        }
-    }
-
-    #[test]
-    fn corner_cell_has_two_neighbors() {
-        let side = 10usize;
-        let n = side * side;
-        let ctx = make_ctx(n);
-        let neighbors = ctx.neighbors_of_cell(0);
-        assert_eq!(neighbors.len(), 2);
-        assert!(neighbors.contains(&1)); // east
-        assert!(neighbors.contains(&(side as u32))); // south
-    }
-
-    #[test]
-    fn interior_cell_has_four_neighbors() {
-        let side = 10usize;
-        let n = side * side;
-        let ctx = make_ctx(n);
-        let neighbors = ctx.neighbors_of_cell(55); // interior
-        assert_eq!(neighbors.len(), 4);
-    }
-
-    #[test]
-    fn edge_cell_has_three_neighbors() {
-        let side = 10usize;
-        let n = side * side;
-        let ctx = make_ctx(n);
-        let neighbors = ctx.neighbors_of_cell(5); // top edge, not corner
-        assert_eq!(neighbors.len(), 3);
+        (
+            GenContext {
+                world,
+                map,
+                timeline,
+            },
+            n,
+        )
     }
 
     #[test]
     fn out_of_bounds_returns_empty() {
-        let side = 10usize;
-        let n = side * side;
-        let ctx = make_ctx(n);
+        let (ctx, n) = make_ctx(100, 42);
         assert!(ctx.neighbors_of_cell(n as u32).is_empty());
-    }
-
-    #[test]
-    fn all_grid_neighbors_are_valid_indices() {
-        let side = 10usize;
-        let n = side * side;
-        let ctx = make_ctx(n);
-        for cell in 0..n {
-            for &nb in &ctx.neighbors_of_cell(cell as u32) {
-                assert!(
-                    (nb as usize) < n,
-                    "neighbor {} of cell {} out of bounds",
-                    nb,
-                    cell
-                );
-            }
-        }
     }
 
     /// Build a `GenContext` backed by a real Voronoi mesh so the Delaunay
     /// neighbor path is exercised. Returns the context plus the cell count; the
     /// mesh is generated deterministically from `seed`.
     fn make_ctx_with_mesh(n: u32, seed: u32) -> (GenContext, usize) {
-        let mesh = crate::mesh::build(n, seed);
-        let n_cells = mesh.points.len();
-        let mut ctx = make_ctx(n_cells);
-        ctx.map.topology = mesh.cells.clone();
-        (ctx, n_cells)
+        make_ctx(n, seed)
     }
 
     /// On a real Voronoi mesh, `neighbors_of_cell` must return exactly the
