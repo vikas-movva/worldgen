@@ -251,6 +251,12 @@ export function MapCanvas({
 				detachCamera = attachCamera(app.canvas, {
 					worldMap,
 					screenSize: () => ({ w: app.screen.width, h: app.screen.height }),
+					// The standalone Pan tool makes a single-pointer (or single
+					// finger on touch) drag pan the camera without needing the
+					// Space modifier. attachCamera reads this live so switching
+					// tools mid-gesture behaves correctly.
+					isPanMode: () =>
+						useWorldgenStore.getState().editorTool === "pan",
 				});
 				if (placeholder.parent) worldLayer.removeChild(placeholder);
 				setStatus("world ready");
@@ -286,6 +292,11 @@ export function MapCanvas({
 				downT = performance.now();
 			};
 			const onCanvasUp = async (e: PointerEvent) => {
+				// Only the inspect/select tool drives click-to-select. Brush,
+				// macro and pan tools own the pointer for their own gestures, so a
+				// stray click after a drag must never pick a cell (which would
+				// draw an unexpected selection highlight or change selectedCellId).
+				if (useWorldgenStore.getState().editorTool !== "select") return;
 				const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
 				const dt = performance.now() - downT;
 				if (moved > 6 || dt > 600) return; // it was a drag/hold, not a click

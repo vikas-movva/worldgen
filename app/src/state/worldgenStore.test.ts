@@ -253,6 +253,7 @@ describe("worldgenStore.clear", () => {
 				cultures: [],
 				religions: [],
 				burgs: [],
+				armies: [],
 			},
 		});
 		useWorldgenStore.getState().setTimeline([], 0, 500);

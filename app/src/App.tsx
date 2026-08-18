@@ -275,8 +275,12 @@ function App() {
 			style={{
 				display: "flex",
 				flexDirection: "column",
-				height: "100vh",
-				minHeight: "100vh",
+				// `100dvh` (dynamic viewport height) keeps the layout inside the
+				// visible area on mobile browsers where `100vh` overflows under
+				// the address-bar chrome — otherwise the map gets pushed below
+				// the fold. Falls back to `100vh` on older engines.
+				height: "100dvh",
+				minHeight: "100dvh",
 				margin: 0,
 				padding: 0,
 				fontFamily: "system-ui, sans-serif",
@@ -447,7 +451,20 @@ function App() {
 					display: "flex",
 				}}
 			>
-				<div style={{ flex: "1 1 auto", position: "relative", minHeight: 0 }}>
+				<div
+					style={{
+						flex: "1 1 auto",
+						position: "relative",
+						minHeight: 0,
+						// `minWidth: 0` lets this flex row item shrink below its
+						// child canvas's intrinsic width when the viewport narrows
+						// (else the canvas overflows and the map is cut off on
+						// mobile after a desktop->mobile resize); `overflow: hidden`
+						// clips the oversized canvas during the transition.
+						minWidth: 0,
+						overflow: "hidden",
+					}}
+				>
 					<MapCanvas
 						onReady={(handle) => {
 							canvasHandleRef.current = handle;

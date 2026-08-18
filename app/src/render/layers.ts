@@ -903,9 +903,11 @@ export class WorldMap {
 		// draws lakes as filled water polygons; `LakeGeo.cells` are CELL
 		// ids (not vertex ids), so we look up each cell's polygon ring and
 		// fill it. Visually this paints the lake-cell quads blue — the
-		// tightest correct silhouette without tracing the outer boundary
-		// of the cell union (a convex-hull of cell seeds would be spiky
-		// and wrong; per-cell quads tile the lake exactly).
+		// tightest correct silhouette. To hide the hairline antialiasing
+		// seams where adjacent lake quads meet, we ALSO stroke a thin
+		// scale-compensated water-coloured outline over every lake ring so
+		// the lake reads as one solid body with a crisp shoreline (Issue:
+		// "lakes layer rendering").
 		if (!this.lakeGfx) {
 			this.lakeGfx = new Graphics();
 			this.lakeGfx.label = "lakes";
@@ -913,33 +915,48 @@ export class WorldMap {
 		}
 		const lakeGfx = this.lakeGfx;
 		lakeGfx.clear();
-		const LAKE_FILL = 0x2a4d6e; // deep blue, sits above the terrain
+		const LAKE_FILL = 0x3b6ea5; // lake blue, reads clearly on terrain
+		const SHORE_LINE = 0x6f9fd0; // lighter shoreline for definition
 		const cellV = grid.mesh.cells.v as unknown as number[];
 		const cellI = grid.mesh.cells.i as unknown as number[];
 		const vpts =
 			(grid.mesh.vertices?.p as unknown as [number, number][]) ?? points;
+		// Pre-collect each lake ring as normalized points so we can draw both
+		// the fill pass and the shoreline-stroke pass without re-walking geometry.
+		const rings: Array<Array<{ x: number; y: number }>> = [];
 		for (const lake of lakes) {
 			for (const cellId of lake.cells) {
 				const lo = cellI[cellId] as number;
 				const hi = (cellI[cellId + 1] as number) ?? lo;
 				if (hi <= lo) continue;
-				let firstVid = cellV[lo] as number;
-				let firstPt = vpts[firstVid];
-				if (!firstPt) {
-					// fall back to centroid points if vertex lookup fails
-					firstVid = cellV[lo] as number;
-					firstPt = points[firstVid];
-					if (!firstPt) continue;
-				}
-				lakeGfx.moveTo(nx(firstPt[0]), ny(firstPt[1]));
-				for (let r = lo + 1; r < hi; r++) {
+				const ring: Array<{ x: number; y: number }> = [];
+				let ok = true;
+				for (let r = lo; r < hi; r++) {
 					const vid = cellV[r] as number;
-					const p = vpts[vid] ?? points[vid];
-					if (p) lakeGfx.lineTo(nx(p[0]), ny(p[1]));
+					const p = vpts[vid] ?? (points as [number, number][])[vid];
+					if (!p) {
+						ok = false;
+						break;
+					}
+					ring.push({ x: nx(p[0]), y: ny(p[1]) });
 				}
-				lakeGfx.closePath();
-				lakeGfx.fill({ color: LAKE_FILL, alpha: 0.85 });
+				if (ok) rings.push(ring);
 			}
+		}
+		// Fill pass.
+		for (const ring of rings) {
+			lakeGfx.poly(ring).fill({ color: LAKE_FILL, alpha: 0.92 });
+		}
+		// Shoreline pass: stroke a thin water-coloured line so adjacent lake
+		// quads tile seamlessly and the lake edge reads crisply against terrain.
+		// Scale-compensated so it stays ~1px on screen at any zoom.
+		const shoreLocal = this.scaleCompensatedWidth(1);
+		for (const ring of rings) {
+			lakeGfx.poly(ring).stroke({
+				color: SHORE_LINE,
+				width: shoreLocal,
+				alpha: 0.55,
+			});
 		}
 		lakeGfx.visible = this.layers.lakes;
 
@@ -953,19 +970,60 @@ export class WorldMap {
 		const riverGfx = this.riverGfx;
 		riverGfx.clear();
 		const RIVER_COLOR = 0x3b6e8f;
-		// Scale-compensate the stroke width so on-screen thickness stays
-		// ~2 px regardless of camera zoom (mirrors the selection-outline
-		// fix in drawSelection; a child of `view` inherits the fit-scale).
-		const localWidth = this.scaleCompensatedWidth(2);
-		this.riverStrokeWidth = localWidth * this.currentMeanScale(); // store on-screen px
+		// Improved river rendering (Issue: "wide flow, scale with zoom, LOD").
+		//
+		// Width scales with ZOOM: a river's stroke is stored in world (normalized)
+		// units so its on-screen thickness is `basePx * flow * zoomClamp` — zooming
+		// in visibly thickens the river (it's part of the world geometry), instead
+		// of the old scheme which clamped it to ~2px at every zoom. The width also
+		// varies with `discharge`, so major rivers draw wider than tributaries.
+		//
+		// LOD: at low zoom the polyline is decimated (fewer stroke points) and the
+		// stroke is faded by `zoomClamp`, keeping the zoomed-out map light without
+		// losing the flow at high detail.
+		const zoom = this.zoom;
+		// Cap zoom's effect on thickness with a gentle clamp: never thinner than
+		// 0.4x nor thicker than 3x the baseline, so rivers stay legible at both
+		// extremes without balloons.
+		const zoomClamp = Math.min(3, Math.max(0.4, zoom));
+		const RIVER_BASE_PX = 2.5;
+		const flowOf = (d: number) =>
+			0.7 + 0.6 * Math.min(1.5, Math.log1p(Math.max(0, d ?? 1) / 4));
+		// LOD: drop intermediate polyline points while zoomed out.
+		const stride =
+			zoom < 0.6 ? Math.max(1, Math.round((1 / Math.max(zoom, 0.15)) / 2)) : 1;
+		// On-screen px of the widest river drawn (for tests / inspectors).
+		this.riverStrokeWidth = 0;
 		for (const river of rivers) {
-			if (river.points.length < 2) continue;
-			const first = river.points[0];
+			const pts = river.points;
+			const n = pts.length;
+			if (n < 2) continue;
+			const flow = flowOf(river.discharge);
+			// target on-screen px (includes the flow + zoom scale-up).
+			const targetPx = RIVER_BASE_PX * flow * zoomClamp;
+			// Convert to world-local (normalized [0,1]) width: dividing by the
+			// CURRENT mean scale (base*zoom) makes the on-screen width = targetPx.
+			const localWidth = Math.max(targetPx / this.currentMeanScale(), 1 / 4096);
+			this.riverStrokeWidth = Math.max(this.riverStrokeWidth, targetPx);
+			const first = pts[0];
 			riverGfx.moveTo(nx(first[0]), ny(first[1]));
-			for (let i = 1; i < river.points.length; i++) {
-				riverGfx.lineTo(nx(river.points[i][0]), ny(river.points[i][1]));
+			for (let i = 1; i < n; i += stride) {
+				const p = pts[i];
+				riverGfx.lineTo(nx(p[0]), ny(p[1]));
 			}
-			riverGfx.stroke({ color: RIVER_COLOR, width: localWidth, alpha: 0.9 });
+			// Always close the path on the final point so the mouth is painted
+			// even when decimation skipped past it.
+			const last = pts[n - 1];
+			if ((n - 1) % stride !== 0) {
+				riverGfx.lineTo(nx(last[0]), ny(last[1]));
+			}
+			riverGfx.stroke({
+				color: RIVER_COLOR,
+				width: localWidth,
+				alpha: 0.92,
+				cap: "round",
+				join: "round",
+			});
 		}
 		riverGfx.visible = this.layers.rivers;
 	}
@@ -1031,6 +1089,25 @@ export class WorldMap {
 				maxScreen = Math.max(maxScreen, r * this.baseScaleX * this.zoom);
 		}
 		gfx.endFill();
+
+		// Burg selection highlight (Issue: "burg selection UX"): draw a bright
+		// gold ring around the currently selected burg marker so it stands out
+		// from both the dark town dots and the yellow cell outline. Uses a
+		// scale-compensated ring width (~1.5px on screen) so it stays crisply
+		// visible at any zoom.
+		const sel = this.selectedEntity;
+		if (sel && sel.kind === "burg" && this.burgPoints.length) {
+			const chosen = this.burgPoints.find((b) => b.id === sel.id);
+			if (chosen && chosen.cell >= 0 && chosen.cell < pts.length) {
+				const pt = pts[chosen.cell];
+				if (pt) {
+					const ringR = localRadius(chosen.population, chosen.capital);
+					const ringLocal = this.scaleCompensatedWidth(1.5);
+					gfx.lineStyle(ringLocal, 0xffd700, 0.95);
+					gfx.drawCircle(nx(pt[0]), ny(pt[1]), ringR + ringLocal * 3);
+				}
+			}
+		}
 		// Track the largest on-screen radius for capitals (for tests).
 		this.burgRadius = maxScreen;
 	}
@@ -1767,11 +1844,20 @@ export function attachCamera(
 		screenSize: () => { w: number; h: number };
 		zoomMin?: number;
 		zoomMax?: number;
+		/**
+		 * Returns true when the active editor tool is the hand/pan tool. When
+		 * true, a single-pointer drag pans the camera (no Space modifier needed).
+		 * This replaces the old "hold Space to pan" flow: Space still acts as an
+		 * ad-hoc pan modifier, but the pan tool makes single-finger drags pan on
+		 * their own — required for touch devices where Space isn't available.
+		 */
+		isPanMode?: () => boolean;
 	} = { worldMap: null as never, screenSize: () => ({ w: 0, h: 0 }) },
 ): () => void {
 	const zoomMin = opts.zoomMin ?? 0.15;
 	const zoomMax = opts.zoomMax ?? 24;
 	const { worldMap, screenSize } = opts;
+	const isPanMode = opts.isPanMode ?? (() => false);
 	let dragging = false;
 	let lastX = 0;
 	let lastY = 0;
@@ -1779,7 +1865,9 @@ export function attachCamera(
 	// held, so the editor gets clean pointer events for brush/select when Space
 	// is up. This matches Figma/Photoshop's hand-tool modifier. We track Space
 	// with a window keydown/keyup pair (not the canvas) so a held Space is
-	// recognized even if focus is on a sibling control.
+	// recognized even if focus is on a sibling control. In addition, activating
+	// the standalone Pan tool (see `isPanMode`) makes single-pointer drags pan
+	// without Space.
 	let spaceDown = false;
 
 	// Multi-touch gesture state (mobile): track every active pointer so two
@@ -1853,9 +1941,11 @@ export function attachCamera(
 			target.setPointerCapture?.(e.pointerId);
 			return;
 		}
-		// Single pointer only pans while Space is held (editor owns the pointer
-		// otherwise). Without Space, plain pointerdown does not start a pan.
-		if (!spaceDown) return;
+		// Single pointer pans while Space is held OR while the Pan tool is the
+		// active editor tool (the editor owns the pointer otherwise). Without
+		// either, plain pointerdown does not start a pan so brush/select stay
+		// clean.
+		if (!spaceDown && !isPanMode()) return;
 		dragging = true;
 		lastX = e.clientX;
 		lastY = e.clientY;

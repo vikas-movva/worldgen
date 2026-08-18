@@ -188,6 +188,17 @@ fn apply_brush(mesh: &Mesh, h: &mut [u8], op: &EditOp) {
 /// outward with `linePower` decay (FMG `addRange`/`addTrough`). For other
 /// macros, `op.cells` is the explicit cell set.
 fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
+    // Area macros (Strait/Mask/Invert/Add/Multiply) operate over `op.cells`.
+    // When the caller leaves it empty (the editor hot path), gather the
+    // radius-bounded neighborhood around `center_cell` — identical to how the
+    // brush tools gather, so a single click with a brush radius produces a
+    // useful macro edit instead of a no-op. Range/Trough ignore this set and
+    // build their own ridge path from center → target.
+    let area_cells: Vec<u32> = if op.cells.is_empty() {
+        gather_radius_cells(mesh, op.center_cell, op.radius)
+    } else {
+        op.cells.clone()
+    };
     match op.mode {
         EditMode::Range | EditMode::Trough => {
             // FMG `addRange`/`addTrough` port: greedy walk from center to target,
@@ -285,7 +296,7 @@ fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
         EditMode::Strait => {
             // Carve a band: lower all cells in the path toward sea level.
             let strength = op.strength as f64;
-            for &cid in &op.cells {
+            for &cid in &area_cells {
                 let ci = cid as usize;
                 let target = SEA_LEVEL as f64;
                 h[ci] = lim(h[ci] as f64 * (1.0 - strength) + target * strength);
@@ -296,11 +307,14 @@ fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
             let strength = op.strength as f64;
             let snapshot = h.to_vec();
             let [cx, cy] = mesh.points[op.center_cell as usize];
-            for &cid in &op.cells {
+            // Guard against a zero radius (division by zero below); a single
+            // cell collapses to a distance 0 mask, which is a no-op.
+            let radius = if op.radius <= 0.0 { 1.0 } else { op.radius as f64 };
+            for &cid in &area_cells {
                 let ci = cid as usize;
                 let [px, py] = mesh.points[ci];
-                let nx = (px - cx) / (op.radius as f64);
-                let ny = (py - cy) / (op.radius as f64);
+                let nx = (px - cx) / radius;
+                let ny = (py - cy) / radius;
                 let dist = (1.0 - nx * nx) * (1.0 - ny * ny);
                 let masked = snapshot[ci] as f64 * dist.max(0.0);
                 h[ci] = lim(snapshot[ci] as f64 * (1.0 - strength) + masked * strength);
@@ -308,7 +322,7 @@ fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
         }
         EditMode::Invert => {
             // Mirror h across sea level: water <-> land.
-            for &cid in &op.cells {
+            for &cid in &area_cells {
                 let ci = cid as usize;
                 h[ci] = lim(100.0 - h[ci] as f64);
             }
@@ -316,7 +330,7 @@ fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
         EditMode::Add => {
             // Add a constant offset to all affected cells.
             let offset = op.strength as f64 * 100.0;
-            for &cid in &op.cells {
+            for &cid in &area_cells {
                 let ci = cid as usize;
                 h[ci] = lim(h[ci] as f64 + offset);
             }
@@ -324,7 +338,7 @@ fn apply_macro(mesh: &Mesh, h: &mut [u8], op: &EditOp, grid_seed: u64) {
         EditMode::Multiply => {
             // Multiply all affected cells by a factor (around sea level for land).
             let mult = op.strength as f64;
-            for &cid in &op.cells {
+            for &cid in &area_cells {
                 let ci = cid as usize;
                 let v = h[ci] as f64;
                 if v >= SEA_LEVEL as f64 {

@@ -203,6 +203,7 @@ describe("TOOL_TO_MODE", () => {
 		"add",
 		"multiply",
 		"select",
+		"pan",
 	];
 
 	it("has an entry for every EditorTool", () => {
@@ -234,6 +235,11 @@ describe("TOOL_TO_MODE", () => {
 		// a dummy EditMode that's never actually sent to the worker.
 		expect(TOOL_TO_MODE.select).toBe("Raise");
 	});
+
+	it("maps 'pan' to 'Raise' (placeholder — pan is handled differently)", () => {
+		// The pan tool only drives the camera; it never reaches the worker.
+		expect(TOOL_TO_MODE.pan).toBe("Raise");
+	});
 });
 
 // ---- BRUSH_TOOLS set tests ------------------------------------------------
@@ -257,8 +263,9 @@ describe("BRUSH_TOOLS", () => {
 		expect(BRUSH_TOOLS.has("multiply")).toBe(false);
 	});
 
-	it("does not contain 'select'", () => {
+	it("does not contain 'select' or 'pan'", () => {
 		expect(BRUSH_TOOLS.has("select")).toBe(false);
+		expect(BRUSH_TOOLS.has("pan")).toBe(false);
 	});
 });
 
@@ -287,17 +294,17 @@ describe("HeightmapEditor render", () => {
 		setGrid(fakeGrid(100, 42));
 		const { container, unmount } = renderEditor();
 		const text = container.textContent ?? "";
+		expect(text).toMatch(/Navigate/);
 		expect(text).toMatch(/Brush/);
 		expect(text).toMatch(/Macro/);
-		expect(text).toMatch(/Inspect/);
 		unmount();
 	});
 
-	it("renders 12 tool buttons total", () => {
+	it("renders 13 tool buttons total", () => {
 		setGrid(fakeGrid(100, 42));
 		const { container, unmount } = renderEditor();
 		const buttons = container.querySelectorAll("button[aria-pressed]");
-		expect(buttons.length).toBe(12);
+		expect(buttons.length).toBe(13);
 		unmount();
 	});
 
@@ -311,13 +318,14 @@ describe("HeightmapEditor render", () => {
 		unmount();
 	});
 
-	it("hides brush controls when a macro tool is active", () => {
+	it("keeps brush controls visible for macro tools (needed for the macro radius)", () => {
 		setGrid(fakeGrid(100, 42));
 		act(() => useWorldgenStore.setState({ editorTool: "range" }));
 		const { container, unmount } = renderEditor();
 		const rangeInputs = container.querySelectorAll('input[type="range"]');
-		// No brush radius/strength sliders for macro tools
-		expect(rangeInputs.length).toBe(0);
+		// Macro area tools gather their brick radius from brushRadius, so the
+		// sliders stay on the toolbar for macro editing too.
+		expect(rangeInputs.length).toBe(2);
 		unmount();
 	});
 
@@ -330,12 +338,21 @@ describe("HeightmapEditor render", () => {
 		unmount();
 	});
 
+	it("hides brush controls when 'pan' is active", () => {
+		setGrid(fakeGrid(100, 42));
+		act(() => useWorldgenStore.setState({ editorTool: "pan" }));
+		const { container, unmount } = renderEditor();
+		const rangeInputs = container.querySelectorAll('input[type="range"]');
+		expect(rangeInputs.length).toBe(0);
+		unmount();
+	});
+
 	it("marks the active tool button as pressed", () => {
 		setGrid(fakeGrid(100, 42));
 		act(() => useWorldgenStore.setState({ editorTool: "smooth" }));
 		const { container, unmount } = renderEditor();
 		const pressed = container.querySelector("button[aria-pressed='true']");
-		expect(pressed?.textContent).toBe("smooth");
+		expect(pressed?.textContent).toMatch(/smooth/);
 		unmount();
 	});
 });
@@ -346,10 +363,9 @@ describe("HeightmapEditor tool selection", () => {
 	it("clicking a tool button calls setEditorTool on the store", () => {
 		setGrid(fakeGrid(100, 42));
 		const { container, unmount } = renderEditor();
-		const buttons = container.querySelectorAll("button[aria-pressed]");
-		// Find the "trough" button
-		const trough = Array.from(buttons).find(
-			(b) => b.textContent === "trough",
+		// Find the "trough" button by its stable data-testid.
+		const trough = container.querySelector(
+			"[data-testid='tool-trough']",
 		) as HTMLButtonElement;
 		expect(trough).toBeTruthy();
 		act(() => {
@@ -359,22 +375,23 @@ describe("HeightmapEditor tool selection", () => {
 		unmount();
 	});
 
-	it("changing from a brush tool to a macro tool hides the brush controls", () => {
+	it("keeps brush controls (radius + strength) visible for macro tools so the macro radius is settable", () => {
 		setGrid(fakeGrid(100, 42));
 		// Start with "raise" (brush tool)
 		const { container, unmount } = renderEditor();
 		expect(container.querySelectorAll('input[type="range"]').length).toBe(2);
 
 		// Click the "mask" macro tool
-		const buttons = container.querySelectorAll("button[aria-pressed]");
-		const mask = Array.from(buttons).find(
-			(b) => b.textContent === "mask",
+		const mask = container.querySelector(
+			"[data-testid='tool-mask']",
 		) as HTMLButtonElement;
 		act(() => {
 			mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
-		// Brush controls should now be hidden
-		expect(container.querySelectorAll('input[type="range"]').length).toBe(0);
+		// Macro tools also use the brush radius to gather their neighbourhood,
+		// so the sliders stay visible (2 range inputs).
+		expect(useWorldgenStore.getState().editorTool).toBe("mask");
+		expect(container.querySelectorAll('input[type="range"]').length).toBe(2);
 		unmount();
 	});
 });

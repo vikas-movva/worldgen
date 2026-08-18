@@ -116,7 +116,8 @@ export type EditorTool =
 	| "invert"
 	| "add"
 	| "multiply"
-	| "select";
+	| "select"
+	| "pan";
 
 export type WorldgenActions = {
 	setGrid: (grid: Grid) => void;
@@ -182,7 +183,7 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 		statesResult: null,
 		culturesResult: null,
 		selectedEntity: null,
-		editorTool: "raise",
+		editorTool: "select",
 		brushRadius: 15,
 		brushStrength: 0.05,
 		selectedCellId: -1,
@@ -308,13 +309,14 @@ export const useWorldgenStore = create<WorldgenState & WorldgenActions>()(
 				}
 				return {};
 			}),
-		// Switching away from select clears the selection; switching to
+		// Switching away from select/pan clears the selection; switching to
 		// select preserves any existing selection (the user may have a cell
 		// picked from a previous interaction).
 		setEditorTool: (editorTool) =>
 			set((s) => ({
 				editorTool,
-				selectedCellId: editorTool === "select" ? s.selectedCellId : -1,
+				selectedCellId:
+					editorTool === "select" ? s.selectedCellId : -1,
 			})),
 		setBrushRadius: (brushRadius) => set({ brushRadius }),
 		setBrushStrength: (brushStrength) => set({ brushStrength }),

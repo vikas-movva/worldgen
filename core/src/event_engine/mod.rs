@@ -97,65 +97,17 @@ pub fn default_modules() -> Vec<Box<dyn EventModule>> {
     ]
 }
 
-/// Construct a minimal, topologically-valid square-grid [`Cells`] for `n`
-/// cells. Each cell gets the 4-directional (N/S/W/E) neighbors it would have
-/// on an `√n × √n` grid, matching the legacy grid-adjacency assumption.
+/// Build a [`GenMap`] from a heightmap plus the REAL Voronoi [`Cells`] topology.
 ///
-/// This is used only as a behavior-preserving fallback when a caller (a
-/// synthetic test, or a WASM call with no mesh geometry) supplies no Voronoi
-/// topology: [`GenMap::topology`] is a concrete [`Cells`], never `None`, so a
-/// missing mesh resolves to this square-grid topology instead of an `Option`.
-pub(crate) fn square_grid_topology(n: usize) -> Cells {
-    let side = (n as f64).sqrt() as usize;
-    let mut c: Vec<u32> = Vec::new();
-    let mut i: Vec<u32> = vec![0u32; n + 1];
-    let mut b: Vec<u8> = vec![0u8; n];
-    for (cell, i_end) in i.iter_mut().skip(1).enumerate() {
-        let cell = cell as usize;
-        let r = cell / side;
-        let col = cell % side;
-        // North
-        if r > 0 {
-            c.push(((r - 1) * side + col) as u32);
-        }
-        // South
-        if r + 1 < side && (r + 1) * side + col < n {
-            c.push(((r + 1) * side + col) as u32);
-        }
-        // West
-        if col > 0 {
-            c.push((r * side + (col - 1)) as u32);
-        }
-        // East
-        if col + 1 < side && r * side + (col + 1) < n {
-            c.push((r * side + (col + 1)) as u32);
-        }
-        // Mark boundary cells (touching the rect edge) as border cells, to
-        // mirror the real mesh so consumers that read `b` get a sane value.
-        if r == 0 || r + 1 == side || col == 0 || col + 1 == side {
-            b[cell] = 1;
-        }
-        *i_end = c.len() as u32;
+/// The event engine deliberately uses only the world's Voronoi/Delaunay
+/// cell-adjacency — there is no square-grid fallback. A caller that cannot
+/// supply a real mesh cannot run the engine, which guarantees every neighbor
+/// lookup reflects true edge-sharing topology.
+fn make_map(heights: Vec<u8>, cells: &Cells) -> GenMap {
+    GenMap {
+        heights,
+        topology: cells.clone(),
     }
-    Cells {
-        c,
-        i,
-        b,
-        v: Vec::new(),
-        spacing: Vec::new(),
-        cells_x: side as u32,
-        cells_y: side as u32,
-    }
-}
-
-/// Build a [`GenMap`] from a heightmap plus an optional real mesh topology,
-/// falling back to a minimal square-grid topology when no mesh is supplied.
-fn make_map(heights: Vec<u8>, cells: Option<&Cells>) -> GenMap {
-    let topology = match cells {
-        Some(c) => c.clone(),
-        None => square_grid_topology(heights.len()),
-    };
-    GenMap { heights, topology }
 }
 
 /// Generate a deterministic `Timeline` (sorted by `(year, id)`) from a year-0
@@ -166,9 +118,9 @@ fn make_map(heights: Vec<u8>, cells: Option<&Cells>) -> GenMap {
 ///
 /// The `cells_*` arrays use the `i32` (`-1` = unassigned) / `i16` (`0` = none)`
 /// convention from `StatesResult` / `CulturesResult`. `cells_h` uses the
-/// `u8` heightmap (FMG sea level = 20). `cells` is the optional Voronoi/Delaunay
-/// CSR topology (`mesh::Cells`) — when `Some`, the engine uses true edge-sharing
-/// cell neighbors instead of the legacy square-grid assumption.
+/// `u8` heightmap (FMG sea level = 20). `cells` is the REAL Voronoi/Delaunay
+/// CSR topology (`mesh::Cells`) — the engine uses true edge-sharing cell
+/// neighbors, never a square-grid fallback.
 ///
 /// Returns a `Timeline` sorted by `(year, id)`. `narrative` is always `None`
 /// (Phase 7 fills it in).
@@ -180,7 +132,7 @@ pub fn generate_timeline(
     cells_burg: &[i16],
     cells_h: &[u8],
     cells_province: &[i32],
-    cells: Option<&Cells>,
+    cells: &Cells,
     seed: u64,
     params: &TimelineParams,
 ) -> Timeline {
@@ -210,7 +162,7 @@ pub fn generate_timeline_with_modules(
     cells_burg: &[i16],
     cells_h: &[u8],
     cells_province: &[i32],
-    cells: Option<&Cells>,
+    cells: &Cells,
     seed: u64,
     params: &TimelineParams,
     modules: &[Box<dyn EventModule>],
@@ -307,7 +259,7 @@ pub fn generate_timeline_inner(
     cells_burg: &[u32],
     cells_h: &[u8],
     cells_province: &[u32],
-    cells: Option<&Cells>,
+    cells: &Cells,
     seed: u64,
     params: &TimelineParams,
 ) -> Timeline {
@@ -335,7 +287,7 @@ pub fn generate_timeline_with_modules_inner(
     cells_burg: &[u32],
     cells_h: &[u8],
     cells_province: &[u32],
-    cells: Option<&Cells>,
+    cells: &Cells,
     seed: u64,
     params: &TimelineParams,
     modules: &[Box<dyn EventModule>],
@@ -397,52 +349,12 @@ mod tests {
     use crate::timeline::{project_world_u32, EntityType, EventKind, EventPayload};
     use rand::SeedableRng;
 
-    /// The legacy 4-directional square-grid adjacency that the removed
-    /// `neighbors_of_cell_grid` fallback produced. `square_grid_topology` must
-    /// reproduce exactly this neighbor set so the no-mesh path stays
-    /// behavior-preserving across the refactor.
-    fn legacy_grid_neighbors(n: usize, cell: u32) -> Vec<u32> {
-        if cell as usize >= n {
-            return Vec::new();
-        }
-        let side = (n as f64).sqrt() as u32;
-        if side == 0 {
-            return Vec::new();
-        }
-        let r = cell / side;
-        let c = cell % side;
-        let mut neighbors = Vec::with_capacity(4);
-        if r > 0 {
-            neighbors.push((r - 1) * side + c);
-        }
-        if r + 1 < side && (r + 1) * side + c < n as u32 {
-            neighbors.push((r + 1) * side + c);
-        }
-        if c > 0 {
-            neighbors.push(r * side + (c - 1));
-        }
-        if c + 1 < side && r * side + (c + 1) < n as u32 {
-            neighbors.push(r * side + (c + 1));
-        }
-        neighbors
-    }
-
-    /// The square-grid topology fallback must exactly reproduce the legacy
-    /// 4-directional adjacency for square counts (and others), so a timeline
-    /// generated with `cells: None` is byte-identical before/after the refactor.
-    #[test]
-    fn square_grid_topology_matches_legacy_neighbors() {
-        for n in [4usize, 9, 16, 25, 36, 100, 2500] {
-            let topo = square_grid_topology(n);
-            for cell in 0..n {
-                let expected = legacy_grid_neighbors(n, cell as u32);
-                let got: Vec<u32> = topo.neighbors_of_cell(cell).to_vec();
-                assert_eq!(
-                    got, expected,
-                    "n={n} cell={cell}: square-grid topology diverges from legacy adjacency"
-                );
-            }
-        }
+    /// Build a REAL Voronoi [`Cells`] topology from a deterministic mesh, along
+    /// with its exact cell count (so cell arrays are sized to the mesh). This is
+    /// the only topology the engine accepts — there is no square-grid fallback.
+    fn make_voronoi(n: u32, seed: u32) -> (usize, Cells) {
+        let mesh = crate::mesh::build(n, seed);
+        (mesh.points.len(), mesh.cells)
     }
 
     /// Run the engine's modules over a synthetic world, returning both the
@@ -460,7 +372,7 @@ mod tests {
         cells_burg: &[u32],
         cells_h: &[u8],
         cells_province: &[u32],
-        cells: Option<&Cells>,
+        cells: &Cells,
         seed: u64,
         params: &TimelineParams,
         modules: &[Box<dyn EventModule>],

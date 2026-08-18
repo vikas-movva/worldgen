@@ -838,7 +838,7 @@ describe("WorldMap.setSelected (selection outline)", () => {
 			expect(wm.getRiverStrokeWidth()).toBe(0);
 		});
 
-		it("draws rivers as a scale-compensated ~2 px polyline", () => {
+		it("draws rivers with a wider, discharge-scaled flow (>=2 px)", () => {
 			wm.fitToScreen(1280, 720);
 			const grid = quadGrid2x2();
 			const rivers: RiverGeo[] = [
@@ -856,12 +856,25 @@ describe("WorldMap.setSelected (selection outline)", () => {
 				},
 			];
 			wm.setRiversLakes(grid, rivers, []);
-			expect(wm.getRiverStrokeWidth()).toBeGreaterThan(1.5);
-			expect(wm.getRiverStrokeWidth()).toBeLessThan(2.5);
+			// Wider flow: a major river (discharge 10) renders at >= 2px — clearly
+			// wider than the old fixed ~2px hairline. Exact px depends on zoom/formula,
+			// so assert it's comfortably above 2.
+			expect(wm.getRiverStrokeWidth()).toBeGreaterThan(2);
+			// A higher-discharge river must be wider than a tiny one.
+			wm.setRiversLakes(grid, [
+				{ ...rivers[0], discharge: 500 },
+			], []);
+			const wide = wm.getRiverStrokeWidth();
+			wm.setRiversLakes(grid, [
+				{ ...rivers[0], discharge: 1 },
+			], []);
+			const narrow = wm.getRiverStrokeWidth();
+			expect(wide).toBeGreaterThan(narrow);
 		});
 
-		it("river stroke stays ~2 px across zoom (scale-compensated)", () => {
+		it("river stroke widens as you zoom in (scales with zoom) but is stable on resize", () => {
 			wm.fitToScreen(1280, 720);
+			wm.setLayers({ rivers: true });
 			const grid = quadGrid2x2();
 			const rivers: RiverGeo[] = [
 				{
@@ -877,16 +890,26 @@ describe("WorldMap.setSelected (selection outline)", () => {
 				},
 			];
 			wm.setRiversLakes(grid, rivers, []);
-			const at1x = wm.getRiverStrokeWidth();
+			const atBase = wm.getRiverStrokeWidth();
 
-			// 8x the window: fit scale grows ~8x; compensated stroke stays ~2px.
+			// Zooming in thickens the river on screen (it's world geometry).
+			wm.setZoom(4, 1280, 720, { x: 640, y: 360 });
+			const at4x = wm.getRiverStrokeWidth();
+			expect(at4x).toBeGreaterThan(atBase);
+
+			// Zooming out thins it back (LOD/fade at low zoom).
+			wm.setZoom(0.5, 1280, 720, { x: 640, y: 360 });
+			const atHalf = wm.getRiverStrokeWidth();
+			expect(atHalf).toBeLessThan(atBase);
+
+			// But changing WINDOW SIZE at the same zoom does not rescale the
+			// on-screen width (fit only changes the base scale, not the target PX).
+			wm.setZoom(1, 1280, 720); // reset zoom
+			wm.setRiversLakes(grid, rivers, []);
+			const resetWidth = wm.getRiverStrokeWidth();
 			wm.fitToScreen(10240, 5760);
-			const at8x = wm.getRiverStrokeWidth();
-
-			expect(at1x).toBeGreaterThan(1.5);
-			expect(at1x).toBeLessThan(2.5);
-			expect(at8x).toBeGreaterThan(1.5);
-			expect(at8x).toBeLessThan(2.5);
+			const afterResize = wm.getRiverStrokeWidth();
+			expect(Math.abs(afterResize - resetWidth)).toBeLessThan(0.5);
 		});
 
 		it("lakes layer paints lake-cell quads (no throw) for a 2-cell lake", () => {
@@ -1594,6 +1617,7 @@ describe("WorldMap.patchEntityCells (post-edit refresh)", () => {
 				cells_province: [0, 0],
 				cells_culture: [0, 0],
 				cells_religion: [0, 0],
+				cells_burg: [0, 0],
 				pack: {
 					states: [
 						{ color: 0xff0000 } as any,
@@ -1688,6 +1712,7 @@ describe("WorldMap.updateEntityColor (patch-on-edit)", () => {
 			cells_province: [0, 0],
 			cells_culture: [0, 0],
 			cells_religion: [0, 0],
+			cells_burg: [0, 0],
 			pack: {
 				states: [
 					{ color: 0xff0000 } as any,
